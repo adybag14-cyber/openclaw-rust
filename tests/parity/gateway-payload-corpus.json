@@ -180,6 +180,390 @@
           "messageContains": "null bytes"
         }
       }
+    },
+    {
+      "name": "tts.status returns provider and prefs shape",
+      "request": {
+        "id": "req-tts-status-parity",
+        "method": "tts.status",
+        "params": {}
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/enabled",
+            "equals": false
+          },
+          {
+            "path": "/provider",
+            "equals": "edge"
+          },
+          {
+            "path": "/prefsPath",
+            "equals": "memory://tts/prefs.json"
+          },
+          {
+            "path": "/fallbackProviders",
+            "kind": "array",
+            "nonEmpty": true
+          },
+          {
+            "path": "/edgeEnabled",
+            "equals": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "tts.setProvider rejects unknown provider",
+      "request": {
+        "id": "req-tts-set-provider-invalid-parity",
+        "method": "tts.setProvider",
+        "params": {
+          "provider": "invalid-provider"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "Invalid provider"
+        }
+      }
+    },
+    {
+      "name": "tts.convert returns opus payload for telegram",
+      "prelude": [
+        {
+          "id": "prelude-tts-set-provider-openai",
+          "method": "tts.setProvider",
+          "params": {
+            "provider": "openai"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-tts-convert-parity",
+        "method": "tts.convert",
+        "params": {
+          "text": "hello voice",
+          "channel": "telegram"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/audioPath",
+            "kind": "string",
+            "startsWith": "memory://tts/audio-",
+            "contains": ".opus"
+          },
+          {
+            "path": "/provider",
+            "equals": "openai"
+          },
+          {
+            "path": "/outputFormat",
+            "equals": "opus"
+          },
+          {
+            "path": "/voiceCompatible",
+            "equals": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "tts.providers exposes active provider catalog",
+      "prelude": [
+        {
+          "id": "prelude-tts-set-provider-openai-providers",
+          "method": "tts.setProvider",
+          "params": {
+            "provider": "openai"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-tts-providers-parity",
+        "method": "tts.providers",
+        "params": {}
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/active",
+            "equals": "openai"
+          },
+          {
+            "path": "/providers",
+            "kind": "array",
+            "nonEmpty": true
+          },
+          {
+            "path": "/providers/0/id",
+            "equals": "openai"
+          },
+          {
+            "path": "/providers/1/id",
+            "equals": "elevenlabs"
+          },
+          {
+            "path": "/providers/2/id",
+            "equals": "edge"
+          },
+          {
+            "path": "/providers/2/configured",
+            "equals": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "voicewake.set normalizes triggers and emits changed event",
+      "request": {
+        "id": "req-voicewake-set-parity",
+        "method": "voicewake.set",
+        "params": {
+          "triggers": [
+            "  hello  ",
+            "",
+            "world",
+            42
+          ]
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/triggers",
+            "equals": [
+              "hello",
+              "world"
+            ]
+          }
+        ],
+        "event": {
+          "name": "voicewake.changed",
+          "checks": [
+            {
+              "path": "/triggers",
+              "equals": [
+                "hello",
+                "world"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "voicewake.get returns updated trigger set",
+      "prelude": [
+        {
+          "id": "prelude-voicewake-set-updated",
+          "method": "voicewake.set",
+          "params": {
+            "triggers": [
+              "hello",
+              "world"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "id": "req-voicewake-get-parity",
+        "method": "voicewake.get",
+        "params": {}
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/triggers",
+            "equals": [
+              "hello",
+              "world"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "voicewake.set rejects non-array triggers",
+      "request": {
+        "id": "req-voicewake-set-invalid-parity",
+        "method": "voicewake.set",
+        "params": {
+          "triggers": "openclaw"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "requires triggers: string[]"
+        }
+      }
+    },
+    {
+      "name": "web.login.start returns qr payload shape",
+      "request": {
+        "id": "req-web-login-start-parity",
+        "method": "web.login.start",
+        "params": {
+          "timeoutMs": 6000,
+          "verbose": true
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/providerId",
+            "equals": "whatsapp"
+          },
+          {
+            "path": "/accountId",
+            "equals": "default"
+          },
+          {
+            "path": "/sessionId",
+            "kind": "string",
+            "startsWith": "web-login-"
+          },
+          {
+            "path": "/qrDataUrl",
+            "kind": "string",
+            "startsWith": "data:image/png;base64,"
+          },
+          {
+            "path": "/verbose",
+            "equals": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "web.login.wait reports connected after start",
+      "prelude": [
+        {
+          "id": "prelude-web-login-start",
+          "method": "web.login.start",
+          "params": {
+            "timeoutMs": 6000,
+            "verbose": false
+          }
+        }
+      ],
+      "request": {
+        "id": "req-web-login-wait-connected-parity",
+        "method": "web.login.wait",
+        "params": {
+          "timeoutMs": 5000
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/providerId",
+            "equals": "whatsapp"
+          },
+          {
+            "path": "/accountId",
+            "equals": "default"
+          },
+          {
+            "path": "/connected",
+            "equals": true
+          },
+          {
+            "path": "/message",
+            "kind": "string",
+            "contains": "Linked!"
+          }
+        ]
+      }
+    },
+    {
+      "name": "web.login.wait reports inactive when no session exists",
+      "request": {
+        "id": "req-web-login-wait-inactive-parity",
+        "method": "web.login.wait",
+        "params": {
+          "timeoutMs": 5000
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/providerId",
+            "equals": "whatsapp"
+          },
+          {
+            "path": "/accountId",
+            "equals": "default"
+          },
+          {
+            "path": "/connected",
+            "equals": false
+          },
+          {
+            "path": "/message",
+            "kind": "string",
+            "contains": "No active WhatsApp login in progress."
+          }
+        ]
+      }
+    },
+    {
+      "name": "update.run returns restart sentinel delivery hints",
+      "request": {
+        "id": "req-update-run-parity",
+        "method": "update.run",
+        "params": {
+          "sessionKey": "agent:main:discord:group:g-upd:topic:42",
+          "note": "rollout",
+          "restartDelayMs": 2500,
+          "timeoutMs": 10
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/result/status",
+            "equals": "ok"
+          },
+          {
+            "path": "/restart/delayMs",
+            "equals": 2500
+          },
+          {
+            "path": "/sentinel/path",
+            "kind": "string",
+            "startsWith": "memory://restart-sentinel/update-"
+          },
+          {
+            "path": "/sentinel/payload/threadId",
+            "equals": "42"
+          },
+          {
+            "path": "/sentinel/payload/deliveryContext/channel",
+            "equals": "discord"
+          }
+        ]
+      }
     }
   ]
 }
