@@ -144,13 +144,14 @@ Phase-1 parity tracking now includes an automated upstream-vs-Rust RPC method
 surface diff.
 
 ```powershell
-.\scripts\parity\method-surface-diff.ps1
+.\scripts\parity\method-surface-diff.ps1 -Surface both
 ```
 
 Generated artifacts:
 
 - `parity/PARITY_CONTRACT.md`
-- `parity/generated/upstream-methods.json`
+- `parity/generated/upstream-methods.base.json`
+- `parity/generated/upstream-methods.handlers.json`
 - `parity/generated/rust-methods.json`
 - `parity/generated/method-surface-diff.json`
 - `parity/method-surface-report.md`

@@ -3163,34 +3163,44 @@ impl RpcDispatcher {
             return RpcDispatchOutcome::bad_request("sessionKey is required");
         }
         let limit = params.limit.unwrap_or(200).clamp(1, 1_000);
-        let mut messages = self
+        let mut send_records = self
             .sessions
             .history(Some(&session_key), Some(limit))
             .await
             .into_iter()
             .filter_map(|record| match record.kind {
-                SessionHistoryKind::Send => {
-                    let text = normalize_optional_text(record.text.or(record.command), 12_000)?;
-                    let role = if record
-                        .source
-                        .as_deref()
-                        .map(|value| value.eq_ignore_ascii_case("chat.inject"))
-                        .unwrap_or(false)
-                    {
-                        "assistant"
-                    } else {
-                        "user"
-                    };
-                    Some(json!({
-                        "role": role,
-                        "timestamp": record.at_ms,
-                        "content": text
-                    }))
-                }
+                SessionHistoryKind::Send => Some(record),
                 SessionHistoryKind::Decision => None,
             })
             .collect::<Vec<_>>();
-        messages.reverse();
+        send_records.reverse();
+        let mut messages = Vec::with_capacity(send_records.len());
+        let mut previous_id: Option<String> = None;
+        for (index, record) in send_records.into_iter().enumerate() {
+            let Some(text) = normalize_optional_text(record.text.or(record.command), 12_000) else {
+                continue;
+            };
+            let role = if record
+                .source
+                .as_deref()
+                .map(|value| value.eq_ignore_ascii_case("chat.inject"))
+                .unwrap_or(false)
+            {
+                "assistant"
+            } else {
+                "user"
+            };
+            let message_id = normalize_optional_text(record.request_id, 256)
+                .unwrap_or_else(|| format!("msg-{}-{index}", record.at_ms));
+            messages.push(json!({
+                "id": message_id,
+                "parentId": previous_id.clone(),
+                "role": role,
+                "timestamp": record.at_ms,
+                "content": text
+            }));
+            previous_id = Some(message_id);
+        }
         let meta = self.sessions.chat_meta(&session_key).await;
         RpcDispatchOutcome::Handled(json!({
             "sessionKey": session_key,
@@ -18071,6 +18081,29 @@ mod tests {
                     .and_then(serde_json::Value::as_array)
                     .expect("messages array");
                 assert_eq!(messages.len(), 3);
+                assert!(messages.iter().all(|msg| msg.pointer("/id").is_some()));
+                assert!(messages
+                    .iter()
+                    .all(|msg| msg.pointer("/parentId").is_some()));
+                assert!(messages[0]
+                    .pointer("/parentId")
+                    .is_some_and(|v| v.is_null()));
+                assert_eq!(
+                    messages[1]
+                        .pointer("/parentId")
+                        .and_then(serde_json::Value::as_str),
+                    messages[0]
+                        .pointer("/id")
+                        .and_then(serde_json::Value::as_str)
+                );
+                assert_eq!(
+                    messages[2]
+                        .pointer("/parentId")
+                        .and_then(serde_json::Value::as_str),
+                    messages[1]
+                        .pointer("/id")
+                        .and_then(serde_json::Value::as_str)
+                );
                 assert_eq!(
                     messages
                         .first()

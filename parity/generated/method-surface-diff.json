@@ -1,25 +1,41 @@
 {
-  "generatedAtUtc": "2026-02-18T20:46:25.8996317Z",
+  "generatedAtUtc": "2026-02-18T20:53:43.7443145Z",
   "rustGatewayPath": "src/gateway.rs",
   "upstreamRepoPath": "..\\openclaw",
-  "upstreamMethodsFile": "src/gateway/server-methods-list.ts (BASE_METHODS)",
   "rustCount": 101,
-  "upstreamCount": 89,
-  "intersectionCount": 89,
-  "coveragePercent": 100.0,
-  "missingInRust": [],
-  "rustOnly": [
-    "chat.inject",
-    "connect",
-    "poll",
-    "session.status",
-    "sessions.history",
-    "sessions.resolve",
-    "sessions.send",
-    "sessions.usage",
-    "sessions.usage.logs",
-    "sessions.usage.timeseries",
-    "web.login.start",
-    "web.login.wait"
-  ]
+  "surfaces": {
+    "base": {
+      "upstreamCount": 89,
+      "rustCount": 101,
+      "intersectionCount": 89,
+      "coveragePercent": 100.0,
+      "missingInRust": [],
+      "rustOnly": [
+        "chat.inject",
+        "connect",
+        "poll",
+        "session.status",
+        "sessions.history",
+        "sessions.resolve",
+        "sessions.send",
+        "sessions.usage",
+        "sessions.usage.logs",
+        "sessions.usage.timeseries",
+        "web.login.start",
+        "web.login.wait"
+      ]
+    },
+    "handlers": {
+      "upstreamCount": 98,
+      "rustCount": 101,
+      "intersectionCount": 98,
+      "coveragePercent": 100.0,
+      "missingInRust": [],
+      "rustOnly": [
+        "session.status",
+        "sessions.history",
+        "sessions.send"
+      ]
+    }
+  }
 }
