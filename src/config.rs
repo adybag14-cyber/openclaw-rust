@@ -1,0 +1,325 @@
+use std::collections::HashMap;
+use std::env;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    pub gateway: GatewayConfig,
+    pub runtime: RuntimeConfig,
+    pub security: SecurityConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayConfig {
+    pub url: String,
+    pub token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeConfig {
+    pub audit_only: bool,
+    pub decision_event: String,
+    pub worker_concurrency: usize,
+    pub max_queue: usize,
+    #[serde(default = "default_session_queue_mode")]
+    pub session_queue_mode: SessionQueueMode,
+    #[serde(default = "default_group_activation_mode")]
+    pub group_activation_mode: GroupActivationMode,
+    pub eval_timeout_ms: u64,
+    pub memory_sample_secs: u64,
+    #[serde(default = "default_idempotency_ttl_secs")]
+    pub idempotency_ttl_secs: u64,
+    #[serde(default = "default_idempotency_max_entries")]
+    pub idempotency_max_entries: usize,
+    #[serde(default = "default_session_state_path")]
+    pub session_state_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityConfig {
+    pub review_threshold: u8,
+    pub block_threshold: u8,
+    pub virustotal_api_key: Option<String>,
+    pub virustotal_timeout_ms: u64,
+    pub quarantine_dir: PathBuf,
+    pub protect_paths: Vec<PathBuf>,
+    pub allowed_command_prefixes: Vec<String>,
+    pub blocked_command_patterns: Vec<String>,
+    pub prompt_injection_patterns: Vec<String>,
+    #[serde(default)]
+    pub tool_policies: HashMap<String, PolicyAction>,
+    #[serde(default = "default_tool_risk_bonus")]
+    pub tool_risk_bonus: HashMap<String, u8>,
+    #[serde(default = "default_channel_risk_bonus")]
+    pub channel_risk_bonus: HashMap<String, u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyAction {
+    Allow,
+    Review,
+    Block,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionQueueMode {
+    Followup,
+    Steer,
+    Collect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupActivationMode {
+    Mention,
+    Always,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            gateway: GatewayConfig {
+                url: "ws://127.0.0.1:18789/ws".to_owned(),
+                token: None,
+            },
+            runtime: RuntimeConfig {
+                audit_only: false,
+                decision_event: "security.decision".to_owned(),
+                worker_concurrency: 8,
+                max_queue: 256,
+                session_queue_mode: default_session_queue_mode(),
+                group_activation_mode: default_group_activation_mode(),
+                eval_timeout_ms: 2_500,
+                memory_sample_secs: 15,
+                idempotency_ttl_secs: default_idempotency_ttl_secs(),
+                idempotency_max_entries: default_idempotency_max_entries(),
+                session_state_path: default_session_state_path(),
+            },
+            security: SecurityConfig {
+                review_threshold: 35,
+                block_threshold: 65,
+                virustotal_api_key: None,
+                virustotal_timeout_ms: 1_400,
+                quarantine_dir: PathBuf::from(".openclaw-rs/quarantine"),
+                protect_paths: vec![
+                    PathBuf::from("./openclaw.mjs"),
+                    PathBuf::from("./dist/index.js"),
+                ],
+                allowed_command_prefixes: vec![
+                    "git ".to_owned(),
+                    "ls".to_owned(),
+                    "rg ".to_owned(),
+                ],
+                blocked_command_patterns: vec![
+                    r"(?i)\brm\s+-rf\s+/".to_owned(),
+                    r"(?i)\bmkfs\b".to_owned(),
+                    r"(?i)\bdd\s+if=".to_owned(),
+                    r"(?i)\bcurl\s+[^|]*\|\s*sh\b".to_owned(),
+                    r"(?i)\bwget\s+[^|]*\|\s*sh\b".to_owned(),
+                ],
+                prompt_injection_patterns: vec![
+                    r"(?i)ignore\s+all\s+previous\s+instructions".to_owned(),
+                    r"(?i)reveal\s+the\s+system\s+prompt".to_owned(),
+                    r"(?i)override\s+developer\s+instructions".to_owned(),
+                    r"(?i)disable\s+safety".to_owned(),
+                ],
+                tool_policies: HashMap::new(),
+                tool_risk_bonus: default_tool_risk_bonus(),
+                channel_risk_bonus: default_channel_risk_bonus(),
+            },
+        }
+    }
+}
+
+impl Config {
+    pub fn load(path: &Path) -> Result<Self> {
+        let mut cfg = if path.exists() {
+            let text = std::fs::read_to_string(path)
+                .with_context(|| format!("failed reading config file {}", path.display()))?;
+            toml::from_str::<Config>(&text)
+                .with_context(|| format!("failed parsing TOML config {}", path.display()))?
+        } else {
+            Self::default()
+        };
+        cfg.apply_env_overrides();
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    pub fn apply_cli_overrides(
+        &mut self,
+        gateway_url: Option<&str>,
+        gateway_token: Option<&str>,
+        audit_only: bool,
+    ) {
+        if let Some(url) = gateway_url {
+            self.gateway.url = url.to_owned();
+        }
+        if let Some(token) = gateway_token {
+            self.gateway.token = Some(token.to_owned());
+        }
+        if audit_only {
+            self.runtime.audit_only = true;
+        }
+    }
+
+    fn apply_env_overrides(&mut self) {
+        if let Ok(v) = env::var("OPENCLAW_RS_GATEWAY_URL") {
+            self.gateway.url = v;
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_GATEWAY_TOKEN") {
+            self.gateway.token = Some(v);
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_AUDIT_ONLY") {
+            self.runtime.audit_only = parse_bool(&v);
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_VT_API_KEY") {
+            self.security.virustotal_api_key = Some(v);
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_WORKER_CONCURRENCY") {
+            if let Ok(n) = v.parse::<usize>() {
+                self.runtime.worker_concurrency = n.max(1);
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_MAX_QUEUE") {
+            if let Ok(n) = v.parse::<usize>() {
+                self.runtime.max_queue = n.max(16);
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_SESSION_QUEUE_MODE") {
+            if let Some(mode) = parse_session_queue_mode(&v) {
+                self.runtime.session_queue_mode = mode;
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_GROUP_ACTIVATION_MODE")
+            .or_else(|_| env::var("OPENCLAW_RS_GROUP_ACTIVATION"))
+        {
+            if let Some(mode) = parse_group_activation_mode(&v) {
+                self.runtime.group_activation_mode = mode;
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_ALLOWED_COMMAND_PREFIXES") {
+            self.security.allowed_command_prefixes = split_csv(&v);
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_MEMORY_SAMPLE_SECS") {
+            if let Ok(n) = v.parse::<u64>() {
+                self.runtime.memory_sample_secs = n.max(1);
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_IDEMPOTENCY_TTL_SECS") {
+            if let Ok(n) = v.parse::<u64>() {
+                self.runtime.idempotency_ttl_secs = n.max(1);
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_IDEMPOTENCY_MAX_ENTRIES") {
+            if let Ok(n) = v.parse::<usize>() {
+                self.runtime.idempotency_max_entries = n.max(32);
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_SESSION_STATE_PATH") {
+            self.runtime.session_state_path = PathBuf::from(v);
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.security.review_threshold >= self.security.block_threshold {
+            anyhow::bail!("security.review_threshold must be lower than security.block_threshold");
+        }
+        if self.runtime.worker_concurrency == 0 {
+            anyhow::bail!("runtime.worker_concurrency must be > 0");
+        }
+        if self.runtime.max_queue == 0 {
+            anyhow::bail!("runtime.max_queue must be > 0");
+        }
+        if self.runtime.memory_sample_secs == 0 {
+            anyhow::bail!("runtime.memory_sample_secs must be > 0");
+        }
+        if self.runtime.idempotency_ttl_secs == 0 {
+            anyhow::bail!("runtime.idempotency_ttl_secs must be > 0");
+        }
+        if self.runtime.idempotency_max_entries == 0 {
+            anyhow::bail!("runtime.idempotency_max_entries must be > 0");
+        }
+        Ok(())
+    }
+}
+
+fn split_csv(input: &str) -> Vec<String> {
+    input
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn parse_bool(s: &str) -> bool {
+    matches!(
+        s.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn default_tool_risk_bonus() -> HashMap<String, u8> {
+    HashMap::from([
+        ("exec".to_owned(), 20),
+        ("bash".to_owned(), 20),
+        ("process".to_owned(), 10),
+        ("apply_patch".to_owned(), 12),
+        ("browser".to_owned(), 8),
+        ("gateway".to_owned(), 20),
+        ("nodes".to_owned(), 20),
+    ])
+}
+
+fn default_channel_risk_bonus() -> HashMap<String, u8> {
+    HashMap::from([
+        ("discord".to_owned(), 10),
+        ("slack".to_owned(), 8),
+        ("telegram".to_owned(), 6),
+        ("whatsapp".to_owned(), 6),
+        ("webchat".to_owned(), 8),
+    ])
+}
+
+fn default_idempotency_ttl_secs() -> u64 {
+    300
+}
+
+fn default_idempotency_max_entries() -> usize {
+    5000
+}
+
+fn default_session_state_path() -> PathBuf {
+    PathBuf::from(".openclaw-rs/session-state.json")
+}
+
+fn default_session_queue_mode() -> SessionQueueMode {
+    SessionQueueMode::Followup
+}
+
+fn default_group_activation_mode() -> GroupActivationMode {
+    GroupActivationMode::Mention
+}
+
+fn parse_session_queue_mode(s: &str) -> Option<SessionQueueMode> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "followup" => Some(SessionQueueMode::Followup),
+        "steer" => Some(SessionQueueMode::Steer),
+        "collect" => Some(SessionQueueMode::Collect),
+        _ => None,
+    }
+}
+
+fn parse_group_activation_mode(s: &str) -> Option<GroupActivationMode> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "mention" => Some(GroupActivationMode::Mention),
+        "always" => Some(GroupActivationMode::Always),
+        _ => None,
+    }
+}
