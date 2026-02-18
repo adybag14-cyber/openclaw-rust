@@ -154,7 +154,7 @@ for selected upstream RPC handlers:
 .\scripts\parity\payload-shape-diff.ps1
 ```
 
-Current payload corpus coverage: `chat.*`, `tts.*`, `voicewake.*`, `web.login.*`, and `update.run`.
+Current payload corpus coverage: `chat.*`, `tts.*`, `voicewake.*`, `web.login.*`, `update.run`, `sessions.*` envelope/alias flows, `browser.request`, and `wizard.*`.
 
 Generated artifacts:
 

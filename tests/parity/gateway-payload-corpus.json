@@ -564,6 +564,317 @@
           }
         ]
       }
+    },
+    {
+      "name": "sessions.patch canonicalizes main alias key",
+      "request": {
+        "id": "req-sessions-patch-main-parity",
+        "method": "sessions.patch",
+        "params": {
+          "key": "main",
+          "queueMode": "followup"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/path",
+            "equals": "memory://session-registry"
+          },
+          {
+            "path": "/key",
+            "equals": "agent:main:main"
+          },
+          {
+            "path": "/entry/key",
+            "equals": "agent:main:main"
+          },
+          {
+            "path": "/entry/queueMode",
+            "equals": "followup"
+          },
+          {
+            "path": "/session/key",
+            "equals": "agent:main:main"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.resolve normalizes short session key alias",
+      "prelude": [
+        {
+          "id": "prelude-sessions-patch-short",
+          "method": "sessions.patch",
+          "params": {
+            "key": "discord:group:g-short",
+            "queueMode": "followup"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-resolve-short-parity",
+        "method": "sessions.resolve",
+        "params": {
+          "key": "discord:group:g-short"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/key",
+            "equals": "agent:main:discord:group:g-short"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.list keeps canonical key forms",
+      "prelude": [
+        {
+          "id": "prelude-sessions-patch-main-list",
+          "method": "sessions.patch",
+          "params": {
+            "key": "main",
+            "queueMode": "followup"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-list-parity",
+        "method": "sessions.list",
+        "params": {
+          "limit": 10
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/path",
+            "equals": "memory://session-registry"
+          },
+          {
+            "path": "/sessions",
+            "kind": "array",
+            "nonEmpty": true
+          },
+          {
+            "path": "/sessions/0/key",
+            "equals": "agent:main:main"
+          },
+          {
+            "path": "/count",
+            "equals": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.preview preserves requested alias key in output",
+      "prelude": [
+        {
+          "id": "prelude-sessions-send-preview",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "main",
+            "message": "hello preview"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-preview-parity",
+        "method": "sessions.preview",
+        "params": {
+          "keys": [
+            "main"
+          ],
+          "limit": 2,
+          "maxChars": 120
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/previews",
+            "kind": "array",
+            "nonEmpty": true
+          },
+          {
+            "path": "/previews/0/key",
+            "equals": "main"
+          },
+          {
+            "path": "/previews/0/status",
+            "equals": "ok"
+          },
+          {
+            "path": "/previews/0/items/0/text",
+            "contains": "hello preview"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.resolve rejects missing selector params",
+      "request": {
+        "id": "req-sessions-resolve-missing-parity",
+        "method": "sessions.resolve",
+        "params": {}
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "sessionKey|key|sessionId or label is required"
+        }
+      }
+    },
+    {
+      "name": "browser.request returns unavailable contract with details payload",
+      "request": {
+        "id": "req-browser-request-parity",
+        "method": "browser.request",
+        "params": {
+          "method": "get",
+          "path": "/tabs",
+          "query": {
+            "profile": "default"
+          },
+          "timeoutMs": 0
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 503,
+          "messageContains": "browser control is disabled"
+        },
+        "errorChecks": [
+          {
+            "path": "/details/method",
+            "equals": "GET"
+          },
+          {
+            "path": "/details/path",
+            "equals": "/tabs"
+          },
+          {
+            "path": "/details/query/profile",
+            "equals": "default"
+          }
+        ]
+      }
+    },
+    {
+      "name": "wizard.start returns running confirm step payload",
+      "request": {
+        "id": "req-wizard-start-parity",
+        "method": "wizard.start",
+        "params": {
+          "mode": "local",
+          "workspace": "."
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/sessionId",
+            "kind": "string",
+            "startsWith": "wizard-"
+          },
+          {
+            "path": "/done",
+            "equals": false
+          },
+          {
+            "path": "/status",
+            "equals": "running"
+          },
+          {
+            "path": "/step/id",
+            "equals": "confirm-setup"
+          },
+          {
+            "path": "/step/executor",
+            "equals": "gateway"
+          }
+        ]
+      }
+    },
+    {
+      "name": "wizard.start rejects concurrent running session",
+      "prelude": [
+        {
+          "id": "prelude-wizard-start-running",
+          "method": "wizard.start",
+          "params": {
+            "mode": "local",
+            "workspace": "."
+          }
+        }
+      ],
+      "request": {
+        "id": "req-wizard-start-duplicate-parity",
+        "method": "wizard.start",
+        "params": {
+          "mode": "local",
+          "workspace": "."
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 503,
+          "messageContains": "wizard already running"
+        }
+      }
+    },
+    {
+      "name": "wizard.status rejects unknown session id",
+      "request": {
+        "id": "req-wizard-status-unknown-parity",
+        "method": "wizard.status",
+        "params": {
+          "sessionId": "wizard-missing"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "wizard not found"
+        }
+      }
+    },
+    {
+      "name": "wizard.cancel rejects unknown session id",
+      "request": {
+        "id": "req-wizard-cancel-unknown-parity",
+        "method": "wizard.cancel",
+        "params": {
+          "sessionId": "wizard-missing"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "wizard not found"
+        }
+      }
     }
   ]
 }

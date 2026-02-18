@@ -12461,7 +12461,7 @@ fn next_wizard_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use serde::Deserialize;
-    use serde_json::Value;
+    use serde_json::{json, Value};
 
     use crate::protocol::MethodFamily;
     use crate::types::{ActionRequest, Decision, DecisionAction};
@@ -12496,6 +12496,8 @@ mod tests {
         #[serde(default)]
         checks: Vec<PayloadParityCheck>,
         error: Option<PayloadParityErrorExpectation>,
+        #[serde(rename = "errorChecks", default)]
+        error_checks: Vec<PayloadParityCheck>,
         event: Option<PayloadParityEventExpectation>,
     }
 
@@ -18755,8 +18757,12 @@ mod tests {
                     assert_payload_checks(&payload, &case.expect.checks, &case.name, "response");
                 }
                 "error" => {
-                    let (code, message) = match outcome {
-                        RpcDispatchOutcome::Error { code, message, .. } => (code, message),
+                    let (code, message, details) = match outcome {
+                        RpcDispatchOutcome::Error {
+                            code,
+                            message,
+                            details,
+                        } => (code, message, details),
                         RpcDispatchOutcome::Handled(payload) => {
                             panic!(
                                 "case {} expected error but got handled payload={}",
@@ -18783,6 +18789,19 @@ mod tests {
                                 message
                             );
                         }
+                    }
+                    if !case.expect.error_checks.is_empty() {
+                        let error_payload = json!({
+                            "code": code,
+                            "message": message,
+                            "details": details
+                        });
+                        assert_payload_checks(
+                            &error_payload,
+                            &case.expect.error_checks,
+                            &case.name,
+                            "error payload",
+                        );
                     }
                 }
                 other => panic!("case {} unsupported outcome {}", case.name, other),
