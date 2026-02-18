@@ -1,0 +1,185 @@
+{
+  "cases": [
+    {
+      "name": "chat.inject emits final chat payload shape",
+      "prelude": [
+        {
+          "id": "prelude-chat-send-seed",
+          "method": "chat.send",
+          "params": {
+            "sessionKey": "main",
+            "message": "seed message",
+            "idempotencyKey": "chat-seed-run"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-chat-inject-parity",
+        "method": "chat.inject",
+        "params": {
+          "sessionKey": "main",
+          "message": "operator note",
+          "label": "ops"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/messageId",
+            "kind": "string",
+            "nonEmpty": true
+          }
+        ],
+        "event": {
+          "name": "chat",
+          "checks": [
+            {
+              "path": "/runId",
+              "kind": "string",
+              "startsWith": "inject-"
+            },
+            {
+              "path": "/sessionKey",
+              "equals": "agent:main:main"
+            },
+            {
+              "path": "/seq",
+              "equals": 0
+            },
+            {
+              "path": "/state",
+              "equals": "final"
+            },
+            {
+              "path": "/message/id",
+              "kind": "string",
+              "nonEmpty": true
+            },
+            {
+              "path": "/message/parentId",
+              "kind": "string",
+              "nonEmpty": true
+            },
+            {
+              "path": "/message/role",
+              "equals": "assistant"
+            },
+            {
+              "path": "/message/content",
+              "equals": "[ops] operator note"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "chat.history keeps id parentId chain fields",
+      "prelude": [
+        {
+          "id": "prelude-chat-send-a",
+          "method": "chat.send",
+          "params": {
+            "sessionKey": "main",
+            "message": "batch-a",
+            "idempotencyKey": "chat-run-a"
+          }
+        },
+        {
+          "id": "prelude-chat-send-b",
+          "method": "chat.send",
+          "params": {
+            "sessionKey": "main",
+            "message": "batch-b",
+            "idempotencyKey": "chat-run-b"
+          }
+        },
+        {
+          "id": "prelude-chat-inject-history",
+          "method": "chat.inject",
+          "params": {
+            "sessionKey": "main",
+            "message": "operator note",
+            "label": "ops"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-chat-history-parity",
+        "method": "chat.history",
+        "params": {
+          "sessionKey": "main",
+          "limit": 3
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/sessionKey",
+            "equals": "agent:main:main"
+          },
+          {
+            "path": "/sessionId",
+            "kind": "string",
+            "nonEmpty": true
+          },
+          {
+            "path": "/messages",
+            "kind": "array",
+            "nonEmpty": true
+          },
+          {
+            "path": "/messages/0/id",
+            "kind": "string"
+          },
+          {
+            "path": "/messages/0/parentId",
+            "kind": "null"
+          },
+          {
+            "path": "/messages/1/parentId",
+            "kind": "string",
+            "nonEmpty": true
+          },
+          {
+            "path": "/messages/2/parentId",
+            "kind": "string",
+            "nonEmpty": true
+          },
+          {
+            "path": "/messages/2/role",
+            "equals": "assistant"
+          },
+          {
+            "path": "/messages/2/content",
+            "equals": "[ops] operator note"
+          }
+        ]
+      }
+    },
+    {
+      "name": "chat.send rejects null bytes with bad request",
+      "request": {
+        "id": "req-chat-send-null-byte-parity",
+        "method": "chat.send",
+        "params": {
+          "sessionKey": "main",
+          "message": "hello\u0000world",
+          "idempotencyKey": "chat-null-byte"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "null bytes"
+        }
+      }
+    }
+  ]
+}

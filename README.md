@@ -147,6 +147,13 @@ surface diff.
 .\scripts\parity\method-surface-diff.ps1 -Surface both
 ```
 
+Phase-2 parity tracking includes fixture-driven response/event payload shape checks
+for selected upstream RPC handlers:
+
+```powershell
+.\scripts\parity\payload-shape-diff.ps1
+```
+
 Generated artifacts:
 
 - `parity/PARITY_CONTRACT.md`
@@ -155,6 +162,7 @@ Generated artifacts:
 - `parity/generated/rust-methods.json`
 - `parity/generated/method-surface-diff.json`
 - `parity/method-surface-report.md`
+- `tests/parity/gateway-payload-corpus.json`
 
 ## Windows GNU toolchain helper (SQLite feature)
 

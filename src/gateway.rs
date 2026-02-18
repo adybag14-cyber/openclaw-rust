@@ -3617,7 +3617,7 @@ impl RpcDispatcher {
         let chat_event_payload = json!({
             "runId": message_payload["id"],
             "sessionKey": session_key,
-            "seq": 1,
+            "seq": 0,
             "state": "final",
             "message": message_payload
         });
@@ -6991,6 +6991,12 @@ impl NodeRuntimeRegistry {
     async fn last_event(&self) -> Option<Value> {
         let guard = self.state.lock().await;
         guard.recent_events.back().cloned()
+    }
+
+    #[cfg(test)]
+    async fn event_count(&self) -> usize {
+        let guard = self.state.lock().await;
+        guard.recent_events.len()
     }
 }
 
@@ -12454,10 +12460,208 @@ fn next_wizard_session_id() -> String {
 
 #[cfg(test)]
 mod tests {
+    use serde::Deserialize;
+    use serde_json::Value;
+
     use crate::protocol::MethodFamily;
     use crate::types::{ActionRequest, Decision, DecisionAction};
 
     use super::{MethodRegistry, RpcDispatchOutcome, RpcDispatcher, RpcRequestFrame};
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct PayloadParitySuite {
+        cases: Vec<PayloadParityCase>,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct PayloadParityCase {
+        name: String,
+        #[serde(default)]
+        prelude: Vec<PayloadParityRequest>,
+        request: PayloadParityRequest,
+        expect: PayloadParityExpectation,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct PayloadParityRequest {
+        id: String,
+        method: String,
+        #[serde(default)]
+        params: Value,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct PayloadParityExpectation {
+        outcome: String,
+        #[serde(default)]
+        checks: Vec<PayloadParityCheck>,
+        error: Option<PayloadParityErrorExpectation>,
+        event: Option<PayloadParityEventExpectation>,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct PayloadParityErrorExpectation {
+        code: Option<i64>,
+        #[serde(rename = "messageContains")]
+        message_contains: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct PayloadParityEventExpectation {
+        name: String,
+        #[serde(default)]
+        checks: Vec<PayloadParityCheck>,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct PayloadParityCheck {
+        path: String,
+        equals: Option<Value>,
+        kind: Option<String>,
+        #[serde(rename = "startsWith")]
+        starts_with: Option<String>,
+        contains: Option<String>,
+        #[serde(rename = "nonEmpty")]
+        non_empty: Option<bool>,
+    }
+
+    fn payload_outcome_name(value: &str) -> String {
+        value.trim().to_ascii_lowercase()
+    }
+
+    fn assert_payload_checks(
+        root: &Value,
+        checks: &[PayloadParityCheck],
+        case_name: &str,
+        subject: &str,
+    ) {
+        for check in checks {
+            let Some(actual) = root.pointer(&check.path) else {
+                panic!("case {case_name} {subject} missing path {}", check.path);
+            };
+
+            if let Some(expected) = check.equals.as_ref() {
+                assert_eq!(
+                    actual, expected,
+                    "case {case_name} {subject} path {} equality mismatch",
+                    check.path
+                );
+            }
+
+            if let Some(kind) = check.kind.as_deref() {
+                match kind.trim().to_ascii_lowercase().as_str() {
+                    "string" => {
+                        assert!(
+                            actual.is_string(),
+                            "case {case_name} {subject} path {} expected string",
+                            check.path
+                        );
+                    }
+                    "number" => {
+                        assert!(
+                            actual.is_number(),
+                            "case {case_name} {subject} path {} expected number",
+                            check.path
+                        );
+                    }
+                    "bool" | "boolean" => {
+                        assert!(
+                            actual.is_boolean(),
+                            "case {case_name} {subject} path {} expected boolean",
+                            check.path
+                        );
+                    }
+                    "object" => {
+                        assert!(
+                            actual.is_object(),
+                            "case {case_name} {subject} path {} expected object",
+                            check.path
+                        );
+                    }
+                    "array" => {
+                        assert!(
+                            actual.is_array(),
+                            "case {case_name} {subject} path {} expected array",
+                            check.path
+                        );
+                    }
+                    "null" => {
+                        assert!(
+                            actual.is_null(),
+                            "case {case_name} {subject} path {} expected null",
+                            check.path
+                        );
+                    }
+                    other => {
+                        panic!(
+                            "case {case_name} {subject} has unsupported check kind {other} at {}",
+                            check.path
+                        );
+                    }
+                }
+            }
+
+            if let Some(prefix) = check.starts_with.as_deref() {
+                let value = actual.as_str().unwrap_or_else(|| {
+                    panic!(
+                        "case {case_name} {subject} path {} must be string for startsWith",
+                        check.path
+                    )
+                });
+                assert!(
+                    value.starts_with(prefix),
+                    "case {case_name} {subject} path {} expected prefix {prefix}, got {value}",
+                    check.path
+                );
+            }
+
+            if let Some(fragment) = check.contains.as_deref() {
+                let value = actual.as_str().unwrap_or_else(|| {
+                    panic!(
+                        "case {case_name} {subject} path {} must be string for contains",
+                        check.path
+                    )
+                });
+                assert!(
+                    value.contains(fragment),
+                    "case {case_name} {subject} path {} expected to contain {fragment}, got {value}",
+                    check.path
+                );
+            }
+
+            if check.non_empty == Some(true) {
+                match actual {
+                    Value::String(value) => {
+                        assert!(
+                            !value.is_empty(),
+                            "case {case_name} {subject} path {} expected non-empty string",
+                            check.path
+                        );
+                    }
+                    Value::Array(value) => {
+                        assert!(
+                            !value.is_empty(),
+                            "case {case_name} {subject} path {} expected non-empty array",
+                            check.path
+                        );
+                    }
+                    Value::Object(value) => {
+                        assert!(
+                            !value.is_empty(),
+                            "case {case_name} {subject} path {} expected non-empty object",
+                            check.path
+                        );
+                    }
+                    _ => {
+                        panic!(
+                            "case {case_name} {subject} path {} uses nonEmpty on unsupported type",
+                            check.path
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn resolves_known_method() {
@@ -18499,5 +18703,125 @@ mod tests {
         };
         let out = dispatcher.handle_request(&invalid_webhook).await;
         assert!(matches!(out, RpcDispatchOutcome::Error { code: 400, .. }));
+    }
+
+    #[tokio::test]
+    async fn dispatcher_payload_corpus_matches_upstream_fixtures() {
+        let suite: PayloadParitySuite =
+            serde_json::from_str(include_str!("../tests/parity/gateway-payload-corpus.json"))
+                .expect("payload parity fixture");
+
+        for case in suite.cases {
+            let dispatcher = RpcDispatcher::new();
+
+            for prelude in case.prelude {
+                let prelude_req = RpcRequestFrame {
+                    id: prelude.id,
+                    method: prelude.method,
+                    params: prelude.params,
+                };
+                if let RpcDispatchOutcome::Error { code, message, .. } =
+                    dispatcher.handle_request(&prelude_req).await
+                {
+                    panic!(
+                        "case {} prelude request {} failed code={} message={}",
+                        case.name, prelude_req.id, code, message
+                    );
+                }
+            }
+
+            let event_count_before = dispatcher.node_runtime.event_count().await;
+            let request = RpcRequestFrame {
+                id: case.request.id,
+                method: case.request.method,
+                params: case.request.params,
+            };
+
+            let outcome = dispatcher.handle_request(&request).await;
+            match payload_outcome_name(&case.expect.outcome).as_str() {
+                "handled" => {
+                    let payload = match outcome {
+                        RpcDispatchOutcome::Handled(payload) => payload,
+                        RpcDispatchOutcome::Error { code, message, .. } => {
+                            panic!(
+                                "case {} expected handled but got error code={} message={}",
+                                case.name, code, message
+                            );
+                        }
+                        RpcDispatchOutcome::NotHandled => {
+                            panic!("case {} expected handled but got not handled", case.name);
+                        }
+                    };
+                    assert_payload_checks(&payload, &case.expect.checks, &case.name, "response");
+                }
+                "error" => {
+                    let (code, message) = match outcome {
+                        RpcDispatchOutcome::Error { code, message, .. } => (code, message),
+                        RpcDispatchOutcome::Handled(payload) => {
+                            panic!(
+                                "case {} expected error but got handled payload={}",
+                                case.name, payload
+                            );
+                        }
+                        RpcDispatchOutcome::NotHandled => {
+                            panic!("case {} expected error but got not handled", case.name);
+                        }
+                    };
+                    if let Some(expect_error) = case.expect.error.as_ref() {
+                        if let Some(expected_code) = expect_error.code {
+                            assert_eq!(
+                                code, expected_code,
+                                "case {} error code mismatch",
+                                case.name
+                            );
+                        }
+                        if let Some(fragment) = expect_error.message_contains.as_deref() {
+                            assert!(
+                                message.contains(fragment),
+                                "case {} expected error message to contain {fragment}, got {}",
+                                case.name,
+                                message
+                            );
+                        }
+                    }
+                }
+                other => panic!("case {} unsupported outcome {}", case.name, other),
+            }
+
+            if let Some(expect_event) = case.expect.event.as_ref() {
+                let event_count_after = dispatcher.node_runtime.event_count().await;
+                assert_eq!(
+                    event_count_after,
+                    event_count_before + 1,
+                    "case {} expected exactly one emitted event",
+                    case.name
+                );
+                let event = dispatcher
+                    .node_runtime
+                    .last_event()
+                    .await
+                    .expect("event payload");
+                assert_eq!(
+                    event.pointer("/event").and_then(serde_json::Value::as_str),
+                    Some(expect_event.name.as_str()),
+                    "case {} event name mismatch",
+                    case.name
+                );
+                let payload_json = event
+                    .pointer("/payloadJSON")
+                    .and_then(serde_json::Value::as_str)
+                    .expect("event payload json");
+                let payload: Value =
+                    serde_json::from_str(payload_json).expect("parse event payload");
+                assert_payload_checks(&payload, &expect_event.checks, &case.name, "event payload");
+            } else {
+                let event_count_after = dispatcher.node_runtime.event_count().await;
+                assert_eq!(
+                    event_count_after, event_count_before,
+                    "case {} expected no emitted events",
+                    case.name
+                );
+            }
+        }
     }
 }

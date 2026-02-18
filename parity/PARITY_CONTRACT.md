@@ -1,6 +1,7 @@
-# Rust Parity Contract (Phase 1)
+# Rust Parity Contract (Phase 1/2)
 
-This contract defines the current machine-checked RPC method surface parity check.
+This contract defines the machine-checked parity checks that currently gate Rust
+gateway parity work.
 
 ## Source Of Truth
 
@@ -8,10 +9,16 @@ This contract defines the current machine-checked RPC method surface parity chec
 - Upstream base surface: `../openclaw/src/gateway/server-methods-list.ts` -> `BASE_METHODS`
 - Upstream handler surface: `../openclaw/src/gateway/server-methods/*.ts` -> exported `*Handlers` maps
 
-## Contract Rule
+## Phase 1: Method Surface Rule
 
 - Every method present in upstream `BASE_METHODS` is expected to exist in Rust `SUPPORTED_RPC_METHODS` unless explicitly documented as deferred.
 - The method diff artifacts are generated and committed from scripts in `scripts/parity/`.
+
+## Phase 2: Payload Shape Rule
+
+- Curated request/response/event fixtures are stored in `tests/parity/gateway-payload-corpus.json`.
+- Rust gateway test `dispatcher_payload_corpus_matches_upstream_fixtures` replays the corpus and checks JSON-pointer payload shape expectations.
+- Payload fixtures are anchored to upstream `../openclaw/src/gateway/server-methods/*.ts` handler behavior.
 
 ## Commands
 
@@ -19,6 +26,10 @@ From repo root:
 
 ```powershell
 .\scripts\parity\method-surface-diff.ps1 -Surface both
+```
+
+```powershell
+.\scripts\parity\payload-shape-diff.ps1
 ```
 
 Optional upstream location override:
@@ -34,7 +45,9 @@ Optional upstream location override:
 - `parity/generated/rust-methods.json`
 - `parity/generated/method-surface-diff.json`
 - `parity/method-surface-report.md`
+- `tests/parity/gateway-payload-corpus.json` (fixture corpus)
 
 ## PR Gate
 
-- For any gateway parity change, regenerate method diff artifacts and include them in the commit.
+- For any gateway method-surface parity change, regenerate method diff artifacts and include them in the commit.
+- For any gateway behavior-parity change touching payload shape, update `tests/parity/gateway-payload-corpus.json` and keep `dispatcher_payload_corpus_matches_upstream_fixtures` passing.
