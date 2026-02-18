@@ -1,5 +1,6 @@
 mod command_guard;
 mod host_guard;
+mod policy_bundle;
 mod prompt_guard;
 mod virustotal;
 
@@ -20,6 +21,7 @@ use crate::types::{ActionRequest, Decision, DecisionAction};
 
 use self::command_guard::CommandGuard;
 use self::host_guard::HostIntegrityGuard;
+use self::policy_bundle::apply_signed_policy_bundle;
 use self::prompt_guard::PromptInjectionGuard;
 use self::virustotal::VirusTotalClient;
 
@@ -40,7 +42,17 @@ pub struct DefenderEngine {
 }
 
 impl DefenderEngine {
-    pub async fn new(cfg: Config) -> Result<Arc<Self>> {
+    pub async fn new(mut cfg: Config) -> Result<Arc<Self>> {
+        if let Some(report) = apply_signed_policy_bundle(&mut cfg).await? {
+            info!(
+                "loaded signed policy bundle id={} version={} path={} fields={}",
+                report.bundle_id.as_deref().unwrap_or("unnamed"),
+                report.version,
+                report.path.display(),
+                report.overridden_fields.join(",")
+            );
+        }
+
         let prompt_guard = PromptInjectionGuard::new(&cfg.security.prompt_injection_patterns)?;
         let command_guard = CommandGuard::new(
             &cfg.security.allowed_command_prefixes,
@@ -363,6 +375,8 @@ mod tests {
                 block_threshold: 65,
                 virustotal_api_key: None,
                 virustotal_timeout_ms: 400,
+                policy_bundle_path: None,
+                policy_bundle_key: None,
                 quarantine_dir,
                 protect_paths: vec![protected],
                 allowed_command_prefixes: vec!["git ".to_owned()],

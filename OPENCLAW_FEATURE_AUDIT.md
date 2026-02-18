@@ -35,7 +35,7 @@ Status legend:
 - `Host integrity defense`: Upstream OpenClaw feature surface is baseline hashing and tamper detection on protected paths. Rust status is `Implemented`. Notes: `host_guard.rs` checks hash drift/missing files.
 - `VirusTotal integration`: Upstream OpenClaw feature surface is external URL/file reputation signal. Rust status is `Implemented`. Notes: `virustotal.rs` supports URL/file hash lookup and risk mapping.
 - `Decision policy engine`: Upstream OpenClaw feature surface is risk aggregation to `allow`/`review`/`block` with thresholds. Rust status is `Implemented`. Notes: `security/mod.rs` classifier with `audit_only` override.
-- `Tool/channel policy controls`: Upstream OpenClaw feature surface is per-tool policy floors and channel-aware risk weighting. Rust status is `Implemented`. Notes: `tool_policies`, `tool_risk_bonus`, and `channel_risk_bonus` are configurable in TOML.
+- `Tool/channel policy controls`: Upstream OpenClaw feature surface is per-tool policy floors and channel-aware risk weighting. Rust status is `Implemented`. Notes: `tool_policies`, `tool_risk_bonus`, and `channel_risk_bonus` are configurable in TOML, and can now be overridden via signed startup policy bundles.
 - `Idempotency dedupe`: Upstream OpenClaw feature surface is repeated action/request suppression. Rust status is `Partial`. Notes: Request id/signature idempotency cache added with TTL + bounded entries.
 - `Channel driver abstraction`: Upstream OpenClaw feature surface is channel-specific frame parsing adapters. Rust status is `Partial`. Notes: Trait-based registry added with `whatsapp`, `telegram`, `slack`, `discord`, and generic drivers.
 - `Quarantine records`: Upstream OpenClaw feature surface is persisting blocked action payloads for forensics. Rust status is `Implemented`. Notes: Append-only JSON files in configured quarantine directory.
@@ -75,13 +75,12 @@ Status legend:
   - quarantine artifacts
 
 - `Partial`:
-  - no cryptographic signed policy bundles yet
   - no kernel/EDR process telemetry ingestion
   - no remote attestation of runtime binary yet
 
 ## Immediate Next Build Targets
 
-1. Expand policy engine with tamper-evident signed policy bundle loading.
-2. Expand session model parity to include group isolation, activation policy tuning, and reply-back semantics.
-3. Expand channel runtime parity beyond extraction adapters (transport lifecycle, retry/backoff, webhook ingress).
-4. Expand compose parity stack to include multi-event scenarios (retry/backoff and reconnect assertions).
+1. Expand session model parity to include group isolation, activation policy tuning, and reply-back semantics.
+2. Expand channel runtime parity beyond extraction adapters (transport lifecycle, retry/backoff, webhook ingress).
+3. Expand compose parity stack to include multi-event scenarios (retry/backoff and reconnect assertions).
+4. Add signed policy bundle rotation/distribution workflow (key rotation + staged rollout).

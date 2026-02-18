@@ -44,6 +44,10 @@ pub struct SecurityConfig {
     pub block_threshold: u8,
     pub virustotal_api_key: Option<String>,
     pub virustotal_timeout_ms: u64,
+    #[serde(default)]
+    pub policy_bundle_path: Option<PathBuf>,
+    #[serde(default)]
+    pub policy_bundle_key: Option<String>,
     pub quarantine_dir: PathBuf,
     pub protect_paths: Vec<PathBuf>,
     pub allowed_command_prefixes: Vec<String>,
@@ -105,6 +109,8 @@ impl Default for Config {
                 block_threshold: 65,
                 virustotal_api_key: None,
                 virustotal_timeout_ms: 1_400,
+                policy_bundle_path: None,
+                policy_bundle_key: None,
                 quarantine_dir: PathBuf::from(".openclaw-rs/quarantine"),
                 protect_paths: vec![
                     PathBuf::from("./openclaw.mjs"),
@@ -180,6 +186,22 @@ impl Config {
         }
         if let Ok(v) = env::var("OPENCLAW_RS_VT_API_KEY") {
             self.security.virustotal_api_key = Some(v);
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_POLICY_BUNDLE_PATH") {
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                self.security.policy_bundle_path = None;
+            } else {
+                self.security.policy_bundle_path = Some(PathBuf::from(trimmed));
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_POLICY_BUNDLE_KEY") {
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                self.security.policy_bundle_key = None;
+            } else {
+                self.security.policy_bundle_key = Some(trimmed.to_owned());
+            }
         }
         if let Ok(v) = env::var("OPENCLAW_RS_WORKER_CONCURRENCY") {
             if let Ok(n) = v.parse::<usize>() {

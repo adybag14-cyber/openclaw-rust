@@ -108,6 +108,35 @@ systemctl --user status openclaw-agent-rs.service
 - `security.tool_policies`: per-tool floor action (`allow`, `review`, `block`).
 - `security.tool_risk_bonus`: per-tool additive risk scoring.
 - `security.channel_risk_bonus`: per-channel additive risk scoring.
+- `security.policy_bundle_path`: optional signed JSON policy bundle file to load at startup.
+- `security.policy_bundle_key`: HMAC key used to verify the bundle signature.
+
+## Signed policy bundles
+
+When `security.policy_bundle_path` and `security.policy_bundle_key` are set, the
+runtime verifies and applies a signed bundle at startup.
+
+Bundle shape:
+
+```json
+{
+  "version": 1,
+  "bundleId": "ops-policy-2026-02-18",
+  "signedAt": "2026-02-18T00:00:00Z",
+  "policy": {
+    "reviewThreshold": 35,
+    "blockThreshold": 65,
+    "toolPolicies": { "gateway": "review" }
+  },
+  "signature": "hex-hmac-sha256"
+}
+```
+
+Signature rule:
+
+- Compute HMAC-SHA256 over the bundle JSON without the `signature` field.
+- Canonicalization sorts object keys recursively before hashing.
+- Hex-encode digest as lowercase (or prefix with `sha256:`).
 
 ## Planned migration phases
 

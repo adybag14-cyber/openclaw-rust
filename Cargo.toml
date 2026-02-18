@@ -16,6 +16,7 @@ async-trait = "0.1.88"
 base64 = "0.22.1"
 clap = { version = "4.5.40", features = ["derive", "env"] }
 futures-util = "0.3.31"
+hmac = "0.12.1"
 regex = "1.11.1"
 reqwest = { version = "0.12.15", default-features = false, features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.32.1", features = ["bundled"], optional = true }
