@@ -188,3 +188,20 @@ bash ./scripts/run-docker-parity-smoke.sh
 ```powershell
 .\scripts\run-docker-parity-smoke.ps1
 ```
+
+## Docker compose parity E2E
+
+Runs a compose-based Gateway parity stack:
+
+- `gateway` mock (WebSocket control plane),
+- `rust-agent` (this Rust defender runtime),
+- `producer` (mock inbound action event),
+- `assertor` (verifies emitted `security.decision` contract).
+
+```bash
+bash ./scripts/run-docker-compose-parity.sh
+```
+
+```powershell
+.\scripts\run-docker-compose-parity.ps1
+```

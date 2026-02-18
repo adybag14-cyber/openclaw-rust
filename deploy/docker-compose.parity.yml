@@ -1,0 +1,64 @@
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.parity-python
+    command: ["python", "/app/parity-compose/gateway_mock.py"]
+    environment:
+      PARITY_GATEWAY_HOST: "0.0.0.0"
+      PARITY_GATEWAY_PORT: "8765"
+      PARITY_GATEWAY_TOKEN: "parity-token"
+    healthcheck:
+      test: ["CMD", "python", "/app/parity-compose/healthcheck.py"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  rust-agent:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.parity-runtime
+    depends_on:
+      gateway:
+        condition: service_healthy
+    environment:
+      OPENCLAW_RS_GATEWAY_URL: "ws://gateway:8765/ws"
+      OPENCLAW_RS_GATEWAY_TOKEN: "parity-token"
+      OPENCLAW_RS_LOG: "info"
+
+  assertor:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.parity-python
+    command: ["python", "/app/parity-compose/assertor.py"]
+    depends_on:
+      gateway:
+        condition: service_healthy
+      rust-agent:
+        condition: service_started
+    environment:
+      PARITY_GATEWAY_URL: "ws://gateway:8765/ws"
+      PARITY_GATEWAY_TOKEN: "parity-token"
+      PARITY_ACTION_ID: "parity-action-1"
+      PARITY_EXPECT_ACTION: "block"
+      PARITY_ASSERT_TIMEOUT_SECS: "45"
+
+  producer:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.parity-python
+    command: ["python", "/app/parity-compose/producer.py"]
+    depends_on:
+      gateway:
+        condition: service_healthy
+      rust-agent:
+        condition: service_started
+      assertor:
+        condition: service_started
+    environment:
+      PARITY_GATEWAY_URL: "ws://gateway:8765/ws"
+      PARITY_GATEWAY_TOKEN: "parity-token"
+      PARITY_ACTION_ID: "parity-action-1"
+      PARITY_WAIT_FOR_CLIENTS: "openclaw-agent-rs,parity-assertor"
+      PARITY_PRODUCER_WAIT_SECS: "45"

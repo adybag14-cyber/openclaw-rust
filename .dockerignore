@@ -1,0 +1,6 @@
+.git
+target
+.openclaw-rs
+tmp_*.log
+*.log
+*.tmp

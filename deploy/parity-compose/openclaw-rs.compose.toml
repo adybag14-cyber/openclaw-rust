@@ -1,0 +1,40 @@
+[gateway]
+url = "ws://gateway:8765/ws"
+token = "parity-token"
+
+[runtime]
+audit_only = false
+decision_event = "security.decision"
+worker_concurrency = 4
+max_queue = 64
+session_queue_mode = "followup"
+group_activation_mode = "mention"
+eval_timeout_ms = 2500
+memory_sample_secs = 30
+idempotency_ttl_secs = 300
+idempotency_max_entries = 2000
+session_state_path = "/tmp/openclaw-rs-session-state.json"
+
+[security]
+review_threshold = 35
+block_threshold = 65
+virustotal_api_key = ""
+virustotal_timeout_ms = 500
+quarantine_dir = "/tmp/openclaw-rs-quarantine"
+protect_paths = ["/app/parity-protected.txt"]
+allowed_command_prefixes = ["git ", "ls", "rg "]
+blocked_command_patterns = [
+  "(?i)\\brm\\s+-rf\\s+/",
+  "(?i)\\bmkfs\\b",
+  "(?i)\\bdd\\s+if=",
+  "(?i)\\bcurl\\s+[^|]*\\|\\s*sh\\b",
+  "(?i)\\bwget\\s+[^|]*\\|\\s*sh\\b",
+]
+prompt_injection_patterns = [
+  "(?i)ignore\\s+all\\s+previous\\s+instructions",
+  "(?i)reveal\\s+the\\s+system\\s+prompt",
+  "(?i)override\\s+developer\\s+instructions",
+  "(?i)disable\\s+safety",
+]
+tool_risk_bonus = { exec = 20, bash = 20, process = 10, apply_patch = 12, browser = 8, gateway = 20, nodes = 20 }
+channel_risk_bonus = { discord = 10, slack = 8, telegram = 6, whatsapp = 6, webchat = 8 }

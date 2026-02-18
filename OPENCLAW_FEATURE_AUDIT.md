@@ -41,7 +41,7 @@ Status legend:
 - `Quarantine records`: Upstream OpenClaw feature surface is persisting blocked action payloads for forensics. Rust status is `Implemented`. Notes: Append-only JSON files in configured quarantine directory.
 - `Backpressure + memory controls`: Upstream OpenClaw feature surface is bounded worker concurrency, queue cap, eval timeout, and memory metrics. Rust status is `Implemented`. Notes: Semaphore + queue bounds + timeout + Linux RSS sampler.
 - `Test coverage (Rust)`: Upstream OpenClaw feature surface is unit/integration validation for core safety/runtime behavior. Rust status is `Partial`. Notes: Core security/bridge/channel adapters/replay harness covered, including bridge-level mention-activation and steer-queue semantics; full end-to-end Gateway/channel matrix still pending.
-- `Dockerized validation`: Upstream OpenClaw feature surface is containerized CI-style runtime test matrix. Rust status is `Partial`. Notes: Added Docker parity smoke harness (`deploy/Dockerfile.parity`, run scripts) for default + `sqlite-state`; full compose-based Gateway/channel parity environment still pending.
+- `Dockerized validation`: Upstream OpenClaw feature surface is containerized CI-style runtime test matrix. Rust status is `Partial`. Notes: Added Docker parity smoke harness (`deploy/Dockerfile.parity`, run scripts) for default + `sqlite-state`, plus compose-based Gateway parity stack (`deploy/docker-compose.parity.yml`) with mock gateway + producer + assertor around the Rust runtime; broader real-channel/container matrix remains pending.
 
 ## Custom Defender Goal Coverage
 
@@ -81,7 +81,7 @@ Status legend:
 
 ## Immediate Next Build Targets
 
-1. Add Docker compose profile for: Gateway + Rust defender + mock action producer + assertor.
-2. Expand policy engine with tamper-evident signed policy bundle loading.
-3. Expand session model parity to include group isolation, activation policy tuning, and reply-back semantics.
-4. Expand channel runtime parity beyond extraction adapters (transport lifecycle, retry/backoff, webhook ingress).
+1. Expand policy engine with tamper-evident signed policy bundle loading.
+2. Expand session model parity to include group isolation, activation policy tuning, and reply-back semantics.
+3. Expand channel runtime parity beyond extraction adapters (transport lifecycle, retry/backoff, webhook ingress).
+4. Expand compose parity stack to include multi-event scenarios (retry/backoff and reconnect assertions).
