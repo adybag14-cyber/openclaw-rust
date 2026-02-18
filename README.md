@@ -138,6 +138,23 @@ cargo test protocol_corpus_snapshot_matches_expectations -- --nocapture
 bash ./scripts/run-protocol-corpus.sh
 ```
 
+## RPC Method Surface Parity Contract
+
+Phase-1 parity tracking now includes an automated upstream-vs-Rust RPC method
+surface diff.
+
+```powershell
+.\scripts\parity\method-surface-diff.ps1
+```
+
+Generated artifacts:
+
+- `parity/PARITY_CONTRACT.md`
+- `parity/generated/upstream-methods.json`
+- `parity/generated/rust-methods.json`
+- `parity/generated/method-surface-diff.json`
+- `parity/method-surface-report.md`
+
 ## Windows GNU toolchain helper (SQLite feature)
 
 When using `x86_64-pc-windows-gnu` with `--features sqlite-state`, run through:
