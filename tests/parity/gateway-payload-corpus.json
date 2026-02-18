@@ -778,6 +778,830 @@
       }
     },
     {
+      "name": "config.set applies update using captured base hash",
+      "prelude": [
+        {
+          "id": "prelude-config-get-set",
+          "method": "config.get",
+          "params": {},
+          "captures": [
+            {
+              "path": "/hash",
+              "as": "config_hash"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "id": "req-config-set-parity",
+        "method": "config.set",
+        "params": {
+          "baseHash": "${config_hash}",
+          "raw": "{\"session\":{\"mainKey\":\"primary\"},\"talk\":{\"outputFormat\":\"pcm16\"}}"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/path",
+            "equals": "memory://config.json"
+          },
+          {
+            "path": "/config/session/mainKey",
+            "equals": "primary"
+          },
+          {
+            "path": "/hash",
+            "kind": "string",
+            "nonEmpty": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "config.patch merges payload using latest hash",
+      "prelude": [
+        {
+          "id": "prelude-config-get-patch",
+          "method": "config.get",
+          "params": {},
+          "captures": [
+            {
+              "path": "/hash",
+              "as": "config_hash_initial"
+            }
+          ]
+        },
+        {
+          "id": "prelude-config-set-patch",
+          "method": "config.set",
+          "params": {
+            "baseHash": "${config_hash_initial}",
+            "raw": "{\"session\":{\"mainKey\":\"primary\"}}"
+          },
+          "captures": [
+            {
+              "path": "/hash",
+              "as": "config_hash_after_set"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "id": "req-config-patch-parity",
+        "method": "config.patch",
+        "params": {
+          "baseHash": "${config_hash_after_set}",
+          "raw": "{\"talk\":{\"interruptOnSpeech\":false}}"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/config/talk/interruptOnSpeech",
+            "equals": false
+          },
+          {
+            "path": "/hash",
+            "kind": "string",
+            "nonEmpty": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "config.apply returns restart envelope",
+      "prelude": [
+        {
+          "id": "prelude-config-get-apply",
+          "method": "config.get",
+          "params": {},
+          "captures": [
+            {
+              "path": "/hash",
+              "as": "config_hash_apply"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "id": "req-config-apply-parity",
+        "method": "config.apply",
+        "params": {
+          "baseHash": "${config_hash_apply}",
+          "raw": "{\"ui\":{\"seamColor\":\"#111111\"}}",
+          "sessionKey": "main",
+          "note": "payload-corpus",
+          "restartDelayMs": 25
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/config/ui/seamColor",
+            "equals": "#111111"
+          },
+          {
+            "path": "/restart/requested",
+            "equals": true
+          },
+          {
+            "path": "/restart/sessionKey",
+            "equals": "main"
+          },
+          {
+            "path": "/restart/restartDelayMs",
+            "equals": 25
+          }
+        ]
+      }
+    },
+    {
+      "name": "config.schema returns schema metadata",
+      "request": {
+        "id": "req-config-schema-parity",
+        "method": "config.schema",
+        "params": {}
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/schema/type",
+            "equals": "object"
+          },
+          {
+            "path": "/version",
+            "equals": "rust-parity-1"
+          },
+          {
+            "path": "/generatedAt",
+            "kind": "string",
+            "nonEmpty": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "config.set rejects missing base hash",
+      "request": {
+        "id": "req-config-set-missing-hash-parity",
+        "method": "config.set",
+        "params": {
+          "raw": "{\"session\":{\"mainKey\":\"primary\"}}"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "base hash required"
+        }
+      }
+    },
+    {
+      "name": "logs.tail returns bounded line slice and cursor",
+      "prelude": [
+        {
+          "id": "prelude-system-event-logs-tail",
+          "method": "system-event",
+          "params": {
+            "text": "payload-corpus-log-line"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-logs-tail-parity",
+        "method": "logs.tail",
+        "params": {
+          "limit": 1,
+          "maxBytes": 2048
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/file",
+            "equals": "memory://gateway.log"
+          },
+          {
+            "path": "/cursor",
+            "kind": "number"
+          },
+          {
+            "path": "/lines",
+            "kind": "array",
+            "nonEmpty": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "cron.add returns delivery fields and id",
+      "request": {
+        "id": "req-cron-add-parity",
+        "method": "cron.add",
+        "params": {
+          "name": "Payload Parity Reminder",
+          "enabled": true,
+          "schedule": {
+            "kind": "every",
+            "everyMs": 60000
+          },
+          "sessionTarget": "isolated",
+          "wakeMode": "next-heartbeat",
+          "payload": {
+            "kind": "agentTurn",
+            "message": "run periodic check",
+            "deliver": true,
+            "channel": "telegram",
+            "to": "42",
+            "bestEffortDeliver": true
+          }
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/id",
+            "kind": "string",
+            "nonEmpty": true
+          },
+          {
+            "path": "/delivery/mode",
+            "equals": "announce"
+          },
+          {
+            "path": "/delivery/channel",
+            "equals": "telegram"
+          },
+          {
+            "path": "/payload/kind",
+            "equals": "agentTurn"
+          }
+        ]
+      }
+    },
+    {
+      "name": "cron.status reports store path and job count",
+      "prelude": [
+        {
+          "id": "prelude-cron-add-status",
+          "method": "cron.add",
+          "params": {
+            "name": "Payload Parity Status",
+            "enabled": true,
+            "schedule": {
+              "kind": "every",
+              "everyMs": 60000
+            },
+            "sessionTarget": "main",
+            "wakeMode": "next-heartbeat",
+            "payload": {
+              "kind": "systemEvent",
+              "text": "cron status parity"
+            }
+          }
+        }
+      ],
+      "request": {
+        "id": "req-cron-status-parity",
+        "method": "cron.status",
+        "params": {}
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/enabled",
+            "equals": true
+          },
+          {
+            "path": "/jobs",
+            "equals": 1
+          },
+          {
+            "path": "/storePath",
+            "equals": "memory://cron/jobs.json"
+          }
+        ]
+      }
+    },
+    {
+      "name": "cron.run due mode skips disabled job",
+      "prelude": [
+        {
+          "id": "prelude-cron-add-disabled-run",
+          "method": "cron.add",
+          "params": {
+            "name": "Payload Parity Disabled",
+            "enabled": false,
+            "schedule": {
+              "kind": "every",
+              "everyMs": 60000
+            },
+            "sessionTarget": "main",
+            "wakeMode": "next-heartbeat",
+            "payload": {
+              "kind": "systemEvent",
+              "text": "cron disabled parity"
+            }
+          },
+          "captures": [
+            {
+              "path": "/id",
+              "as": "cron_disabled_id"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "id": "req-cron-run-disabled-parity",
+        "method": "cron.run",
+        "params": {
+          "id": "${cron_disabled_id}",
+          "mode": "due"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/status",
+            "equals": "skipped"
+          }
+        ]
+      }
+    },
+    {
+      "name": "cron.run force mode returns finished action",
+      "prelude": [
+        {
+          "id": "prelude-cron-add-force-run",
+          "method": "cron.add",
+          "params": {
+            "name": "Payload Parity Force",
+            "enabled": true,
+            "schedule": {
+              "kind": "every",
+              "everyMs": 60000
+            },
+            "sessionTarget": "main",
+            "wakeMode": "next-heartbeat",
+            "payload": {
+              "kind": "systemEvent",
+              "text": "cron force parity"
+            }
+          },
+          "captures": [
+            {
+              "path": "/id",
+              "as": "cron_force_id"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "id": "req-cron-run-force-parity",
+        "method": "cron.run",
+        "params": {
+          "id": "${cron_force_id}",
+          "mode": "force"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/status",
+            "equals": "ok"
+          },
+          {
+            "path": "/action",
+            "equals": "finished"
+          }
+        ]
+      }
+    },
+    {
+      "name": "cron.runs returns run history entries",
+      "prelude": [
+        {
+          "id": "prelude-cron-add-runs",
+          "method": "cron.add",
+          "params": {
+            "name": "Payload Parity Runs",
+            "enabled": true,
+            "schedule": {
+              "kind": "every",
+              "everyMs": 60000
+            },
+            "sessionTarget": "main",
+            "wakeMode": "next-heartbeat",
+            "payload": {
+              "kind": "systemEvent",
+              "text": "cron runs parity"
+            }
+          },
+          "captures": [
+            {
+              "path": "/id",
+              "as": "cron_runs_id"
+            }
+          ]
+        },
+        {
+          "id": "prelude-cron-run-runs",
+          "method": "cron.run",
+          "params": {
+            "id": "${cron_runs_id}",
+            "mode": "force"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-cron-runs-parity",
+        "method": "cron.runs",
+        "params": {
+          "id": "${cron_runs_id}",
+          "limit": 10
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/entries",
+            "kind": "array",
+            "nonEmpty": true
+          },
+          {
+            "path": "/entries/0/jobId",
+            "kind": "string",
+            "nonEmpty": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "cron.remove returns removed true",
+      "prelude": [
+        {
+          "id": "prelude-cron-add-remove",
+          "method": "cron.add",
+          "params": {
+            "name": "Payload Parity Remove",
+            "enabled": true,
+            "schedule": {
+              "kind": "every",
+              "everyMs": 60000
+            },
+            "sessionTarget": "main",
+            "wakeMode": "next-heartbeat",
+            "payload": {
+              "kind": "systemEvent",
+              "text": "cron remove parity"
+            }
+          },
+          "captures": [
+            {
+              "path": "/id",
+              "as": "cron_remove_id"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "id": "req-cron-remove-parity",
+        "method": "cron.remove",
+        "params": {
+          "id": "${cron_remove_id}"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/removed",
+            "equals": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "exec.approvals.get returns redacted snapshot",
+      "request": {
+        "id": "req-exec-approvals-get-parity",
+        "method": "exec.approvals.get",
+        "params": {}
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/path",
+            "equals": "memory://exec-approvals.json"
+          },
+          {
+            "path": "/exists",
+            "equals": true
+          },
+          {
+            "path": "/file/version",
+            "equals": 1
+          },
+          {
+            "path": "/hash",
+            "kind": "string",
+            "nonEmpty": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "exec.approvals.set accepts current base hash",
+      "prelude": [
+        {
+          "id": "prelude-exec-approvals-get-set",
+          "method": "exec.approvals.get",
+          "params": {},
+          "captures": [
+            {
+              "path": "/hash",
+              "as": "exec_global_hash"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "id": "req-exec-approvals-set-parity",
+        "method": "exec.approvals.set",
+        "params": {
+          "baseHash": "${exec_global_hash}",
+          "file": {
+            "version": 1,
+            "defaults": {
+              "security": "allowlist",
+              "ask": "on-miss"
+            },
+            "agents": {
+              "main": {
+                "allowlist": [
+                  {
+                    "pattern": "git status"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/file/defaults/security",
+            "equals": "allowlist"
+          },
+          {
+            "path": "/file/agents/main/allowlist/0/pattern",
+            "equals": "git status"
+          },
+          {
+            "path": "/hash",
+            "kind": "string",
+            "nonEmpty": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "exec.approvals.node.get reports not connected details",
+      "request": {
+        "id": "req-exec-approvals-node-get-not-connected-parity",
+        "method": "exec.approvals.node.get",
+        "params": {
+          "nodeId": "node-exec-missing"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 503,
+          "messageContains": "node not connected"
+        },
+        "errorChecks": [
+          {
+            "path": "/details/code",
+            "equals": "NOT_CONNECTED"
+          }
+        ]
+      }
+    },
+    {
+      "name": "exec.approvals.node.set updates paired node snapshot",
+      "prelude": [
+        {
+          "id": "prelude-node-pair-request-exec-corpus",
+          "method": "node.pair.request",
+          "params": {
+            "nodeId": "node-exec-corpus"
+          },
+          "captures": [
+            {
+              "path": "/request/requestId",
+              "as": "node_pair_request_id"
+            }
+          ]
+        },
+        {
+          "id": "prelude-node-pair-approve-exec-corpus",
+          "method": "node.pair.approve",
+          "params": {
+            "requestId": "${node_pair_request_id}"
+          }
+        },
+        {
+          "id": "prelude-exec-node-get-corpus",
+          "method": "exec.approvals.node.get",
+          "params": {
+            "nodeId": "node-exec-corpus"
+          },
+          "captures": [
+            {
+              "path": "/hash",
+              "as": "node_exec_hash"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "id": "req-exec-node-set-corpus-parity",
+        "method": "exec.approvals.node.set",
+        "params": {
+          "nodeId": "node-exec-corpus",
+          "baseHash": "${node_exec_hash}",
+          "file": {
+            "version": 1,
+            "agents": {
+              "main": {
+                "allowlist": [
+                  {
+                    "pattern": "cargo test"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/path",
+            "equals": "memory://nodes/node-exec-corpus/exec-approvals.json"
+          },
+          {
+            "path": "/file/agents/main/allowlist/0/pattern",
+            "equals": "cargo test"
+          }
+        ]
+      }
+    },
+    {
+      "name": "exec.approval.request two phase returns accepted envelope",
+      "request": {
+        "id": "req-exec-approval-request-two-phase-parity",
+        "method": "exec.approval.request",
+        "params": {
+          "id": "approval-corpus-1",
+          "command": "git status",
+          "twoPhase": true,
+          "timeoutMs": 1000
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/status",
+            "equals": "accepted"
+          },
+          {
+            "path": "/id",
+            "equals": "approval-corpus-1"
+          },
+          {
+            "path": "/createdAtMs",
+            "kind": "number"
+          },
+          {
+            "path": "/expiresAtMs",
+            "kind": "number"
+          }
+        ]
+      }
+    },
+    {
+      "name": "exec.approval.waitDecision returns resolved decision",
+      "prelude": [
+        {
+          "id": "prelude-exec-approval-request-wait",
+          "method": "exec.approval.request",
+          "params": {
+            "id": "approval-corpus-wait",
+            "command": "ls",
+            "twoPhase": true
+          }
+        },
+        {
+          "id": "prelude-exec-approval-resolve-wait",
+          "method": "exec.approval.resolve",
+          "params": {
+            "id": "approval-corpus-wait",
+            "decision": "allow-once"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-exec-approval-wait-parity",
+        "method": "exec.approval.waitDecision",
+        "params": {
+          "id": "approval-corpus-wait"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/id",
+            "equals": "approval-corpus-wait"
+          },
+          {
+            "path": "/decision",
+            "equals": "allow-once"
+          }
+        ]
+      }
+    },
+    {
+      "name": "exec.approval.resolve rejects invalid decision",
+      "request": {
+        "id": "req-exec-approval-resolve-invalid-parity",
+        "method": "exec.approval.resolve",
+        "params": {
+          "id": "approval-corpus-invalid",
+          "decision": "approve"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "invalid decision"
+        }
+      }
+    },
+    {
+      "name": "exec.approval.waitDecision rejects unknown id",
+      "request": {
+        "id": "req-exec-approval-wait-unknown-parity",
+        "method": "exec.approval.waitDecision",
+        "params": {
+          "id": "approval-missing"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "approval expired or not found"
+        }
+      }
+    },
+    {
       "name": "wizard.start returns running confirm step payload",
       "request": {
         "id": "req-wizard-start-parity",

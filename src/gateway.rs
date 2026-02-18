@@ -12460,6 +12460,8 @@ fn next_wizard_session_id() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use serde::Deserialize;
     use serde_json::{json, Value};
 
@@ -12488,6 +12490,15 @@ mod tests {
         method: String,
         #[serde(default)]
         params: Value,
+        #[serde(default)]
+        captures: Vec<PayloadParityCapture>,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct PayloadParityCapture {
+        path: String,
+        #[serde(rename = "as")]
+        as_name: String,
     }
 
     #[derive(Debug, Clone, Deserialize)]
@@ -12662,6 +12673,37 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    fn capture_lookup_token(value: &str) -> Option<&str> {
+        value
+            .strip_prefix("${")
+            .and_then(|inner| inner.strip_suffix('}'))
+    }
+
+    fn resolve_payload_template(value: &Value, captures: &HashMap<String, Value>) -> Value {
+        match value {
+            Value::String(raw) => {
+                if let Some(key) = capture_lookup_token(raw) {
+                    if let Some(captured) = captures.get(key) {
+                        return captured.clone();
+                    }
+                }
+                Value::String(raw.clone())
+            }
+            Value::Array(items) => Value::Array(
+                items
+                    .iter()
+                    .map(|entry| resolve_payload_template(entry, captures))
+                    .collect::<Vec<_>>(),
+            ),
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .map(|(key, entry)| (key.clone(), resolve_payload_template(entry, captures)))
+                    .collect(),
+            ),
+            _ => value.clone(),
         }
     }
 
@@ -18715,28 +18757,58 @@ mod tests {
 
         for case in suite.cases {
             let dispatcher = RpcDispatcher::new();
+            let mut captures: HashMap<String, Value> = HashMap::new();
 
             for prelude in case.prelude {
+                let prelude_params = resolve_payload_template(&prelude.params, &captures);
                 let prelude_req = RpcRequestFrame {
                     id: prelude.id,
                     method: prelude.method,
-                    params: prelude.params,
+                    params: prelude_params,
                 };
-                if let RpcDispatchOutcome::Error { code, message, .. } =
-                    dispatcher.handle_request(&prelude_req).await
-                {
-                    panic!(
-                        "case {} prelude request {} failed code={} message={}",
-                        case.name, prelude_req.id, code, message
-                    );
+                let prelude_outcome = dispatcher.handle_request(&prelude_req).await;
+                let prelude_payload = match prelude_outcome {
+                    RpcDispatchOutcome::Handled(payload) => payload,
+                    RpcDispatchOutcome::Error {
+                        code,
+                        message,
+                        details,
+                    } => {
+                        panic!(
+                            "case {} prelude request {} failed code={} message={} details={}",
+                            case.name,
+                            prelude_req.id,
+                            code,
+                            message,
+                            details
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| "null".to_owned())
+                        );
+                    }
+                    RpcDispatchOutcome::NotHandled => {
+                        panic!(
+                            "case {} prelude request {} was not handled",
+                            case.name, prelude_req.id
+                        );
+                    }
+                };
+                for capture in prelude.captures {
+                    let Some(value) = prelude_payload.pointer(&capture.path).cloned() else {
+                        panic!(
+                            "case {} prelude request {} missing capture path {}",
+                            case.name, prelude_req.id, capture.path
+                        );
+                    };
+                    captures.insert(capture.as_name, value);
                 }
             }
 
             let event_count_before = dispatcher.node_runtime.event_count().await;
+            let request_params = resolve_payload_template(&case.request.params, &captures);
             let request = RpcRequestFrame {
                 id: case.request.id,
                 method: case.request.method,
-                params: case.request.params,
+                params: request_params,
             };
 
             let outcome = dispatcher.handle_request(&request).await;

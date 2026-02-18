@@ -19,7 +19,7 @@ gateway parity work.
 - Curated request/response/event fixtures are stored in `tests/parity/gateway-payload-corpus.json`.
 - Rust gateway test `dispatcher_payload_corpus_matches_upstream_fixtures` replays the corpus and checks JSON-pointer payload shape expectations.
 - Payload fixtures are anchored to upstream `../openclaw/src/gateway/server-methods/*.ts` handler behavior.
-- Current corpus coverage includes `chat.*`, `tts.*`, `voicewake.*`, `web.login.*`, `update.run`, `sessions.*` envelope/alias behavior, `browser.request` unavailable contract, and `wizard.*` lifecycle error/shape checks.
+- Current corpus coverage includes `chat.*`, `tts.*`, `voicewake.*`, `web.login.*`, `update.run`, `sessions.*` envelope/alias behavior, `browser.request` unavailable contract, `config.*`, `logs.tail`, `cron.*`, `exec.approvals.*`, `exec.approval.*`, and `wizard.*` lifecycle error/shape checks.
 
 ## Commands
 
