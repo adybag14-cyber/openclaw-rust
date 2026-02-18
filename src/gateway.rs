@@ -3583,6 +3583,7 @@ impl RpcDispatcher {
         };
         let label = normalize_optional_text(params.label, 64);
         let message_id = next_chat_inject_message_id();
+        let run_id = format!("inject-{message_id}");
         let rendered_message = if let Some(label) = label {
             format!("[{label}] {message}")
         } else {
@@ -3591,15 +3592,40 @@ impl RpcDispatcher {
         let _ = self
             .sessions
             .record_send(SessionSend {
-                session_key,
-                request_id: Some(format!("inject-{message_id}")),
-                message: Some(rendered_message),
+                session_key: session_key.clone(),
+                request_id: Some(run_id.clone()),
+                message: Some(rendered_message.clone()),
                 command: None,
                 source: "chat.inject".to_owned(),
                 channel: Some("webchat".to_owned()),
                 to: None,
                 account_id: None,
             })
+            .await;
+        let parent_id = self
+            .sessions
+            .history(Some(&session_key), Some(2))
+            .await
+            .get(1)
+            .and_then(|record| normalize_optional_text(record.request_id.clone(), 256));
+        let message_payload = json!({
+            "id": run_id,
+            "parentId": parent_id,
+            "role": "assistant",
+            "content": rendered_message
+        });
+        let chat_event_payload = json!({
+            "runId": message_payload["id"],
+            "sessionKey": session_key,
+            "seq": 1,
+            "state": "final",
+            "message": message_payload
+        });
+        let payload_json = serde_json::to_string(&chat_event_payload)
+            .ok()
+            .filter(|value| !value.is_empty());
+        self.node_runtime
+            .record_event("chat".to_owned(), payload_json)
             .await;
         RpcDispatchOutcome::Handled(json!({
             "ok": true,
@@ -6959,6 +6985,12 @@ impl NodeRuntimeRegistry {
         while guard.recent_events.len() > 1_024 {
             let _ = guard.recent_events.pop_front();
         }
+    }
+
+    #[cfg(test)]
+    async fn last_event(&self) -> Option<Value> {
+        let guard = self.state.lock().await;
+        guard.recent_events.back().cloned()
     }
 }
 
@@ -18046,6 +18078,43 @@ mod tests {
             }
             _ => panic!("expected chat.inject handled response"),
         }
+        let chat_event = dispatcher
+            .node_runtime
+            .last_event()
+            .await
+            .expect("chat event recorded");
+        assert_eq!(
+            chat_event
+                .pointer("/event")
+                .and_then(serde_json::Value::as_str),
+            Some("chat")
+        );
+        let payload_json = chat_event
+            .pointer("/payloadJSON")
+            .and_then(serde_json::Value::as_str)
+            .expect("chat payload json");
+        let payload_value: serde_json::Value =
+            serde_json::from_str(payload_json).expect("parse chat payload");
+        assert_eq!(
+            payload_value
+                .pointer("/state")
+                .and_then(serde_json::Value::as_str),
+            Some("final")
+        );
+        assert_eq!(
+            payload_value
+                .pointer("/sessionKey")
+                .and_then(serde_json::Value::as_str),
+            Some(expected_session_key.as_str())
+        );
+        assert_eq!(
+            payload_value
+                .pointer("/message/role")
+                .and_then(serde_json::Value::as_str),
+            Some("assistant")
+        );
+        assert!(payload_value.pointer("/message/id").is_some());
+        assert!(payload_value.pointer("/message/parentId").is_some());
 
         let history = RpcRequestFrame {
             id: "req-chat-history".to_owned(),
