@@ -2180,25 +2180,33 @@ impl RpcDispatcher {
                 accounts_payload.push(account);
             }
 
-            channels.insert(
-                id.clone(),
-                json!({
-                    "configured": default_snapshot.configured.unwrap_or(true),
-                    "enabled": default_snapshot.enabled.unwrap_or(true),
-                    "linked": default_snapshot.linked.unwrap_or(true),
-                    "running": default_snapshot.running.unwrap_or(false),
-                    "connected": default_snapshot.connected.unwrap_or(false),
-                    "supports": {
-                        "edit": capability.supports_edit,
-                        "delete": capability.supports_delete,
-                        "reactions": capability.supports_reactions,
-                        "threads": capability.supports_threads,
-                        "polls": capability.supports_polls,
-                        "media": capability.supports_media,
-                        "dmPairing": capability.default_dm_pairing
-                    }
-                }),
-            );
+            let mut channel_summary = json!({
+                "configured": default_snapshot.configured.unwrap_or(true),
+                "enabled": default_snapshot.enabled.unwrap_or(true),
+                "linked": default_snapshot.linked.unwrap_or(true),
+                "running": default_snapshot.running.unwrap_or(false),
+                "connected": default_snapshot.connected.unwrap_or(false),
+                "supports": {
+                    "edit": capability.supports_edit,
+                    "delete": capability.supports_delete,
+                    "reactions": capability.supports_reactions,
+                    "threads": capability.supports_threads,
+                    "polls": capability.supports_polls,
+                    "media": capability.supports_media,
+                    "dmPairing": capability.default_dm_pairing
+                }
+            });
+            if probe {
+                channel_summary["lastProbeAt"] = json!(now_ms());
+                channel_summary["probe"] = json!({
+                    "ok": true,
+                    "source": "rust-parity",
+                    "timeoutMs": timeout_ms
+                });
+            } else {
+                channel_summary["lastProbeAt"] = Value::Null;
+            }
+            channels.insert(id.clone(), channel_summary);
             channel_accounts.insert(id.clone(), Value::Array(accounts_payload));
             channel_default_account_id.insert(id, Value::String(default_account_id));
         }
@@ -2249,6 +2257,7 @@ impl RpcDispatcher {
             "accountId": account_id,
             "cleared": logged_out,
             "loggedOut": logged_out,
+            "envToken": false,
             "supported": true
         }))
     }
@@ -16732,6 +16741,19 @@ mod tests {
                     .pointer("/channelAccounts/discord/0/probe/ok")
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false));
+                assert!(
+                    payload
+                        .pointer("/channels/discord/lastProbeAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channels/discord/probe/ok")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
             }
             _ => panic!("expected channels.status handled"),
         }
@@ -16780,6 +16802,12 @@ mod tests {
                         .and_then(serde_json::Value::as_bool),
                     Some(false)
                 );
+                assert_eq!(
+                    payload
+                        .pointer("/envToken")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(false)
+                );
             }
             _ => panic!("expected channels.logout handled"),
         }
@@ -16798,6 +16826,27 @@ mod tests {
         };
         let out = dispatcher.handle_request(&status).await;
         assert!(matches!(out, RpcDispatchOutcome::Error { code: 400, .. }));
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_probe_false_sets_null_channel_last_probe_at() {
+        let dispatcher = RpcDispatcher::new();
+        let status = RpcRequestFrame {
+            id: "req-channels-status-probe-false".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert!(payload
+                    .pointer("/channels/discord/lastProbeAt")
+                    .is_some_and(|value| value.is_null()));
+                assert!(payload.pointer("/channels/discord/probe").is_none());
+            }
+            _ => panic!("expected channels.status handled"),
+        }
     }
 
     #[tokio::test]
