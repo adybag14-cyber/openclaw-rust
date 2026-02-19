@@ -7951,7 +7951,7 @@ impl ChannelRuntimeRegistry {
     }
 
     async fn accounts_for_channel(&self, channel: &str) -> Vec<(String, ChannelAccountRuntime)> {
-        let normalized_channel = normalize(channel);
+        let normalized_channel = canonicalize_runtime_channel_id(channel);
         let guard = self.state.lock().await;
         let Some(accounts) = guard.by_channel.get(&normalized_channel) else {
             return Vec::new();
@@ -7965,7 +7965,7 @@ impl ChannelRuntimeRegistry {
     }
 
     async fn default_account_for_channel(&self, channel: &str) -> Option<String> {
-        let normalized_channel = normalize(channel);
+        let normalized_channel = canonicalize_runtime_channel_id(channel);
         let guard = self.state.lock().await;
         guard
             .default_account_by_channel
@@ -8024,7 +8024,8 @@ impl ChannelRuntimeRegistry {
             if let Some(channels_value) = map.get("channels") {
                 if let Some(channels_map) = channels_value.as_object() {
                     for (channel_id, runtime_value) in channels_map {
-                        ingest_runtime_entry(&mut guard, channel_id, runtime_value, None);
+                        let canonical = canonicalize_runtime_channel_id(channel_id);
+                        ingest_runtime_entry(&mut guard, canonical.as_str(), runtime_value, None);
                     }
                 }
             }
@@ -8033,7 +8034,8 @@ impl ChannelRuntimeRegistry {
             {
                 if let Some(channel_accounts_map) = channel_accounts_value.as_object() {
                     for (channel_id, accounts_value) in channel_accounts_map {
-                        ingest_accounts_value(&mut guard, channel_id, accounts_value, None);
+                        let canonical = canonicalize_runtime_channel_id(channel_id);
+                        ingest_accounts_value(&mut guard, canonical.as_str(), accounts_value, None);
                     }
                 }
             }
@@ -8044,7 +8046,8 @@ impl ChannelRuntimeRegistry {
                 if let Some(default_account_map) = default_account_value.as_object() {
                     for (channel_id, account_id_value) in default_account_map {
                         if let Some(account_id) = account_id_value.as_str() {
-                            guard.set_default_account(channel_id, account_id);
+                            let canonical = canonicalize_runtime_channel_id(channel_id);
+                            guard.set_default_account(canonical.as_str(), account_id);
                         }
                     }
                 }
@@ -8073,7 +8076,7 @@ impl ChannelRuntimeRegistry {
 
 impl ChannelRuntimeState {
     fn account_mut(&mut self, channel: &str, account_id: &str) -> &mut ChannelAccountRuntime {
-        let channel_id = normalize(channel);
+        let channel_id = canonicalize_runtime_channel_id(channel);
         let account_id = normalize_account_id(account_id);
         self.by_channel
             .entry(channel_id)
@@ -8083,7 +8086,7 @@ impl ChannelRuntimeState {
     }
 
     fn set_default_account(&mut self, channel: &str, account_id: &str) {
-        let channel_id = normalize(channel);
+        let channel_id = canonicalize_runtime_channel_id(channel);
         let account_id = normalize_account_id(account_id);
         self.default_account_by_channel.insert(channel_id, account_id);
     }
@@ -8232,6 +8235,10 @@ fn ingest_accounts_value(
             ingest_runtime_entry(state, channel, accounts_value, account_hint);
         }
     }
+}
+
+fn canonicalize_runtime_channel_id(channel: &str) -> String {
+    normalize_channel_id(Some(channel)).unwrap_or_else(|| normalize(channel))
 }
 
 fn infer_channel_from_payload(payload: &Value) -> Option<String> {
@@ -17256,6 +17263,123 @@ mod tests {
                         .pointer("/mode")
                         .and_then(serde_json::Value::as_str),
                     Some("webhook")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_ingests_alias_channel_ids_in_runtime_maps() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channelAccounts": {
+                        "wa": {
+                            "ops": {
+                                "running": true,
+                                "connected": true,
+                                "mode": "webhook"
+                            }
+                        }
+                    },
+                    "channelDefaultAccountId": {
+                        "wa": "ops"
+                    }
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-runtime-alias-map-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/whatsapp")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channels/whatsapp/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/whatsapp/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/whatsapp/0/mode")
+                        .and_then(serde_json::Value::as_str),
+                    Some("webhook")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_ingests_snake_case_runtime_maps() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channel_accounts": {
+                        "signal-cli": {
+                            "ops": {
+                                "running": true,
+                                "connected": true
+                            }
+                        }
+                    },
+                    "channel_default_account_id": {
+                        "signal-cli": "ops"
+                    }
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-runtime-snake-map-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/signal")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channels/signal/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
                 );
             }
             _ => panic!("expected channels.status handled"),
