@@ -275,7 +275,7 @@ fn spawn_session_worker(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
 
     use anyhow::Result;
@@ -993,6 +993,164 @@ mod tests {
         let expected: Vec<usize> = (1..=per_session).collect();
         assert_eq!(seen_a, expected, "session a ordering drift");
         assert_eq!(seen_b, expected, "session b ordering drift");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reply_back_payload_preserves_group_and_direct_delivery_context() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let ws = accept_async(stream).await?;
+            let (mut write, mut read) = ws.split();
+
+            let _connect = read
+                .next()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("missing connect frame"))??;
+
+            write
+                .send(Message::Text(
+                    json!({
+                        "type": "event",
+                        "event": "agent",
+                        "payload": {
+                            "id": "req-replyback-group",
+                            "sessionKey": "agent:main:telegram:group:chat-42",
+                            "chatType": "group",
+                            "wasMentioned": true,
+                            "replyBack": true,
+                            "channel": "telegram",
+                            "to": "chat-42",
+                            "accountId": "acct-main",
+                            "prompt": "group hello"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .await?;
+
+            write
+                .send(Message::Text(
+                    json!({
+                        "type": "event",
+                        "event": "agent",
+                        "payload": {
+                            "id": "req-replyback-direct",
+                            "sessionKey": "agent:main:telegram:dm:+15551234567",
+                            "chatType": "direct",
+                            "replyBack": true,
+                            "channel": "telegram",
+                            "to": "+15551234567",
+                            "accountId": "acct-main",
+                            "prompt": "direct hello"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .await?;
+
+            let mut decisions: HashMap<String, Value> = HashMap::new();
+            while decisions.len() < 2 {
+                let decision = timeout(Duration::from_secs(3), read.next())
+                    .await
+                    .map_err(|_| anyhow::anyhow!("timed out waiting for decision"))?
+                    .ok_or_else(|| anyhow::anyhow!("decision stream ended"))??;
+                let decision_json: Value = serde_json::from_str(decision.to_text()?)?;
+                let request_id = decision_json
+                    .pointer("/payload/requestId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("missing payload.requestId"))?
+                    .to_owned();
+                decisions.insert(request_id, decision_json);
+            }
+
+            let group = decisions
+                .get("req-replyback-group")
+                .ok_or_else(|| anyhow::anyhow!("missing group decision"))?;
+            assert_eq!(
+                group.pointer("/payload/replyBack").and_then(Value::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                group
+                    .pointer("/payload/sessionKind")
+                    .and_then(Value::as_str),
+                Some("group")
+            );
+            assert_eq!(
+                group
+                    .pointer("/payload/deliveryContext/channel")
+                    .and_then(Value::as_str),
+                Some("telegram")
+            );
+            assert_eq!(
+                group
+                    .pointer("/payload/deliveryContext/to")
+                    .and_then(Value::as_str),
+                Some("chat-42")
+            );
+            assert_eq!(
+                group
+                    .pointer("/payload/deliveryContext/accountId")
+                    .and_then(Value::as_str),
+                Some("acct-main")
+            );
+
+            let direct = decisions
+                .get("req-replyback-direct")
+                .ok_or_else(|| anyhow::anyhow!("missing direct decision"))?;
+            assert_eq!(
+                direct
+                    .pointer("/payload/replyBack")
+                    .and_then(Value::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                direct
+                    .pointer("/payload/sessionKind")
+                    .and_then(Value::as_str),
+                Some("direct")
+            );
+            assert_eq!(
+                direct
+                    .pointer("/payload/deliveryContext/channel")
+                    .and_then(Value::as_str),
+                Some("telegram")
+            );
+            assert_eq!(
+                direct
+                    .pointer("/payload/deliveryContext/to")
+                    .and_then(Value::as_str),
+                Some("+15551234567")
+            );
+            assert_eq!(
+                direct
+                    .pointer("/payload/deliveryContext/accountId")
+                    .and_then(Value::as_str),
+                Some("acct-main")
+            );
+
+            write.send(Message::Close(None)).await?;
+            Ok::<(), anyhow::Error>(())
+        });
+
+        let bridge = GatewayBridge::new(
+            GatewayConfig {
+                url: format!("ws://{addr}"),
+                token: None,
+                ..Config::default().gateway
+            },
+            "security.decision".to_owned(),
+            16,
+            SessionQueueMode::Followup,
+            GroupActivationMode::Always,
+        );
+        let evaluator: Arc<dyn ActionEvaluator> = Arc::new(StubEvaluator);
+        bridge.run_once(evaluator).await?;
+        server.await??;
         Ok(())
     }
 

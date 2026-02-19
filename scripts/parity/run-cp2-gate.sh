@@ -6,6 +6,7 @@ default_tests=(
   "bridge::tests::followup_queue_pressure_preserves_order_without_duplicates"
   "bridge::tests::session_routing_corpus_matches_expected_delivery_order"
   "bridge::tests::multi_session_soak_preserves_per_session_fifo_without_duplicates"
+  "bridge::tests::reply_back_payload_preserves_group_and_direct_delivery_context"
   "gateway::tests::dispatcher_list_supports_label_spawn_filters_and_message_hints"
   "gateway::tests::dispatcher_resolve_supports_label_agent_and_spawn_filters"
 )
