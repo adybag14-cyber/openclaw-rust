@@ -15,7 +15,7 @@ Repo: `adybag14-cyber/openclaw-rust`
 - Rust gateway method surface: **101** supported RPC methods
   - Source: `src/gateway.rs` (`SUPPORTED_RPC_METHODS`)
 - Current validation depth:
-  - 137 tests pass with `sqlite-state`
+  - 138 tests pass with `sqlite-state`
   - Full matrix passing (`fmt`, `test`, `clippy`, `release`, `sqlite-state` variants)
 
 ## Definition of Done (100%)
@@ -231,5 +231,5 @@ Use this checklist for active tracking:
 ## Immediate Next Actions (Start Here)
 
 1. Expand CP2 session-routing corpus with multi-agent channel/account/peer route cases against upstream traces.
-2. Build longer multi-session soak coverage (parallel session churn) to stress duplicate/out-of-order invariants beyond unit scope.
-3. Extend CP2 replay harness assertions to include reply-back behavior equivalence (group vs direct routing).
+2. Extend CP2 replay harness assertions to include reply-back behavior equivalence (group vs direct routing).
+3. Publish CP2 soak metrics/artifacts in CI (decision ordering + duplicate counters) for trend tracking.

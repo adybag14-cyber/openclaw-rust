@@ -887,6 +887,116 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn multi_session_soak_preserves_per_session_fifo_without_duplicates() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let per_session = 12usize;
+        let expected_total = per_session * 2;
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let ws = accept_async(stream).await?;
+            let (mut write, mut read) = ws.split();
+
+            let _connect = read
+                .next()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("missing connect frame"))??;
+
+            for idx in 1..=per_session {
+                write
+                    .send(Message::Text(
+                        json!({
+                            "type": "event",
+                            "event": "agent",
+                            "payload": {
+                                "id": format!("a-{idx:02}"),
+                                "sessionKey": "agent:main:discord:group:g1",
+                                "chatType": "group",
+                                "wasMentioned": true,
+                                "prompt": format!("alpha-{idx}")
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .await?;
+                write
+                    .send(Message::Text(
+                        json!({
+                            "type": "event",
+                            "event": "agent",
+                            "payload": {
+                                "id": format!("b-{idx:02}"),
+                                "sessionKey": "agent:main:slack:group:g2",
+                                "chatType": "group",
+                                "wasMentioned": true,
+                                "prompt": format!("beta-{idx}")
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .await?;
+            }
+
+            let mut seen = Vec::with_capacity(expected_total);
+            while seen.len() < expected_total {
+                let decision = timeout(Duration::from_secs(8), read.next())
+                    .await
+                    .map_err(|_| anyhow::anyhow!("timed out waiting for decision"))?
+                    .ok_or_else(|| anyhow::anyhow!("decision stream ended"))??;
+                let decision_json: Value = serde_json::from_str(decision.to_text()?)?;
+                if let Some(req_id) = decision_json
+                    .pointer("/payload/requestId")
+                    .and_then(Value::as_str)
+                {
+                    seen.push(req_id.to_owned());
+                }
+            }
+
+            write.send(Message::Close(None)).await?;
+            Ok::<Vec<String>, anyhow::Error>(seen)
+        });
+
+        let bridge = GatewayBridge::new(
+            GatewayConfig {
+                url: format!("ws://{addr}"),
+                token: None,
+                ..Config::default().gateway
+            },
+            "security.decision".to_owned(),
+            128,
+            SessionQueueMode::Followup,
+            GroupActivationMode::Always,
+        );
+        let evaluator: Arc<dyn ActionEvaluator> = Arc::new(SlowEvaluator);
+        bridge.run_once(evaluator).await?;
+
+        let seen = server.await??;
+        let unique: HashSet<String> = seen.iter().cloned().collect();
+        assert_eq!(unique.len(), seen.len(), "duplicate decisions detected");
+        assert_eq!(seen.len(), expected_total);
+
+        let mut seen_a = Vec::new();
+        let mut seen_b = Vec::new();
+        for request_id in seen {
+            let (prefix, seq) = request_id
+                .split_once('-')
+                .ok_or_else(|| anyhow::anyhow!("invalid request id format: {request_id}"))?;
+            let seq_num: usize = seq.parse()?;
+            match prefix {
+                "a" => seen_a.push(seq_num),
+                "b" => seen_b.push(seq_num),
+                other => anyhow::bail!("unexpected request prefix: {other}"),
+            }
+        }
+
+        let expected: Vec<usize> = (1..=per_session).collect();
+        assert_eq!(seen_a, expected, "session a ordering drift");
+        assert_eq!(seen_b, expected, "session b ordering drift");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn rpc_sessions_patch_returns_response_frame() -> Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
