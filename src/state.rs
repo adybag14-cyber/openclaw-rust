@@ -407,6 +407,8 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "sqlite-state")]
+    use std::path::Path;
     use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -459,6 +461,47 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "sqlite-state")]
+    fn sample_request_for(
+        request_id: &str,
+        session_id: &str,
+        source: &str,
+        channel: Option<&str>,
+    ) -> ActionRequest {
+        ActionRequest {
+            id: request_id.to_owned(),
+            source: source.to_owned(),
+            session_id: Some(session_id.to_owned()),
+            prompt: Some("hello".to_owned()),
+            command: None,
+            tool_name: Some("browser".to_owned()),
+            channel: channel.map(ToOwned::to_owned),
+            url: None,
+            file_path: None,
+            raw: serde_json::json!({}),
+        }
+    }
+
+    #[cfg(feature = "sqlite-state")]
+    fn decision_for(action: DecisionAction, risk_score: u8) -> Decision {
+        Decision {
+            action,
+            risk_score,
+            reasons: vec!["fixture".to_owned()],
+            tags: vec!["cp2".to_owned()],
+            source: "openclaw-agent-rs".to_owned(),
+        }
+    }
+
+    #[cfg(feature = "sqlite-state")]
+    async fn cleanup_sqlite_artifacts(path: &Path) {
+        let _ = tokio::fs::remove_file(path).await;
+        let wal = std::path::PathBuf::from(format!("{}-wal", path.display()));
+        let shm = std::path::PathBuf::from(format!("{}-shm", path.display()));
+        let _ = tokio::fs::remove_file(wal).await;
+        let _ = tokio::fs::remove_file(shm).await;
+    }
+
     #[tokio::test]
     async fn records_session_counters_json() {
         let path = temp_state_path("record-json");
@@ -489,7 +532,111 @@ mod tests {
         assert_eq!(state.review_count, 1);
         assert_eq!(state.last_action, DecisionAction::Review);
         assert_eq!(state.last_channel.as_deref(), Some("discord"));
-        let _ = tokio::fs::remove_file(path).await;
+        cleanup_sqlite_artifacts(&path).await;
+    }
+
+    #[cfg(feature = "sqlite-state")]
+    #[tokio::test]
+    async fn sqlite_state_survives_restart_and_continues_counters() {
+        let path = temp_sqlite_state_path("restart-sqlite");
+        let session_id = "s-restart";
+
+        {
+            let store = SessionStateStore::new(path.clone()).await.expect("store");
+            store
+                .record(
+                    &sample_request_for("req-r1", session_id, "agent", Some("discord")),
+                    &decision_for(DecisionAction::Review, 44),
+                )
+                .await
+                .expect("record review");
+            store
+                .record(
+                    &sample_request_for("req-r2", session_id, "worker", Some("slack")),
+                    &decision_for(DecisionAction::Allow, 8),
+                )
+                .await
+                .expect("record allow");
+
+            let first = store.get(session_id).await.expect("first state");
+            assert_eq!(first.total_requests, 2);
+            assert_eq!(first.review_count, 1);
+            assert_eq!(first.allowed_count, 1);
+            assert_eq!(first.blocked_count, 0);
+            assert_eq!(first.last_action, DecisionAction::Allow);
+            assert_eq!(first.last_source, "worker");
+            assert_eq!(first.last_channel.as_deref(), Some("slack"));
+        }
+
+        let reopened = SessionStateStore::new(path.clone())
+            .await
+            .expect("reopen store");
+        let after_restart = reopened.get(session_id).await.expect("state after restart");
+        assert_eq!(after_restart.total_requests, 2);
+        assert_eq!(after_restart.review_count, 1);
+        assert_eq!(after_restart.allowed_count, 1);
+        assert_eq!(after_restart.blocked_count, 0);
+        assert_eq!(after_restart.last_action, DecisionAction::Allow);
+        assert_eq!(after_restart.last_source, "worker");
+        assert_eq!(after_restart.last_channel.as_deref(), Some("slack"));
+
+        reopened
+            .record(
+                &sample_request_for("req-r3", session_id, "agent", Some("discord")),
+                &decision_for(DecisionAction::Block, 92),
+            )
+            .await
+            .expect("record block");
+        let final_state = reopened.get(session_id).await.expect("final state");
+        assert_eq!(final_state.total_requests, 3);
+        assert_eq!(final_state.review_count, 1);
+        assert_eq!(final_state.allowed_count, 1);
+        assert_eq!(final_state.blocked_count, 1);
+        assert_eq!(final_state.last_action, DecisionAction::Block);
+        assert_eq!(final_state.last_source, "agent");
+        assert_eq!(final_state.last_channel.as_deref(), Some("discord"));
+
+        cleanup_sqlite_artifacts(&path).await;
+    }
+
+    #[cfg(feature = "sqlite-state")]
+    #[tokio::test]
+    async fn sqlite_state_recovers_multiple_sessions_after_restart() {
+        let path = temp_sqlite_state_path("restart-multi");
+
+        {
+            let store = SessionStateStore::new(path.clone()).await.expect("store");
+            store
+                .record(
+                    &sample_request_for("req-a1", "s-a", "agent", Some("discord")),
+                    &decision_for(DecisionAction::Allow, 5),
+                )
+                .await
+                .expect("record a1");
+            store
+                .record(
+                    &sample_request_for("req-b1", "s-b", "worker", Some("telegram")),
+                    &decision_for(DecisionAction::Review, 45),
+                )
+                .await
+                .expect("record b1");
+        }
+
+        let reopened = SessionStateStore::new(path.clone())
+            .await
+            .expect("reopen store");
+        let a = reopened.get("s-a").await.expect("state a");
+        let b = reopened.get("s-b").await.expect("state b");
+        assert_eq!(a.total_requests, 1);
+        assert_eq!(a.allowed_count, 1);
+        assert_eq!(a.review_count, 0);
+        assert_eq!(a.last_channel.as_deref(), Some("discord"));
+        assert_eq!(b.total_requests, 1);
+        assert_eq!(b.allowed_count, 0);
+        assert_eq!(b.review_count, 1);
+        assert_eq!(b.last_channel.as_deref(), Some("telegram"));
+
+        cleanup_sqlite_artifacts(&path).await;
     }
 
     #[tokio::test]
