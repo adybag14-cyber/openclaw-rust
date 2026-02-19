@@ -1,6 +1,8 @@
 use std::time::Duration;
 
 use tokio::time::sleep;
+#[cfg(target_os = "linux")]
+use tracing::info;
 
 pub async fn run_sampler(interval_secs: u64) {
     let interval = Duration::from_secs(interval_secs.max(1));
