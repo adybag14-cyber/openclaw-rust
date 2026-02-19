@@ -3608,6 +3608,9 @@ impl RpcDispatcher {
                 account_id: None,
             })
             .await;
+        self.channel_runtime
+            .mark_outbound("webchat", "default", now_ms())
+            .await;
 
         RpcDispatchOutcome::Handled(json!({
             "runId": run_id,
@@ -3693,6 +3696,9 @@ impl RpcDispatcher {
                 to: None,
                 account_id: None,
             })
+            .await;
+        self.channel_runtime
+            .mark_outbound("webchat", "default", now_ms())
             .await;
         let parent_id = self
             .sessions
@@ -7956,10 +7962,14 @@ impl ChannelRuntimeRegistry {
             .map(|capability| capability.name)
             .collect::<Vec<_>>();
         let inferred_channel = infer_channel_from_event(event, &known_channels);
+        let inferred_payload_channel = infer_channel_from_payload(payload);
         let mut guard = self.state.lock().await;
 
         if event.ends_with(".message") {
-            if let Some(channel) = inferred_channel.as_deref() {
+            if let Some(channel) = inferred_channel
+                .as_deref()
+                .or(inferred_payload_channel.as_deref())
+            {
                 let account_id = payload
                     .as_object()
                     .and_then(|map| map.get("accountId").or_else(|| map.get("account_id")))
@@ -7992,7 +8002,7 @@ impl ChannelRuntimeRegistry {
         }
 
         if payload.as_object().is_some() {
-            if let Some(channel) = infer_channel_from_payload(payload).or(inferred_channel) {
+            if let Some(channel) = inferred_payload_channel.or(inferred_channel) {
                 ingest_runtime_entry(&mut guard, channel.as_str(), payload, None);
             }
         }
@@ -16950,6 +16960,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_channels_status_tracks_inbound_when_channel_is_only_in_payload() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.message",
+                "payload": {
+                    "channel": "signal",
+                    "accountId": "ops"
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-payload-channel-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/signal")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/running")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/lastInboundAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_chat_send_updates_webchat_runtime_outbound_activity() {
+        let dispatcher = RpcDispatcher::new();
+        let send = RpcRequestFrame {
+            id: "req-chat-runtime-send".to_owned(),
+            method: "chat.send".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": "main",
+                "message": "webchat runtime outbound",
+                "idempotencyKey": "chat-runtime-outbound"
+            }),
+        };
+        let out = dispatcher.handle_request(&send).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        let status = RpcRequestFrame {
+            id: "req-chat-runtime-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/webchat/0/lastOutboundAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
     async fn dispatcher_config_methods_enforce_base_hash_and_apply_updates() {
         let dispatcher = RpcDispatcher::new();
 
@@ -19810,6 +19915,26 @@ mod tests {
                 assert_eq!(texts, vec!["batch-a", "batch-b", "[ops] operator note"]);
             }
             _ => panic!("expected chat.history handled response"),
+        }
+
+        let channels_status = RpcRequestFrame {
+            id: "req-chat-channels-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&channels_status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/webchat/0/lastOutboundAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+            }
+            _ => panic!("expected channels.status handled response"),
         }
     }
 

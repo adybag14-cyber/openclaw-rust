@@ -25,6 +25,8 @@ tests=(
   "gateway::tests::dispatcher_channels_status_reflects_runtime_event_snapshots"
   "gateway::tests::dispatcher_channels_logout_marks_runtime_offline"
   "gateway::tests::dispatcher_channels_status_ingests_channel_accounts_runtime_map"
+  "gateway::tests::dispatcher_channels_status_tracks_inbound_when_channel_is_only_in_payload"
+  "gateway::tests::dispatcher_chat_send_updates_webchat_runtime_outbound_activity"
 )
 
 echo -e "test\tduration_ms\tstatus" > "${results_file}"
