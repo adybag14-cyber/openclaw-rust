@@ -7981,7 +7981,14 @@ impl ChannelRuntimeRegistry {
 
     async fn mark_logout(&self, channel: &str, account_id: &str, ts: u64) -> bool {
         let mut guard = self.state.lock().await;
-        let account = guard.account_mut(channel, account_id);
+        let channel_id = canonicalize_runtime_channel_id(channel);
+        let account_id = normalize_account_id(account_id);
+        let Some(accounts) = guard.by_channel.get_mut(&channel_id) else {
+            return false;
+        };
+        let Some(account) = accounts.get_mut(&account_id) else {
+            return false;
+        };
         let was_active = account.running.unwrap_or(false) || account.connected.unwrap_or(false);
         account.connected = Some(false);
         account.running = Some(false);
@@ -8102,6 +8109,13 @@ fn ingest_runtime_entry(
         return;
     };
     let has_inline_runtime_fields = runtime_map_has_inline_runtime_fields(runtime_map);
+    if let Some(default_account_id) = runtime_map
+        .get("defaultAccountId")
+        .or_else(|| runtime_map.get("default_account_id"))
+        .and_then(Value::as_str)
+    {
+        state.set_default_account(channel, default_account_id);
+    }
     if let Some(accounts_value) = runtime_map.get("accounts") {
         ingest_accounts_value(state, channel, accounts_value, account_hint);
         if !has_inline_runtime_fields {
@@ -17069,6 +17083,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_channels_logout_without_runtime_account_does_not_create_account() {
+        let dispatcher = RpcDispatcher::new();
+        let logout = RpcRequestFrame {
+            id: "req-channels-logout-missing-runtime".to_owned(),
+            method: "channels.logout".to_owned(),
+            params: serde_json::json!({
+                "channel": "telegram",
+                "accountId": "ops"
+            }),
+        };
+        match dispatcher.handle_request(&logout).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/supported")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/loggedOut")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(false)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/cleared")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(false)
+                );
+            }
+            _ => panic!("expected channels.logout handled"),
+        }
+
+        let status = RpcRequestFrame {
+            id: "req-channels-logout-missing-runtime-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/telegram")
+                        .and_then(serde_json::Value::as_str),
+                    Some("default")
+                );
+                let telegram_accounts = payload
+                    .pointer("/channelAccounts/telegram")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                assert!(!telegram_accounts.iter().any(|entry| {
+                    entry
+                        .pointer("/accountId")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|value| value == "ops")
+                }));
+                assert!(payload
+                    .pointer("/channelAccounts/telegram/0/lastStopAt")
+                    .is_none());
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
     async fn dispatcher_channels_status_ingests_channel_accounts_runtime_map() {
         let dispatcher = RpcDispatcher::new();
         dispatcher
@@ -17263,6 +17346,139 @@ mod tests {
                         .pointer("/mode")
                         .and_then(serde_json::Value::as_str),
                     Some("webhook")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_ingests_nested_default_account_id_from_channels_map() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channels": {
+                        "discord": {
+                            "defaultAccountId": "ops",
+                            "accounts": {
+                                "default": {
+                                    "running": true,
+                                    "connected": false,
+                                    "mode": "polling"
+                                },
+                                "ops": {
+                                    "running": true,
+                                    "connected": true,
+                                    "mode": "webhook"
+                                }
+                            }
+                        }
+                    }
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-runtime-nested-default-hint-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/discord")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channels/discord/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channels/discord/running")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("default")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/1/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_ingests_nested_snake_case_default_account_id_from_channels_map(
+    ) {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channels": {
+                        "signal-cli": {
+                            "default_account_id": "ops",
+                            "accounts": {
+                                "default": {
+                                    "running": true,
+                                    "connected": false
+                                },
+                                "ops": {
+                                    "running": true,
+                                    "connected": true
+                                }
+                            }
+                        }
+                    }
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-runtime-nested-snake-default-hint-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/signal")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channels/signal/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channels/signal/running")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
                 );
             }
             _ => panic!("expected channels.status handled"),
