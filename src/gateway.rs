@@ -12,7 +12,7 @@ use url::Url;
 
 use crate::channels::{
     chunk_text_with_mode, default_chunk_mode, default_text_chunk_limit, ChannelCapabilities,
-    DriverRegistry,
+    DriverRegistry, normalize_channel_id,
 };
 use crate::config::{GroupActivationMode, SessionQueueMode};
 use crate::protocol::{MethodFamily, RpcRequestFrame};
@@ -2221,10 +2221,11 @@ impl RpcDispatcher {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
         };
-        let Some(channel) = normalize_optional_text(params.channel, 64).map(|v| normalize(&v))
-        else {
+        let Some(raw_channel) = normalize_optional_text(params.channel, 64) else {
             return RpcDispatchOutcome::bad_request("invalid channels.logout channel");
         };
+        let channel = normalize_channel_id(Some(raw_channel.as_str()))
+            .unwrap_or_else(|| normalize(&raw_channel));
         let supported = self
             .channel_capabilities
             .iter()
@@ -8226,23 +8227,25 @@ fn ingest_accounts_value(
 
 fn infer_channel_from_payload(payload: &Value) -> Option<String> {
     let map = payload.as_object()?;
-    map.get("channel")
+    let raw = map
+        .get("channel")
         .or_else(|| map.get("channelId"))
         .or_else(|| map.get("channel_id"))
         .or_else(|| map.get("provider"))
         .or_else(|| map.get("platform"))
-        .and_then(Value::as_str)
-        .map(normalize)
+        .and_then(Value::as_str)?;
+    normalize_channel_id(Some(raw)).or_else(|| Some(normalize(raw)))
 }
 
 fn infer_channel_from_event(event: &str, known_channels: &[&str]) -> Option<String> {
     let normalized_event = normalize(event);
     for segment in normalized_event.split('.') {
+        let candidate = normalize_channel_id(Some(segment)).unwrap_or_else(|| segment.to_owned());
         if known_channels
             .iter()
-            .any(|channel| channel.eq_ignore_ascii_case(segment))
+            .any(|channel| channel.eq_ignore_ascii_case(&candidate))
         {
-            return Some(segment.to_owned());
+            return Some(candidate);
         }
     }
     None
@@ -16813,6 +16816,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_channels_logout_accepts_channel_alias() {
+        let dispatcher = RpcDispatcher::new();
+        let logout = RpcRequestFrame {
+            id: "req-channels-logout-alias".to_owned(),
+            method: "channels.logout".to_owned(),
+            params: serde_json::json!({
+                "channel": "tg"
+            }),
+        };
+        match dispatcher.handle_request(&logout).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channel")
+                        .and_then(serde_json::Value::as_str),
+                    Some("telegram")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/supported")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected channels.logout handled"),
+        }
+    }
+
+    #[tokio::test]
     async fn dispatcher_channels_status_reflects_runtime_event_snapshots() {
         let dispatcher = RpcDispatcher::new();
         dispatcher
@@ -17041,6 +17073,52 @@ mod tests {
                         .pointer("/channelAccounts/discord/0/lastOutboundAt")
                         .and_then(serde_json::Value::as_u64),
                     Some(1234)
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_tracks_payload_channel_alias_runtime() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.message",
+                "payload": {
+                    "channel": "wa",
+                    "accountId": "ops"
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-payload-alias-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/whatsapp")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/whatsapp/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/whatsapp/0/running")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
                 );
             }
             _ => panic!("expected channels.status handled"),
