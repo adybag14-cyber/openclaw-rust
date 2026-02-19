@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::channels::normalize_chat_type;
 use crate::session_key::{parse_session_key, SessionKind};
 use crate::types::{ActionRequest, Decision};
 
@@ -153,7 +154,9 @@ pub fn decision_event_frame(
                 .session_id
                 .as_deref()
                 .map(|key| parse_session_key(key).kind),
-            chat_type: raw_string(&request.raw, &["chatType", "chat_type"]),
+            chat_type: raw_string(&request.raw, &["chatType", "chat_type"])
+                .and_then(|value| normalize_chat_type(Some(value.as_str())))
+                .map(|kind| kind.as_str().to_owned()),
             was_mentioned: raw_bool(&request.raw, &["wasMentioned", "WasMentioned"]),
             reply_back: raw_bool(&request.raw, &["replyBack", "reply_back"]),
             delivery_context: extract_delivery_context(

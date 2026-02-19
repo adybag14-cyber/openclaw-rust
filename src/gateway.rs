@@ -10,7 +10,10 @@ use tokio::sync::{oneshot, Mutex};
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
-use crate::channels::{ChannelCapabilities, DriverRegistry};
+use crate::channels::{
+    chunk_text_with_mode, default_chunk_mode, default_text_chunk_limit, ChannelCapabilities,
+    DriverRegistry,
+};
 use crate::config::{GroupActivationMode, SessionQueueMode};
 use crate::protocol::{MethodFamily, RpcRequestFrame};
 use crate::session_key::{parse_session_key, SessionKind};
@@ -3305,6 +3308,12 @@ impl RpcDispatcher {
             "messageId": message_id,
             "channel": channel
         });
+        if let Some(text) = message.as_deref() {
+            let limit = default_text_chunk_limit(Some(channel.as_str()));
+            let mode = default_chunk_mode(Some(channel.as_str()));
+            let chunk_count = chunk_text_with_mode(text, limit, mode).len();
+            payload["chunkCount"] = json!(chunk_count.max(1));
+        }
         if let Some(account_id) = account_id {
             payload["accountId"] = json!(account_id);
         }
@@ -4407,6 +4416,11 @@ impl RpcDispatcher {
                 account_id: normalize_optional_text(params.account_id, 128),
             })
             .await;
+        let chunk_count = recorded.text.as_deref().map(|text| {
+            let limit = default_text_chunk_limit(recorded.channel.as_deref());
+            let mode = default_chunk_mode(recorded.channel.as_deref());
+            chunk_text_with_mode(text, limit, mode).len().max(1)
+        });
         if let Some(run_id) = recorded
             .request_id
             .clone()
@@ -4414,11 +4428,15 @@ impl RpcDispatcher {
         {
             self.agent_runs.complete_ok(run_id).await;
         }
-        RpcDispatchOutcome::Handled(json!({
+        let mut payload = json!({
             "accepted": true,
             "session": session,
             "recorded": recorded
-        }))
+        });
+        if let Some(chunk_count) = chunk_count {
+            payload["chunkCount"] = json!(chunk_count);
+        }
+        RpcDispatchOutcome::Handled(payload)
     }
 
     async fn handle_session_status(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
@@ -11909,6 +11927,8 @@ fn channel_label(id: &str) -> String {
         "telegram" => "Telegram".to_owned(),
         "slack" => "Slack".to_owned(),
         "discord" => "Discord".to_owned(),
+        "signal" => "Signal".to_owned(),
+        "webchat" => "WebChat".to_owned(),
         other => {
             let mut chars = other.chars();
             let Some(first) = chars.next() else {

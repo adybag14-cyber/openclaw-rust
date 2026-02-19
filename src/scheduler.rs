@@ -3,6 +3,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
+use crate::channels::{
+    normalize_chat_type, resolve_mention_gating_with_bypass, ChatType, MentionGateWithBypassParams,
+};
 use crate::config::{GroupActivationMode, SessionQueueMode};
 use crate::session_key::{parse_session_key, SessionKind};
 use crate::types::ActionRequest;
@@ -158,7 +161,21 @@ impl SessionScheduler {
         if self.config.group_activation_mode == GroupActivationMode::Always {
             return false;
         }
-        is_group_context(request, session_id) && !was_mentioned(request)
+        if !is_group_context(request, session_id) {
+            return false;
+        }
+        let gate = resolve_mention_gating_with_bypass(MentionGateWithBypassParams {
+            is_group: true,
+            require_mention: true,
+            can_detect_mention: can_detect_mention(request),
+            was_mentioned: was_mentioned(request),
+            implicit_mention: false,
+            has_any_mention: has_any_mention(request),
+            allow_text_commands: true,
+            has_control_command: has_control_command(request),
+            command_authorized: true,
+        });
+        gate.should_skip
     }
 }
 
@@ -193,12 +210,17 @@ fn is_group_context(request: &ActionRequest, session_id: &str) -> bool {
     if matches!(parsed.kind, SessionKind::Group | SessionKind::Channel) {
         return true;
     }
-    raw_string(
+    let chat_type = raw_string(
         &request.raw,
         &["chatType", "chat_type", "chat", "roomType", "room_type"],
-    )
-    .map(|v| matches!(v.as_str(), "group" | "channel" | "room"))
-    .unwrap_or(false)
+    );
+    if let Some(value) = chat_type {
+        return matches!(
+            normalize_chat_type(Some(value.as_str())),
+            Some(ChatType::Group | ChatType::Channel)
+        ) || value == "room";
+    }
+    false
 }
 
 fn was_mentioned(request: &ActionRequest) -> bool {
@@ -215,6 +237,51 @@ fn was_mentioned(request: &ActionRequest) -> bool {
     .unwrap_or(false)
 }
 
+fn can_detect_mention(request: &ActionRequest) -> bool {
+    raw_has_key(
+        &request.raw,
+        &[
+            "wasMentioned",
+            "WasMentioned",
+            "mentioned",
+            "isMentioned",
+            "requireMentionSatisfied",
+        ],
+    )
+}
+
+fn has_any_mention(request: &ActionRequest) -> bool {
+    raw_bool(&request.raw, &["hasAnyMention", "anyMention"]).unwrap_or(false)
+}
+
+fn has_control_command(request: &ActionRequest) -> bool {
+    request
+        .command
+        .as_deref()
+        .is_some_and(is_control_command_text)
+        || request
+            .prompt
+            .as_deref()
+            .is_some_and(is_control_command_text)
+}
+
+fn is_control_command_text(value: &str) -> bool {
+    let trimmed = value.trim_start();
+    if !trimmed.starts_with('/') {
+        return false;
+    }
+    let command = trimmed
+        .trim_start_matches('/')
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(
+        command.as_str(),
+        "new" | "reset" | "help" | "stop" | "abort" | "cancel"
+    )
+}
+
 fn raw_string(root: &Value, keys: &[&str]) -> Option<String> {
     let map = root.as_object()?;
     keys.iter().find_map(|key| {
@@ -228,6 +295,13 @@ fn raw_bool(root: &Value, keys: &[&str]) -> Option<bool> {
     let map = root.as_object()?;
     keys.iter()
         .find_map(|key| map.get(*key).and_then(value_to_bool))
+}
+
+fn raw_has_key(root: &Value, keys: &[&str]) -> bool {
+    let Some(map) = root.as_object() else {
+        return false;
+    };
+    keys.iter().any(|key| map.contains_key(*key))
 }
 
 fn value_to_bool(value: &Value) -> Option<bool> {
@@ -418,6 +492,30 @@ mod tests {
         let scheduler = scheduler(8, SessionQueueMode::Followup, GroupActivationMode::Mention);
         let mut request = req("r1", Some("agent:main:discord:group:g1"), Some("hello"));
         request.raw = json!({"chatType":"group","wasMentioned": true});
+
+        assert!(matches!(
+            scheduler.submit(request).await,
+            SubmitOutcome::Dispatch(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn mention_activation_accepts_group_message_when_detection_unavailable() {
+        let scheduler = scheduler(8, SessionQueueMode::Followup, GroupActivationMode::Mention);
+        let mut request = req("r1", Some("agent:main:discord:group:g2"), Some("hello"));
+        request.raw = json!({"chatType":"group"});
+
+        assert!(matches!(
+            scheduler.submit(request).await,
+            SubmitOutcome::Dispatch(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn mention_activation_bypasses_for_authorized_control_command() {
+        let scheduler = scheduler(8, SessionQueueMode::Followup, GroupActivationMode::Mention);
+        let mut request = req("r1", Some("agent:main:discord:group:g3"), Some("/reset"));
+        request.raw = json!({"chatType":"group","wasMentioned": false});
 
         assert!(matches!(
             scheduler.submit(request).await,

@@ -17,7 +17,7 @@ What is implemented now:
 - Typed session-key parsing (`main`, `direct`, `group`, `channel`, `cron`, `hook`, `node`).
 - Typed protocol frame foundation (`req`/`resp`/`event` classification).
 - Gateway RPC parity scaffold for `sessions.list`, `sessions.preview`, `sessions.patch`, `sessions.resolve`, `sessions.reset`, `sessions.delete`, `sessions.compact`, `sessions.usage`, `sessions.usage.timeseries`, `sessions.usage.logs`, `sessions.history`, `sessions.send`, and `session.status`.
-- Channel adapter scaffold (`whatsapp`, `telegram`, `slack`, `discord`, generic).
+- Channel adapter scaffold (`telegram`, `whatsapp`, `discord`, `slack`, `signal`, `webchat`, generic) with wave-1 channel-runtime helpers (chat-type normalization, mention gating, chunking, retry/backoff).
 
 This is intentionally phase 1: it keeps feature coverage by integrating with the
 existing Gateway protocol while replacing high-risk runtime and guardrail logic
@@ -221,6 +221,12 @@ CP3 tool-runtime parity gate (`profile/allow/deny/byProvider` + loop guard + tra
 
 ```powershell
 .\scripts\parity\run-cp3-gate.ps1
+```
+
+CP4 channel-runtime wave-1 foundation gate (registry + normalization + mention/chunk/retry parity helpers):
+
+```powershell
+.\scripts\parity\run-cp4-gate.ps1
 ```
 
 Current payload corpus coverage: `chat.*`, `tts.*`, `voicewake.*`, `web.login.*`, `update.run`, `sessions.*` envelope/alias flows, `browser.request`, `config.*`, `logs.tail`, `cron.*`, `exec.approvals.*`, `exec.approval.*`, and `wizard.*`.

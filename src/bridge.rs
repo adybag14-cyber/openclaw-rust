@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
@@ -8,7 +7,7 @@ use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
 
-use crate::channels::DriverRegistry;
+use crate::channels::{compute_retry_backoff_delay, DriverRegistry, RetryBackoffPolicy};
 use crate::config::{GatewayConfig, GroupActivationMode, SessionQueueMode};
 use crate::gateway::{MethodRegistry, RpcDispatchOutcome, RpcDispatcher};
 use crate::protocol::{
@@ -52,7 +51,8 @@ impl GatewayBridge {
     }
 
     pub async fn run_forever(&self, evaluator: Arc<dyn ActionEvaluator>) -> Result<()> {
-        let mut backoff_secs = 1_u64;
+        let backoff_policy = RetryBackoffPolicy::bridge_default();
+        let mut reconnect_attempt = 0_u32;
         loop {
             match self.run_once(evaluator.clone()).await {
                 Ok(()) => {
@@ -62,8 +62,14 @@ impl GatewayBridge {
                     warn!("gateway stream failed: {err:#}");
                 }
             }
-            sleep(Duration::from_secs(backoff_secs)).await;
-            backoff_secs = (backoff_secs * 2).min(30);
+            reconnect_attempt = reconnect_attempt.saturating_add(1);
+            let delay = compute_retry_backoff_delay(backoff_policy, reconnect_attempt);
+            debug!(
+                "gateway reconnect attempt={} backoff_ms={}",
+                reconnect_attempt,
+                delay.as_millis()
+            );
+            sleep(delay).await;
         }
     }
 

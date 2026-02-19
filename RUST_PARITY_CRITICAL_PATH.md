@@ -5,8 +5,8 @@ Repo: `adybag14-cyber/openclaw-rust`
 
 ## Current Baseline (Evidence-Based)
 
-- Overall completion estimate toward true end-to-end Rust replacement: **~41%**
-- Remaining gap: **~59%**
+- Overall completion estimate toward true end-to-end Rust replacement: **~46%**
+- Remaining gap: **~54%**
 - Rust feature-audit status counts:
   - `Implemented`: 9
   - `Partial`: 9
@@ -133,7 +133,7 @@ Exit gates:
 - Channel acceptance suite green per migrated channel.
 - Canary chat behavior matches TS reference runs.
 
-Status: **Partial scaffold only**
+Status: **Partial (Wave-1 channel-runtime foundations implemented; transport/webhook parity pending)**
 
 ## CP5: Nodes, Browser, Canvas, Device Flows
 
@@ -230,6 +230,6 @@ Use this checklist for active tracking:
 
 ## Immediate Next Actions (Start Here)
 
-1. Execute CP4 Wave 1 implementation for transport/runtime parity on Telegram, WhatsApp, Discord, Slack, Signal, and WebChat.
+1. Complete CP4 Wave 1 transport lifecycle + webhook ingress parity on Telegram, WhatsApp, Discord, Slack, Signal, and WebChat using the new channel-runtime helper layer.
 2. Extend CP5 host runtime parity for browser/canvas/nodes command execution paths (beyond current control-plane shaping).
 3. Expand CP8 reliability gates with soak + chaos fixtures tied to parity drift artifacts and release cutover criteria.
