@@ -46,7 +46,7 @@ Exit gates:
 - Replay corpus is deterministic and runs in CI.
 - Every PR reports subsystem parity deltas.
 
-Status: **In Progress**
+Status: **Completed (Gate Achieved)**
 
 ## CP1: Standalone Rust Gateway Runtime Core
 
@@ -202,7 +202,7 @@ Status: **Partial for defender/security, cutover not started**
 
 Use this checklist for active tracking:
 
-- [ ] CP0 complete
+- [x] CP0 complete
 - [ ] CP1 complete
 - [ ] CP2 complete
 - [ ] CP3 complete
@@ -230,7 +230,6 @@ Use this checklist for active tracking:
 
 ## Immediate Next Actions (Start Here)
 
-1. Implement CP0 scorecard tooling and commit baseline manifest.
-2. Start CP1 Rust WS gateway server runtime (accept loop + authz + handler dispatch).
-3. Stand up differential replay harness for gateway/session/tool high-volume traces.
-
+1. Start CP1 Rust WS gateway server runtime (accept loop + authz + handler dispatch).
+2. Add role/scope authorization parity fixtures at the Rust gateway server boundary.
+3. Stand up differential replay harness for live gateway/session/tool high-volume traces.

@@ -1,0 +1,73 @@
+name: parity-cp0-gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parity-scoreboard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout rust repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout upstream openclaw
+        uses: actions/checkout@v4
+        with:
+          repository: openclaw/openclaw
+          path: openclaw-upstream
+          fetch-depth: 1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Generate method surface diff
+        shell: pwsh
+        run: .\scripts\parity\method-surface-diff.ps1 -Surface both -UpstreamRepoPath .\openclaw-upstream
+
+      - name: Build parity scoreboard
+        shell: pwsh
+        run: .\scripts\parity\build-scoreboard.ps1 -IncludeGeneratedAt
+
+      - name: Publish parity summary
+        shell: pwsh
+        run: Get-Content -Raw parity/generated/parity-scoreboard.md >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload parity artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-scoreboard
+          path: |
+            parity/generated/method-surface-diff.json
+            parity/generated/upstream-methods.base.json
+            parity/generated/upstream-methods.handlers.json
+            parity/generated/rust-methods.json
+            parity/generated/parity-scoreboard.json
+            parity/generated/parity-scoreboard.md
+            parity/method-surface-report.md
+
+  replay-corpus:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout rust repo
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run deterministic replay corpus tests
+        run: bash ./scripts/parity/run-replay-corpus.sh

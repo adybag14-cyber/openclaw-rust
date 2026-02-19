@@ -3,7 +3,8 @@ param(
   [string]$UpstreamRepoPath = "..\\openclaw",
   [ValidateSet("base", "handlers", "both")]
   [string]$Surface = "both",
-  [string]$OutDir = "parity/generated"
+  [string]$OutDir = "parity/generated",
+  [switch]$IncludeGeneratedAt
 )
 
 Set-StrictMode -Version Latest
@@ -89,11 +90,13 @@ if (Test-Path -LiteralPath $upstreamHandlersOut) {
 }
 
 $result = [ordered]@{
-  generatedAtUtc = [DateTime]::UtcNow.ToString("o")
   rustGatewayPath = $RustGatewayPath
   upstreamRepoPath = $UpstreamRepoPath
   rustCount = @($rustMethods).Count
   surfaces = $surfaces
+}
+if ($IncludeGeneratedAt) {
+  $result["generatedAtUtc"] = [DateTime]::UtcNow.ToString("o")
 }
 
 $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $diffOut
@@ -131,7 +134,7 @@ $(Format-List -Items @($surfaceInfo.rustOnly))
 $report = @"
 # RPC Method Surface Diff
 
-Generated (UTC): $($result.generatedAtUtc)
+Generated (UTC): $(if ($result.Contains("generatedAtUtc")) { $result.generatedAtUtc } else { "deterministic" })
 
 ## Summary
 

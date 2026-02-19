@@ -1,0 +1,50 @@
+{
+  "manifestVersion": "1.0.0",
+  "schemaVersion": 1,
+  "title": "OpenClaw Rust End-to-End Parity Manifest",
+  "owners": [
+    "adybag14-cyber"
+  ],
+  "sources": {
+    "upstreamRepo": "../openclaw",
+    "rustRepo": ".",
+    "upstreamGatewayHandlers": "src/gateway/server-methods.ts",
+    "rustGatewayMethods": "src/gateway.rs"
+  },
+  "cp0Gate": {
+    "id": "CP0",
+    "name": "Parity Contract + Scoreboard Foundation",
+    "requirements": [
+      {
+        "id": "CP0-R1",
+        "description": "Versioned parity manifest exists in-repo"
+      },
+      {
+        "id": "CP0-R2",
+        "description": "Replay corpus tests are deterministic and executed in CI"
+      },
+      {
+        "id": "CP0-R3",
+        "description": "Every PR publishes parity subsystem deltas"
+      }
+    ]
+  },
+  "artifacts": {
+    "methodSurfaceDiffJson": "parity/generated/method-surface-diff.json",
+    "methodSurfaceReportMd": "parity/method-surface-report.md",
+    "payloadCorpusJson": "tests/parity/gateway-payload-corpus.json",
+    "scoreboardJson": "parity/generated/parity-scoreboard.json",
+    "scoreboardMarkdown": "parity/generated/parity-scoreboard.md",
+    "baselineScoreboardJson": "parity/manifest/scoreboard-baseline.json"
+  },
+  "deferredSubsystems": [
+    "Tool execution host runtime parity",
+    "Full node/device runtime host parity",
+    "Model provider/auth/failover parity"
+  ],
+  "acceptanceCommands": [
+    ".\\scripts\\parity\\method-surface-diff.ps1 -Surface both -UpstreamRepoPath ..\\openclaw",
+    ".\\scripts\\parity\\build-scoreboard.ps1",
+    ".\\scripts\\parity\\run-replay-corpus.ps1"
+  ]
+}

@@ -183,17 +183,34 @@ for selected upstream RPC handlers:
 .\scripts\parity\payload-shape-diff.ps1
 ```
 
+CP0 scoreboard and replay-corpus gate:
+
+```powershell
+.\scripts\parity\build-scoreboard.ps1
+.\scripts\parity\run-replay-corpus.ps1
+.\scripts\parity\run-cp0-gate.ps1 -UpstreamRepoPath ..\openclaw
+```
+
 Current payload corpus coverage: `chat.*`, `tts.*`, `voicewake.*`, `web.login.*`, `update.run`, `sessions.*` envelope/alias flows, `browser.request`, `config.*`, `logs.tail`, `cron.*`, `exec.approvals.*`, `exec.approval.*`, and `wizard.*`.
 
 Generated artifacts:
 
 - `parity/PARITY_CONTRACT.md`
+- `parity/manifest/PARITY_MANIFEST.v1.json`
+- `parity/manifest/scoreboard-baseline.json`
 - `parity/generated/upstream-methods.base.json`
 - `parity/generated/upstream-methods.handlers.json`
 - `parity/generated/rust-methods.json`
 - `parity/generated/method-surface-diff.json`
+- `parity/generated/parity-scoreboard.json`
+- `parity/generated/parity-scoreboard.md`
 - `parity/method-surface-report.md`
 - `tests/parity/gateway-payload-corpus.json`
+
+PR automation:
+
+- `.github/workflows/parity-cp0-gate.yml` runs on every PR and publishes parity
+  delta summaries in the workflow job summary.
 
 ## Windows GNU toolchain helper (SQLite feature)
 

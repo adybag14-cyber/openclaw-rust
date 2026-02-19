@@ -8,6 +8,7 @@ gateway parity work.
 - Rust method surface: `src/gateway.rs` -> `SUPPORTED_RPC_METHODS`
 - Upstream base surface: `../openclaw/src/gateway/server-methods-list.ts` -> `BASE_METHODS`
 - Upstream handler surface: `../openclaw/src/gateway/server-methods/*.ts` -> exported `*Handlers` maps
+- Versioned manifest: `parity/manifest/PARITY_MANIFEST.v1.json`
 
 ## Phase 1: Method Surface Rule
 
@@ -33,6 +34,14 @@ From repo root:
 .\scripts\parity\payload-shape-diff.ps1
 ```
 
+```powershell
+.\scripts\parity\build-scoreboard.ps1
+```
+
+```powershell
+.\scripts\parity\run-replay-corpus.ps1
+```
+
 Optional upstream location override:
 
 ```powershell
@@ -52,3 +61,4 @@ Optional upstream location override:
 
 - For any gateway method-surface parity change, regenerate method diff artifacts and include them in the commit.
 - For any gateway behavior-parity change touching payload shape, update `tests/parity/gateway-payload-corpus.json` and keep `dispatcher_payload_corpus_matches_upstream_fixtures` passing.
+- PR CI must publish `parity/generated/parity-scoreboard.md` as job summary, including subsystem status deltas versus `parity/manifest/scoreboard-baseline.json`.
