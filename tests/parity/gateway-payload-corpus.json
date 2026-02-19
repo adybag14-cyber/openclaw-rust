@@ -1001,6 +1001,176 @@
       }
     },
     {
+      "name": "sessions.resolve supports label plus route selectors",
+      "prelude": [
+        {
+          "id": "prelude-sessions-patch-label-route-target",
+          "method": "sessions.patch",
+          "params": {
+            "sessionKey": "agent:ops:telegram:group:g-label-route-target",
+            "label": "label-route-target"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-label-route-target",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:telegram:group:g-label-route-target",
+            "message": "label route target",
+            "channel": "telegram",
+            "to": "peer-label-route",
+            "accountId": "acct-target"
+          }
+        },
+        {
+          "id": "prelude-sessions-patch-label-route-other",
+          "method": "sessions.patch",
+          "params": {
+            "sessionKey": "agent:sales:telegram:group:g-label-route-other",
+            "label": "label-route-other"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-label-route-other",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:sales:telegram:group:g-label-route-other",
+            "message": "label route other",
+            "channel": "telegram",
+            "to": "peer-label-route",
+            "accountId": "acct-other"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-resolve-label-route-hybrid-parity",
+        "method": "sessions.resolve",
+        "params": {
+          "label": "label-route-target",
+          "channel": "telegram",
+          "to": "peer-label-route",
+          "includeGlobal": false,
+          "includeUnknown": false
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/key",
+            "equals": "agent:ops:telegram:group:g-label-route-target"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.resolve prioritizes sessionId over label and route selectors",
+      "prelude": [
+        {
+          "id": "prelude-sessions-patch-session-id-priority",
+          "method": "sessions.patch",
+          "params": {
+            "sessionKey": "agent:ops:discord:group:g-session-id-priority",
+            "label": "hybrid-session-id"
+          },
+          "captures": [
+            {
+              "path": "/session/sessionId",
+              "as": "hybrid_session_id"
+            }
+          ]
+        },
+        {
+          "id": "prelude-sessions-patch-session-id-conflict",
+          "method": "sessions.patch",
+          "params": {
+            "sessionKey": "agent:sales:slack:group:g-session-id-conflict",
+            "label": "hybrid-conflict"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-session-id-conflict",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:sales:slack:group:g-session-id-conflict",
+            "message": "session id conflict route",
+            "channel": "slack",
+            "to": "peer-hybrid",
+            "accountId": "acct-hybrid"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-resolve-session-id-priority-parity",
+        "method": "sessions.resolve",
+        "params": {
+          "sessionId": "${hybrid_session_id}",
+          "label": "hybrid-conflict",
+          "channel": "slack",
+          "to": "peer-hybrid",
+          "accountId": "acct-hybrid",
+          "includeGlobal": false,
+          "includeUnknown": false
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/key",
+            "equals": "agent:ops:discord:group:g-session-id-priority"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.resolve accepts partial route selectors without accountId",
+      "prelude": [
+        {
+          "id": "prelude-sessions-send-partial-route",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:slack:group:g-partial-route",
+            "message": "partial route seed",
+            "channel": "slack",
+            "to": "peer-partial",
+            "accountId": "acct-partial"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-resolve-partial-route-parity",
+        "method": "sessions.resolve",
+        "params": {
+          "channel": "slack",
+          "to": "peer-partial",
+          "includeGlobal": false,
+          "includeUnknown": false
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/key",
+            "equals": "agent:ops:slack:group:g-partial-route"
+          }
+        ]
+      }
+    },
+    {
       "name": "sessions.preview preserves requested alias key in output",
       "prelude": [
         {

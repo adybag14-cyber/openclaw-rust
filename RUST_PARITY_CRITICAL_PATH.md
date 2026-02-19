@@ -231,5 +231,5 @@ Use this checklist for active tracking:
 ## Immediate Next Actions (Start Here)
 
 1. Publish CP2 soak metrics/artifacts in CI (decision ordering + duplicate counters) for trend tracking.
-2. Add differential replay captures from upstream for `sessionId`/`label` + route-selector hybrid resolution traces.
-3. Extend CP2 replay fixtures to cover selector fallback behavior when explicit `sessionKey` is absent and selectors are partially specified.
+2. Add deterministic tie-break fixtures for partial route-selector matches (`channel + to` collisions with no `accountId`) using upstream trace evidence.
+3. Upload CP2 gate replay outputs/artifacts in CI for longitudinal drift review.

@@ -14291,6 +14291,208 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_resolve_prefers_session_id_over_label_and_route_selectors() {
+        let dispatcher = RpcDispatcher::new();
+
+        let explicit_key = "agent:ops:discord:group:g-session-id-priority";
+        let patch_explicit = RpcRequestFrame {
+            id: "req-resolve-session-id-priority-explicit-patch".to_owned(),
+            method: "sessions.patch".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": explicit_key,
+                "label": "hybrid-session-id"
+            }),
+        };
+        let explicit_session_id = match dispatcher.handle_request(&patch_explicit).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/session/sessionId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .expect("expected sessionId from patch result"),
+            _ => panic!("expected explicit session patch handled"),
+        };
+
+        let conflicting_key = "agent:sales:slack:group:g-session-id-conflict";
+        let patch_conflict = RpcRequestFrame {
+            id: "req-resolve-session-id-priority-conflict-patch".to_owned(),
+            method: "sessions.patch".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": conflicting_key,
+                "label": "hybrid-conflict"
+            }),
+        };
+        let _ = dispatcher.handle_request(&patch_conflict).await;
+
+        let send_conflict = RpcRequestFrame {
+            id: "req-resolve-session-id-priority-conflict-send".to_owned(),
+            method: "sessions.send".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": conflicting_key,
+                "message": "seed conflict route",
+                "requestId": "req-resolve-session-id-priority-conflict-send",
+                "channel": "slack",
+                "to": "peer-hybrid",
+                "accountId": "acct-hybrid"
+            }),
+        };
+        let _ = dispatcher.handle_request(&send_conflict).await;
+
+        let resolve = RpcRequestFrame {
+            id: "req-resolve-session-id-priority".to_owned(),
+            method: "sessions.resolve".to_owned(),
+            params: serde_json::json!({
+                "sessionId": explicit_session_id,
+                "label": "hybrid-conflict",
+                "channel": "slack",
+                "to": "peer-hybrid",
+                "accountId": "acct-hybrid",
+                "includeGlobal": false,
+                "includeUnknown": false
+            }),
+        };
+        let out = dispatcher.handle_request(&resolve).await;
+        match out {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/ok").and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload.pointer("/key").and_then(serde_json::Value::as_str),
+                    Some(explicit_key)
+                );
+            }
+            _ => panic!("expected sessionId precedence resolve handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_resolve_supports_label_plus_route_selectors() {
+        let dispatcher = RpcDispatcher::new();
+
+        let target_key = "agent:ops:telegram:group:g-label-route";
+        let patch_target = RpcRequestFrame {
+            id: "req-resolve-label-route-target-patch".to_owned(),
+            method: "sessions.patch".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": target_key,
+                "label": "label-route-target"
+            }),
+        };
+        let _ = dispatcher.handle_request(&patch_target).await;
+
+        let send_target = RpcRequestFrame {
+            id: "req-resolve-label-route-target-send".to_owned(),
+            method: "sessions.send".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": target_key,
+                "message": "seed target route",
+                "requestId": "req-resolve-label-route-target-send",
+                "channel": "telegram",
+                "to": "peer-label-route",
+                "accountId": "acct-target"
+            }),
+        };
+        let _ = dispatcher.handle_request(&send_target).await;
+
+        let other_key = "agent:sales:telegram:group:g-label-route-other";
+        let patch_other = RpcRequestFrame {
+            id: "req-resolve-label-route-other-patch".to_owned(),
+            method: "sessions.patch".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": other_key,
+                "label": "label-route-other"
+            }),
+        };
+        let _ = dispatcher.handle_request(&patch_other).await;
+
+        let send_other = RpcRequestFrame {
+            id: "req-resolve-label-route-other-send".to_owned(),
+            method: "sessions.send".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": other_key,
+                "message": "seed other route",
+                "requestId": "req-resolve-label-route-other-send",
+                "channel": "telegram",
+                "to": "peer-label-route",
+                "accountId": "acct-other"
+            }),
+        };
+        let _ = dispatcher.handle_request(&send_other).await;
+
+        let resolve = RpcRequestFrame {
+            id: "req-resolve-label-route".to_owned(),
+            method: "sessions.resolve".to_owned(),
+            params: serde_json::json!({
+                "label": "label-route-target",
+                "channel": "telegram",
+                "to": "peer-label-route",
+                "includeGlobal": false,
+                "includeUnknown": false
+            }),
+        };
+        let out = dispatcher.handle_request(&resolve).await;
+        match out {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/ok").and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload.pointer("/key").and_then(serde_json::Value::as_str),
+                    Some(target_key)
+                );
+            }
+            _ => panic!("expected label+route resolve handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_resolve_accepts_partial_route_selectors_without_account_id() {
+        let dispatcher = RpcDispatcher::new();
+
+        let target_key = "agent:ops:slack:group:g-partial-route";
+        let send = RpcRequestFrame {
+            id: "req-resolve-partial-route-send".to_owned(),
+            method: "sessions.send".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": target_key,
+                "message": "seed partial route",
+                "requestId": "req-resolve-partial-route-send",
+                "channel": "slack",
+                "to": "peer-partial",
+                "accountId": "acct-partial"
+            }),
+        };
+        let _ = dispatcher.handle_request(&send).await;
+
+        let resolve = RpcRequestFrame {
+            id: "req-resolve-partial-route".to_owned(),
+            method: "sessions.resolve".to_owned(),
+            params: serde_json::json!({
+                "channel": "slack",
+                "to": "peer-partial",
+                "includeGlobal": false,
+                "includeUnknown": false
+            }),
+        };
+        let out = dispatcher.handle_request(&resolve).await;
+        match out {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/ok").and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload.pointer("/key").and_then(serde_json::Value::as_str),
+                    Some(target_key)
+                );
+            }
+            _ => panic!("expected partial-route resolve handled"),
+        }
+    }
+
+    #[tokio::test]
     async fn dispatcher_reset_clears_session_counters() {
         let dispatcher = RpcDispatcher::new();
         let session_key = "agent:main:discord:group:g-reset";

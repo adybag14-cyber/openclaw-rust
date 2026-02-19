@@ -16,7 +16,10 @@ $defaultTests = @(
   "gateway::tests::dispatcher_list_route_selectors_disambiguate_shared_peer_by_account_and_channel",
   "gateway::tests::dispatcher_resolve_supports_label_agent_and_spawn_filters",
   "gateway::tests::dispatcher_resolve_route_selectors_disambiguate_shared_peer_by_account_and_channel",
-  "gateway::tests::dispatcher_resolve_prefers_explicit_session_key_over_route_selectors"
+  "gateway::tests::dispatcher_resolve_prefers_explicit_session_key_over_route_selectors",
+  "gateway::tests::dispatcher_resolve_prefers_session_id_over_label_and_route_selectors",
+  "gateway::tests::dispatcher_resolve_supports_label_plus_route_selectors",
+  "gateway::tests::dispatcher_resolve_accepts_partial_route_selectors_without_account_id"
 )
 
 $sqliteTests = @(
