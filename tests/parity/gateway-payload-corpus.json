@@ -760,6 +760,81 @@
       }
     },
     {
+      "name": "sessions.list disambiguates shared peer by channel and account selectors",
+      "prelude": [
+        {
+          "id": "prelude-sessions-send-list-collision-a",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:slack:group:peer-shared-a",
+            "message": "list collision a",
+            "channel": "slack",
+            "to": "peer-shared",
+            "accountId": "acct-a"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-list-collision-b",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:sales:slack:group:peer-shared-b",
+            "message": "list collision b",
+            "channel": "slack",
+            "to": "peer-shared",
+            "accountId": "acct-b"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-list-collision-c",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:telegram:group:peer-shared-c",
+            "message": "list collision c",
+            "channel": "telegram",
+            "to": "peer-shared",
+            "accountId": "acct-a"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-list-route-collision-parity",
+        "method": "sessions.list",
+        "params": {
+          "limit": 10,
+          "includeGlobal": false,
+          "includeUnknown": false,
+          "channel": "slack",
+          "to": "peer-shared",
+          "accountId": "acct-b"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/count",
+            "equals": 1
+          },
+          {
+            "path": "/sessions/0/key",
+            "equals": "agent:sales:slack:group:peer-shared-b"
+          },
+          {
+            "path": "/sessions/0/deliveryContext/channel",
+            "equals": "slack"
+          },
+          {
+            "path": "/sessions/0/deliveryContext/to",
+            "equals": "peer-shared"
+          },
+          {
+            "path": "/sessions/0/deliveryContext/accountId",
+            "equals": "acct-b"
+          }
+        ]
+      }
+    },
+    {
       "name": "sessions.resolve supports multi-agent route selectors",
       "prelude": [
         {
@@ -807,6 +882,120 @@
           {
             "path": "/key",
             "equals": "agent:ops:telegram:group:g-ops"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.resolve disambiguates shared peer by channel and account selectors",
+      "prelude": [
+        {
+          "id": "prelude-sessions-send-resolve-collision-a",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:slack:group:peer-shared-a",
+            "message": "resolve collision a",
+            "channel": "slack",
+            "to": "peer-shared",
+            "accountId": "acct-a"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-resolve-collision-b",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:sales:slack:group:peer-shared-b",
+            "message": "resolve collision b",
+            "channel": "slack",
+            "to": "peer-shared",
+            "accountId": "acct-b"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-resolve-collision-c",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:telegram:group:peer-shared-c",
+            "message": "resolve collision c",
+            "channel": "telegram",
+            "to": "peer-shared",
+            "accountId": "acct-a"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-resolve-route-collision-parity",
+        "method": "sessions.resolve",
+        "params": {
+          "channel": "slack",
+          "to": "peer-shared",
+          "accountId": "acct-b",
+          "includeGlobal": false,
+          "includeUnknown": false
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/key",
+            "equals": "agent:sales:slack:group:peer-shared-b"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.resolve prioritizes sessionKey over route selectors",
+      "prelude": [
+        {
+          "id": "prelude-sessions-send-resolve-precedence-explicit",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:discord:group:g-explicit",
+            "message": "resolve precedence explicit",
+            "channel": "discord",
+            "to": "peer-explicit",
+            "accountId": "acct-explicit"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-resolve-precedence-route",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:sales:slack:group:g-route",
+            "message": "resolve precedence route",
+            "channel": "slack",
+            "to": "peer-route",
+            "accountId": "acct-route"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-resolve-route-precedence-parity",
+        "method": "sessions.resolve",
+        "params": {
+          "sessionKey": "agent:ops:discord:group:g-explicit",
+          "channel": "slack",
+          "to": "peer-route",
+          "accountId": "acct-route",
+          "includeGlobal": false,
+          "includeUnknown": false
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/key",
+            "equals": "agent:ops:discord:group:g-explicit"
           }
         ]
       }

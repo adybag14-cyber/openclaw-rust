@@ -231,5 +231,5 @@ Use this checklist for active tracking:
 ## Immediate Next Actions (Start Here)
 
 1. Publish CP2 soak metrics/artifacts in CI (decision ordering + duplicate counters) for trend tracking.
-2. Add differential replay captures from upstream for ambiguous route-selector collisions (same peer across accounts/channels).
-3. Extend CP2 route-selector replay fixtures with fallback precedence cases (`sessionKey` vs selector fields) from upstream traces.
+2. Add differential replay captures from upstream for `sessionId`/`label` + route-selector hybrid resolution traces.
+3. Extend CP2 replay fixtures to cover selector fallback behavior when explicit `sessionKey` is absent and selectors are partially specified.

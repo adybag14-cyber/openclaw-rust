@@ -14070,6 +14070,227 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_list_route_selectors_disambiguate_shared_peer_by_account_and_channel() {
+        let dispatcher = RpcDispatcher::new();
+        for (id, key, channel, to, account_id) in [
+            (
+                "req-list-route-shared-a",
+                "agent:ops:slack:group:peer-shared-a",
+                "slack",
+                "peer-shared",
+                "acct-a",
+            ),
+            (
+                "req-list-route-shared-b",
+                "agent:sales:slack:group:peer-shared-b",
+                "slack",
+                "peer-shared",
+                "acct-b",
+            ),
+            (
+                "req-list-route-shared-c",
+                "agent:ops:telegram:group:peer-shared-c",
+                "telegram",
+                "peer-shared",
+                "acct-a",
+            ),
+        ] {
+            let send = RpcRequestFrame {
+                id: id.to_owned(),
+                method: "sessions.send".to_owned(),
+                params: serde_json::json!({
+                    "sessionKey": key,
+                    "message": format!("seed for {key}"),
+                    "requestId": format!("{id}-request"),
+                    "channel": channel,
+                    "to": to,
+                    "accountId": account_id
+                }),
+            };
+            let _ = dispatcher.handle_request(&send).await;
+        }
+
+        let list = RpcRequestFrame {
+            id: "req-list-route-shared-filter".to_owned(),
+            method: "sessions.list".to_owned(),
+            params: serde_json::json!({
+                "limit": 10,
+                "includeGlobal": false,
+                "includeUnknown": false,
+                "channel": "slack",
+                "to": "peer-shared",
+                "accountId": "acct-b"
+            }),
+        };
+        let out = dispatcher.handle_request(&list).await;
+        match out {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/count")
+                        .and_then(serde_json::Value::as_u64),
+                    Some(1)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/sessions/0/key")
+                        .and_then(serde_json::Value::as_str),
+                    Some("agent:sales:slack:group:peer-shared-b")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/sessions/0/deliveryContext/channel")
+                        .and_then(serde_json::Value::as_str),
+                    Some("slack")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/sessions/0/deliveryContext/to")
+                        .and_then(serde_json::Value::as_str),
+                    Some("peer-shared")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/sessions/0/deliveryContext/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("acct-b")
+                );
+            }
+            _ => panic!("expected route-disambiguated list handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_resolve_route_selectors_disambiguate_shared_peer_by_account_and_channel() {
+        let dispatcher = RpcDispatcher::new();
+        for (id, key, channel, to, account_id) in [
+            (
+                "req-resolve-route-shared-a",
+                "agent:ops:slack:group:peer-shared-a",
+                "slack",
+                "peer-shared",
+                "acct-a",
+            ),
+            (
+                "req-resolve-route-shared-b",
+                "agent:sales:slack:group:peer-shared-b",
+                "slack",
+                "peer-shared",
+                "acct-b",
+            ),
+            (
+                "req-resolve-route-shared-c",
+                "agent:ops:telegram:group:peer-shared-c",
+                "telegram",
+                "peer-shared",
+                "acct-a",
+            ),
+        ] {
+            let send = RpcRequestFrame {
+                id: id.to_owned(),
+                method: "sessions.send".to_owned(),
+                params: serde_json::json!({
+                    "sessionKey": key,
+                    "message": format!("seed for {key}"),
+                    "requestId": format!("{id}-request"),
+                    "channel": channel,
+                    "to": to,
+                    "accountId": account_id
+                }),
+            };
+            let _ = dispatcher.handle_request(&send).await;
+        }
+
+        let resolve = RpcRequestFrame {
+            id: "req-resolve-route-shared-filter".to_owned(),
+            method: "sessions.resolve".to_owned(),
+            params: serde_json::json!({
+                "channel": "slack",
+                "to": "peer-shared",
+                "accountId": "acct-b",
+                "includeGlobal": false,
+                "includeUnknown": false
+            }),
+        };
+        let out = dispatcher.handle_request(&resolve).await;
+        match out {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/ok").and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload.pointer("/key").and_then(serde_json::Value::as_str),
+                    Some("agent:sales:slack:group:peer-shared-b")
+                );
+            }
+            _ => panic!("expected route-disambiguated resolve handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_resolve_prefers_explicit_session_key_over_route_selectors() {
+        let dispatcher = RpcDispatcher::new();
+        for (id, key, channel, to, account_id) in [
+            (
+                "req-resolve-precedence-explicit",
+                "agent:ops:discord:group:g-explicit",
+                "discord",
+                "peer-explicit",
+                "acct-explicit",
+            ),
+            (
+                "req-resolve-precedence-route",
+                "agent:sales:slack:group:g-route",
+                "slack",
+                "peer-route",
+                "acct-route",
+            ),
+        ] {
+            let send = RpcRequestFrame {
+                id: id.to_owned(),
+                method: "sessions.send".to_owned(),
+                params: serde_json::json!({
+                    "sessionKey": key,
+                    "message": format!("seed for {key}"),
+                    "requestId": format!("{id}-request"),
+                    "channel": channel,
+                    "to": to,
+                    "accountId": account_id
+                }),
+            };
+            let _ = dispatcher.handle_request(&send).await;
+        }
+
+        let resolve = RpcRequestFrame {
+            id: "req-resolve-precedence".to_owned(),
+            method: "sessions.resolve".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": "agent:ops:discord:group:g-explicit",
+                "channel": "slack",
+                "to": "peer-route",
+                "accountId": "acct-route",
+                "includeGlobal": false,
+                "includeUnknown": false
+            }),
+        };
+        let out = dispatcher.handle_request(&resolve).await;
+        match out {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/ok").and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload.pointer("/key").and_then(serde_json::Value::as_str),
+                    Some("agent:ops:discord:group:g-explicit")
+                );
+            }
+            _ => panic!("expected explicit sessionKey precedence resolve handled"),
+        }
+    }
+
+    #[tokio::test]
     async fn dispatcher_reset_clears_session_counters() {
         let dispatcher = RpcDispatcher::new();
         let session_key = "agent:main:discord:group:g-reset";
