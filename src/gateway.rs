@@ -3771,6 +3771,9 @@ impl RpcDispatcher {
                 agent_id: normalize_optional_text(params.agent_id, 64),
                 label,
                 spawned_by: normalize_optional_text(params.spawned_by, 128),
+                channel: normalize_optional_text(params.channel, 128),
+                to: normalize_optional_text(params.to, 256),
+                account_id: normalize_optional_text(params.account_id, 128),
                 include_derived_titles: params.include_derived_titles.unwrap_or(false),
                 include_last_message: params.include_last_message.unwrap_or(false),
             })
@@ -4021,7 +4024,10 @@ impl RpcDispatcher {
             Ok(value) => value,
             Err(err) => return RpcDispatchOutcome::bad_request(err),
         };
-        if label.is_none() {
+        let channel = normalize_optional_text(params.channel, 128);
+        let to = normalize_optional_text(params.to, 256);
+        let account_id = normalize_optional_text(params.account_id, 128);
+        if label.is_none() && channel.is_none() && to.is_none() && account_id.is_none() {
             return RpcDispatchOutcome::bad_request(
                 "sessionKey|key|sessionId or label is required",
             );
@@ -4033,6 +4039,9 @@ impl RpcDispatcher {
                 label,
                 agent_id: normalize_optional_text(params.agent_id, 64),
                 spawned_by: normalize_optional_text(params.spawned_by, 64),
+                channel,
+                to,
+                account_id,
                 include_global: params.include_global.unwrap_or(true),
                 include_unknown: params.include_unknown.unwrap_or(true),
             })
@@ -9261,6 +9270,9 @@ struct SessionListQuery {
     agent_id: Option<String>,
     label: Option<String>,
     spawned_by: Option<String>,
+    channel: Option<String>,
+    to: Option<String>,
+    account_id: Option<String>,
     include_derived_titles: bool,
     include_last_message: bool,
 }
@@ -9270,6 +9282,9 @@ struct SessionResolveQuery {
     label: Option<String>,
     agent_id: Option<String>,
     spawned_by: Option<String>,
+    channel: Option<String>,
+    to: Option<String>,
+    account_id: Option<String>,
     include_global: bool,
     include_unknown: bool,
 }
@@ -9522,6 +9537,33 @@ impl SessionRegistry {
                     .unwrap_or(false)
             });
         }
+        if let Some(channel) = query.channel {
+            entries.retain(|entry| {
+                entry
+                    .channel
+                    .as_deref()
+                    .map(|value| value.eq_ignore_ascii_case(&channel))
+                    .unwrap_or(false)
+            });
+        }
+        if let Some(to) = query.to {
+            entries.retain(|entry| {
+                entry
+                    .last_to
+                    .as_deref()
+                    .map(|value| value.eq_ignore_ascii_case(&to))
+                    .unwrap_or(false)
+            });
+        }
+        if let Some(account_id) = query.account_id {
+            entries.retain(|entry| {
+                entry
+                    .last_account_id
+                    .as_deref()
+                    .map(|value| value.eq_ignore_ascii_case(&account_id))
+                    .unwrap_or(false)
+            });
+        }
         entries.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
         entries.first().map(|entry| entry.key.clone())
     }
@@ -9563,6 +9605,33 @@ impl SessionRegistry {
                     .spawned_by
                     .as_deref()
                     .map(|v| v.eq_ignore_ascii_case(&spawned_by))
+                    .unwrap_or(false)
+            });
+        }
+        if let Some(channel) = query.channel {
+            items.retain(|entry| {
+                entry
+                    .channel
+                    .as_deref()
+                    .map(|value| value.eq_ignore_ascii_case(&channel))
+                    .unwrap_or(false)
+            });
+        }
+        if let Some(to) = query.to {
+            items.retain(|entry| {
+                entry
+                    .last_to
+                    .as_deref()
+                    .map(|value| value.eq_ignore_ascii_case(&to))
+                    .unwrap_or(false)
+            });
+        }
+        if let Some(account_id) = query.account_id {
+            items.retain(|entry| {
+                entry
+                    .last_account_id
+                    .as_deref()
+                    .map(|value| value.eq_ignore_ascii_case(&account_id))
                     .unwrap_or(false)
             });
         }
@@ -10456,6 +10525,10 @@ struct SessionsListParams {
     spawned_by: Option<String>,
     #[serde(rename = "agentId", alias = "agent_id")]
     agent_id: Option<String>,
+    channel: Option<String>,
+    to: Option<String>,
+    #[serde(rename = "accountId", alias = "account_id")]
+    account_id: Option<String>,
     search: Option<String>,
 }
 
@@ -11239,6 +11312,10 @@ struct SessionsResolveParams {
     agent_id: Option<String>,
     #[serde(rename = "spawnedBy", alias = "spawned_by")]
     spawned_by: Option<String>,
+    channel: Option<String>,
+    to: Option<String>,
+    #[serde(rename = "accountId", alias = "account_id")]
+    account_id: Option<String>,
     #[serde(rename = "includeGlobal", alias = "include_global")]
     include_global: Option<bool>,
     #[serde(rename = "includeUnknown", alias = "include_unknown")]
@@ -13918,18 +13995,22 @@ mod tests {
     #[tokio::test]
     async fn dispatcher_resolve_supports_label_agent_and_spawn_filters() {
         let dispatcher = RpcDispatcher::new();
-        for (id, key, label, spawned_by) in [
+        for (id, key, label, spawned_by, account_id, to) in [
             (
                 "req-patch-a",
                 "agent:ops:discord:subagent:resolved-a",
                 "deploy",
                 "main",
+                "ops",
+                "channel:C1",
             ),
             (
                 "req-patch-b",
                 "agent:ops:discord:subagent:resolved-b",
                 "deploy",
                 "other",
+                "backup",
+                "channel:C2",
             ),
         ] {
             let patch = RpcRequestFrame {
@@ -13942,6 +14023,20 @@ mod tests {
                 }),
             };
             let _ = dispatcher.handle_request(&patch).await;
+
+            let send = RpcRequestFrame {
+                id: format!("{id}-send"),
+                method: "sessions.send".to_owned(),
+                params: serde_json::json!({
+                    "sessionKey": key,
+                    "message": format!("seed for {key}"),
+                    "requestId": format!("{id}-request"),
+                    "channel": "discord",
+                    "accountId": account_id,
+                    "to": to
+                }),
+            };
+            let _ = dispatcher.handle_request(&send).await;
         }
 
         let resolve = RpcRequestFrame {
@@ -13951,6 +14046,9 @@ mod tests {
                 "label": "deploy",
                 "agentId": "ops",
                 "spawnedBy": "main",
+                "channel": "discord",
+                "accountId": "ops",
+                "to": "channel:C1",
                 "includeUnknown": true,
                 "includeGlobal": false
             }),
@@ -14720,7 +14818,10 @@ mod tests {
             params: serde_json::json!({
                 "sessionKey": key,
                 "message": "first operator update",
-                "requestId": "req-list-label-send-1"
+                "requestId": "req-list-label-send-1",
+                "channel": "discord",
+                "to": "group:briefing",
+                "accountId": "ops"
             }),
         };
         let _ = dispatcher.handle_request(&send).await;
@@ -14731,6 +14832,9 @@ mod tests {
             params: serde_json::json!({
                 "label": "Briefing",
                 "spawnedBy": "agent:main:main",
+                "channel": "discord",
+                "to": "group:briefing",
+                "accountId": "ops",
                 "includeDerivedTitles": true,
                 "includeLastMessage": true,
                 "limit": 5
@@ -14778,6 +14882,24 @@ mod tests {
                         .pointer("/sessions/0/lastMessagePreview")
                         .and_then(serde_json::Value::as_str),
                     Some("first operator update")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/sessions/0/deliveryContext/channel")
+                        .and_then(serde_json::Value::as_str),
+                    Some("discord")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/sessions/0/deliveryContext/to")
+                        .and_then(serde_json::Value::as_str),
+                    Some("group:briefing")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/sessions/0/deliveryContext/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
                 );
             }
             _ => panic!("expected filtered list handled"),
