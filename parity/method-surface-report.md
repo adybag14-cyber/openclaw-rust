@@ -4,13 +4,13 @@ Generated (UTC): deterministic
 
 ## Summary
 
-- Rust method count: 101
+- Rust method count: 103
 - Surfaces compared: 2
 
 ## Surface: base
 
 - Upstream method count: 89
-- Rust method count: 101
+- Rust method count: 103
 - Shared methods: 89
 - Coverage vs upstream: 100%
 
@@ -20,6 +20,8 @@ Generated (UTC): deterministic
 
 ### Rust-only Methods
 
+- `browser.open`
+- `canvas.present`
 - `chat.inject`
 - `connect`
 - `poll`
@@ -36,7 +38,7 @@ Generated (UTC): deterministic
 ## Surface: handlers
 
 - Upstream method count: 98
-- Rust method count: 101
+- Rust method count: 103
 - Shared methods: 98
 - Coverage vs upstream: 100%
 
@@ -46,6 +48,8 @@ Generated (UTC): deterministic
 
 ### Rust-only Methods
 
+- `browser.open`
+- `canvas.present`
 - `session.status`
 - `sessions.history`
 - `sessions.send`

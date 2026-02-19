@@ -229,6 +229,18 @@ CP4 channel-runtime wave-1 foundation gate (registry + normalization + mention/c
 .\scripts\parity\run-cp4-gate.ps1
 ```
 
+CP5 nodes/browser/canvas/device parity gate (runtime invoke + browser proxy + canvas present + pairing/device contract):
+
+```powershell
+.\scripts\parity\run-cp5-gate.ps1
+```
+
+CP6 model provider/auth/failover foundation gate (provider alias normalization + failover baseline fixtures):
+
+```powershell
+.\scripts\parity\run-cp6-gate.ps1
+```
+
 Current payload corpus coverage: `chat.*`, `tts.*`, `voicewake.*`, `web.login.*`, `update.run`, `sessions.*` envelope/alias flows, `browser.request`, `config.*`, `logs.tail`, `cron.*`, `exec.approvals.*`, `exec.approval.*`, and `wizard.*`.
 
 Generated artifacts:

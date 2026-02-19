@@ -1,4 +1,4 @@
-name: parity-cp0-cp4-gate
+name: parity-cp0-cp5-gate
 
 on:
   pull_request:
@@ -176,3 +176,63 @@ jobs:
           name: parity-cp4-artifacts
           path: |
             parity/generated/cp4
+
+  node-browser-canvas-cp5:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout rust repo
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run CP5 node/browser/canvas/device parity fixtures
+        run: PARITY_ARTIFACT_DIR=parity/generated/cp5 bash ./scripts/parity/run-cp5-gate.sh
+
+      - name: Publish CP5 summary
+        if: always()
+        run: |
+          if [ -f parity/generated/cp5/cp5-gate-summary.md ]; then
+            cat parity/generated/cp5/cp5-gate-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload CP5 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-cp5-artifacts
+          path: |
+            parity/generated/cp5
+
+  model-provider-cp6:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout rust repo
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run CP6 model/auth/failover foundation fixtures
+        run: PARITY_ARTIFACT_DIR=parity/generated/cp6 bash ./scripts/parity/run-cp6-gate.sh
+
+      - name: Publish CP6 summary
+        if: always()
+        run: |
+          if [ -f parity/generated/cp6/cp6-gate-summary.md ]; then
+            cat parity/generated/cp6/cp6-gate-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload CP6 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-cp6-artifacts
+          path: |
+            parity/generated/cp6

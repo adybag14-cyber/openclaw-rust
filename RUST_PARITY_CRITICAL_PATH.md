@@ -149,7 +149,7 @@ Exit gates:
 - Cross-platform node command suite green.
 - Canvas/browser automation parity scenarios green.
 
-Status: **Partial control-plane, host/runtime pending**
+Status: **Completed (Gate Achieved)**
 
 ## CP6: Model Provider + Auth + Failover Parity
 
@@ -164,7 +164,7 @@ Exit gates:
 - Model selection/failover fixtures match TS.
 - Auth profile migration is transparent for operators.
 
-Status: **Deferred**
+Status: **Partial (provider/model alias + failover-chain foundations implemented; auth profile + runtime failover execution pending)**
 
 ## CP7: CLI + Control UI Parity
 
@@ -209,7 +209,7 @@ Use this checklist for active tracking:
 - [ ] CP4 complete (Wave 1)
 - [ ] CP4 complete (Wave 2)
 - [ ] CP4 complete (Wave 3)
-- [ ] CP5 complete
+- [x] CP5 complete
 - [ ] CP6 complete
 - [ ] CP7 complete
 - [ ] CP8 complete
@@ -231,5 +231,5 @@ Use this checklist for active tracking:
 ## Immediate Next Actions (Start Here)
 
 1. Complete CP4 Wave 1 transport lifecycle + webhook ingress parity on Telegram, WhatsApp, Discord, Slack, Signal, and WebChat using the new channel-runtime helper layer.
-2. Extend CP5 host runtime parity for browser/canvas/nodes command execution paths (beyond current control-plane shaping).
+2. Extend CP6 model-provider parity for auth profile resolution order and runtime failover execution semantics (beyond current alias/failover metadata foundations).
 3. Expand CP8 reliability gates with soak + chaos fixtures tied to parity drift artifacts and release cutover criteria.

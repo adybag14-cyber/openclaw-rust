@@ -1,15 +1,17 @@
 {
   "rustGatewayPath": "src/gateway.rs",
   "upstreamRepoPath": "..\\openclaw",
-  "rustCount": 101,
+  "rustCount": 103,
   "surfaces": {
     "base": {
       "upstreamCount": 89,
-      "rustCount": 101,
+      "rustCount": 103,
       "intersectionCount": 89,
       "coveragePercent": 100.0,
       "missingInRust": [],
       "rustOnly": [
+        "browser.open",
+        "canvas.present",
         "chat.inject",
         "connect",
         "poll",
@@ -26,11 +28,13 @@
     },
     "handlers": {
       "upstreamCount": 98,
-      "rustCount": 101,
+      "rustCount": 103,
       "intersectionCount": 98,
       "coveragePercent": 100.0,
       "missingInRust": [],
       "rustOnly": [
+        "browser.open",
+        "canvas.present",
         "session.status",
         "sessions.history",
         "sessions.send"

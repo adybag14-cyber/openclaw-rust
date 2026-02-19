@@ -47,6 +47,42 @@
       }
     ]
   },
+  "cp5Gate": {
+    "id": "CP5",
+    "name": "Nodes, Browser, Canvas, Device Flows",
+    "requirements": [
+      {
+        "id": "CP5-R1",
+        "description": "Browser orchestration parity supports node proxy and browser.open flow with allowlist + timeout/error contracts"
+      },
+      {
+        "id": "CP5-R2",
+        "description": "Canvas present flow supports waitable node invoke completion and cancellation semantics"
+      },
+      {
+        "id": "CP5-R3",
+        "description": "Node/device command gate fixtures cover pairing, invoke/event, browser/canvas, and declared camera/screen/location/system command routes"
+      }
+    ]
+  },
+  "cp6Gate": {
+    "id": "CP6",
+    "name": "Model Provider + Auth + Failover Foundation",
+    "requirements": [
+      {
+        "id": "CP6-R1",
+        "description": "Provider alias normalization parity for model references (for example z.ai -> zai, qwen -> qwen-portal)"
+      },
+      {
+        "id": "CP6-R2",
+        "description": "Provider-model normalization supports codex and anthropic shorthand canonicalization"
+      },
+      {
+        "id": "CP6-R3",
+        "description": "Baseline provider failover chain fixtures are executable and published as CI artifacts"
+      }
+    ]
+  },
   "artifacts": {
     "methodSurfaceDiffJson": "parity/generated/method-surface-diff.json",
     "methodSurfaceReportMd": "parity/method-surface-report.md",
@@ -64,6 +100,8 @@
     ".\\scripts\\parity\\method-surface-diff.ps1 -Surface both -UpstreamRepoPath ..\\openclaw",
     ".\\scripts\\parity\\build-scoreboard.ps1",
     ".\\scripts\\parity\\run-replay-corpus.ps1",
-    ".\\scripts\\parity\\run-cp1-gate.ps1"
+    ".\\scripts\\parity\\run-cp1-gate.ps1",
+    ".\\scripts\\parity\\run-cp5-gate.ps1",
+    ".\\scripts\\parity\\run-cp6-gate.ps1"
   ]
 }

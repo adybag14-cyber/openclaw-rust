@@ -776,6 +776,7 @@ static NODE_PAIR_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NODE_TOKEN_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NODE_INVOKE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static BROWSER_PROXY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static CANVAS_PRESENT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static EXEC_APPROVAL_TOKEN_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static EXEC_APPROVAL_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static CHAT_INJECT_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -852,6 +853,8 @@ const SUPPORTED_RPC_METHODS: &[&str] = &[
     "node.invoke.result",
     "node.event",
     "browser.request",
+    "browser.open",
+    "canvas.present",
     "exec.approvals.get",
     "exec.approvals.set",
     "exec.approvals.node.get",
@@ -995,6 +998,8 @@ impl RpcDispatcher {
             "node.invoke.result" => self.handle_node_invoke_result(req).await,
             "node.event" => self.handle_node_event(req).await,
             "browser.request" => self.handle_browser_request(req).await,
+            "browser.open" => self.handle_browser_open(req).await,
+            "canvas.present" => self.handle_canvas_present(req).await,
             "exec.approvals.get" => self.handle_exec_approvals_get(req).await,
             "exec.approvals.set" => self.handle_exec_approvals_set(req).await,
             "exec.approvals.node.get" => self.handle_exec_approvals_node_get(req).await,
@@ -3218,6 +3223,203 @@ impl RpcDispatcher {
         RpcDispatchOutcome::Handled(result)
     }
 
+    async fn handle_browser_open(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<BrowserOpenParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid browser.open params: {err}"
+                ));
+            }
+        };
+        let Some(url) = normalize_optional_text(Some(params.url), 2_048) else {
+            return RpcDispatchOutcome::bad_request("invalid browser.open params: url required");
+        };
+        let mut request_params = serde_json::Map::new();
+        request_params.insert("method".to_owned(), Value::String("POST".to_owned()));
+        request_params.insert("path".to_owned(), Value::String("/tabs/open".to_owned()));
+        request_params.insert(
+            "body".to_owned(),
+            json!({
+                "url": url
+            }),
+        );
+        if let Some(timeout_ms) = params.timeout_ms {
+            request_params.insert("timeoutMs".to_owned(), json!(timeout_ms));
+        }
+        if let Some(profile) = normalize_optional_text(params.profile, 64) {
+            request_params.insert(
+                "query".to_owned(),
+                json!({
+                    "profile": profile
+                }),
+            );
+        }
+        if let Some(node) = normalize_optional_text(params.node.or(params.node_id), 128) {
+            request_params.insert("node".to_owned(), Value::String(node));
+        }
+        let proxy_request = RpcRequestFrame {
+            id: req.id.clone(),
+            method: "browser.request".to_owned(),
+            params: Value::Object(request_params),
+        };
+        self.handle_browser_request(&proxy_request).await
+    }
+
+    async fn handle_canvas_present(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<CanvasPresentParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid canvas.present params: {err}"
+                ));
+            }
+        };
+        let Some(node_id) = normalize_optional_text(params.node_id.or(params.node), 128) else {
+            return RpcDispatchOutcome::bad_request(
+                "invalid canvas.present params: nodeId required",
+            );
+        };
+        let Some(node) = self.nodes.paired_node(&node_id).await else {
+            return RpcDispatchOutcome::Error {
+                code: 503,
+                message: "node not connected".to_owned(),
+                details: Some(json!({
+                    "code": "NOT_CONNECTED"
+                })),
+            };
+        };
+        if !node_command_allowed(&node, "canvas.present") {
+            return RpcDispatchOutcome::Error {
+                code: 400,
+                message: "node command not allowed".to_owned(),
+                details: Some(json!({
+                    "reason": "command-not-declared",
+                    "command": "canvas.present",
+                    "nodeId": node_id
+                })),
+            };
+        }
+        let timeout_ms = params.timeout_ms.unwrap_or(20_000).clamp(1, 120_000);
+        let idempotency_key = normalize_optional_text(params.idempotency_key, 256)
+            .unwrap_or_else(|| next_canvas_present_idempotency_key(&node_id));
+        let target = normalize_optional_text(params.target.or(params.url), 2_048);
+        let invoke_params = {
+            let mut payload = serde_json::Map::new();
+            if let Some(target) = target {
+                payload.insert("url".to_owned(), Value::String(target));
+            }
+            let mut placement = serde_json::Map::new();
+            if let Some(value) = params.x {
+                placement.insert("x".to_owned(), json!(value));
+            }
+            if let Some(value) = params.y {
+                placement.insert("y".to_owned(), json!(value));
+            }
+            if let Some(value) = params.width {
+                placement.insert("width".to_owned(), json!(value));
+            }
+            if let Some(value) = params.height {
+                placement.insert("height".to_owned(), json!(value));
+            }
+            if !placement.is_empty() {
+                payload.insert("placement".to_owned(), Value::Object(placement));
+            }
+            Value::Object(payload)
+        };
+        let (invoke_id, waiter) = self
+            .node_runtime
+            .begin_invoke_with_wait(
+                &node_id,
+                "canvas.present",
+                Some(timeout_ms),
+                &idempotency_key,
+            )
+            .await;
+        self.system
+            .log_line(format!(
+                "canvas.present node={} invokeId={}",
+                node_id, invoke_id
+            ))
+            .await;
+        self.node_runtime
+            .record_event(
+                "node.invoke.request".to_owned(),
+                serde_json::to_string(&json!({
+                    "id": invoke_id,
+                    "nodeId": node_id,
+                    "command": "canvas.present",
+                    "params": invoke_params,
+                    "idempotencyKey": idempotency_key
+                }))
+                .ok(),
+            )
+            .await;
+        let completion = match tokio::time::timeout(Duration::from_millis(timeout_ms), waiter).await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                return RpcDispatchOutcome::Error {
+                    code: 503,
+                    message: "canvas present failed".to_owned(),
+                    details: Some(json!({
+                        "nodeId": node_id,
+                        "invokeId": invoke_id
+                    })),
+                };
+            }
+            Err(_) => {
+                self.node_runtime.cancel_invoke(&invoke_id).await;
+                return RpcDispatchOutcome::Error {
+                    code: 503,
+                    message: "canvas present timed out".to_owned(),
+                    details: Some(json!({
+                        "nodeId": node_id,
+                        "invokeId": invoke_id,
+                        "timeoutMs": timeout_ms
+                    })),
+                };
+            }
+        };
+        if !completion.ok {
+            let message = completion
+                .error
+                .as_ref()
+                .and_then(|error| error.message.clone())
+                .unwrap_or_else(|| "canvas present failed".to_owned());
+            return RpcDispatchOutcome::Error {
+                code: 503,
+                message,
+                details: Some(json!({
+                    "nodeId": node_id,
+                    "invokeId": invoke_id,
+                    "nodeError": completion.error.as_ref().map(|error| json!({
+                        "code": error.code,
+                        "message": error.message
+                    })).unwrap_or(Value::Null)
+                })),
+            };
+        }
+        let payload_json = completion.payload_json.clone();
+        let payload = payload_json
+            .as_deref()
+            .and_then(parse_payload_json)
+            .or(completion.payload)
+            .unwrap_or_else(|| {
+                json!({
+                    "ok": true
+                })
+            });
+        RpcDispatchOutcome::Handled(json!({
+            "ok": true,
+            "nodeId": node_id,
+            "command": "canvas.present",
+            "invokeId": invoke_id,
+            "payload": payload,
+            "payloadJSON": payload_json
+        }))
+    }
+
     async fn handle_exec_approvals_get(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
         if let Err(err) = decode_params::<ExecApprovalsGetParams>(&req.params) {
             return RpcDispatchOutcome::bad_request(format!(
@@ -5217,6 +5419,12 @@ struct ModelChoice {
     context_window: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<bool>,
+    #[serde(
+        rename = "fallbackProviders",
+        skip_serializing_if = "Vec::is_empty",
+        default
+    )]
+    fallback_providers: Vec<String>,
 }
 
 impl ModelRegistry {
@@ -5228,6 +5436,7 @@ impl ModelRegistry {
                 provider: "anthropic".to_owned(),
                 context_window: Some(200_000),
                 reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("anthropic"),
             },
             ModelChoice {
                 id: "claude-haiku-4-5".to_owned(),
@@ -5235,6 +5444,7 @@ impl ModelRegistry {
                 provider: "anthropic".to_owned(),
                 context_window: Some(200_000),
                 reasoning: None,
+                fallback_providers: model_provider_failover_chain("anthropic"),
             },
             ModelChoice {
                 id: "gpt-5.3".to_owned(),
@@ -5242,6 +5452,7 @@ impl ModelRegistry {
                 provider: "openai".to_owned(),
                 context_window: Some(200_000),
                 reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("openai"),
             },
             ModelChoice {
                 id: "gpt-5.3-codex".to_owned(),
@@ -5249,6 +5460,7 @@ impl ModelRegistry {
                 provider: "openai-codex".to_owned(),
                 context_window: Some(200_000),
                 reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("openai-codex"),
             },
         ];
         models.sort_by(|a, b| {
@@ -7544,6 +7756,12 @@ fn next_browser_proxy_idempotency_key(node_id: &str) -> String {
     let sequence = BROWSER_PROXY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let normalized_node = normalize(node_id);
     format!("browser-proxy-{}-{}-{sequence}", now_ms(), normalized_node)
+}
+
+fn next_canvas_present_idempotency_key(node_id: &str) -> String {
+    let sequence = CANVAS_PRESENT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let normalized_node = normalize(node_id);
+    format!("canvas-present-{}-{}-{sequence}", now_ms(), normalized_node)
 }
 
 struct ExecApprovalsRegistry {
@@ -12231,6 +12449,36 @@ struct NodeEventParams {
     payload_json: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserOpenParams {
+    url: String,
+    #[serde(rename = "nodeId", alias = "node_id")]
+    node_id: Option<String>,
+    node: Option<String>,
+    #[serde(rename = "timeoutMs", alias = "timeout_ms")]
+    timeout_ms: Option<u64>,
+    profile: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanvasPresentParams {
+    #[serde(rename = "nodeId", alias = "node_id")]
+    node_id: Option<String>,
+    node: Option<String>,
+    target: Option<String>,
+    url: Option<String>,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+    #[serde(rename = "timeoutMs", alias = "timeout_ms")]
+    timeout_ms: Option<u64>,
+    #[serde(rename = "idempotencyKey", alias = "idempotency_key")]
+    idempotency_key: Option<String>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ExecApprovalsGetParams {}
@@ -13318,9 +13566,10 @@ fn parse_patch_model(
                 if provider.is_empty() || model.is_empty() {
                     return Err("model must be 'provider/model' or 'model'".to_owned());
                 }
+                let (provider, model) = normalize_model_ref(provider, model);
                 return Ok(PatchValue::Set(ModelOverridePatch {
-                    provider_override: Some(provider.to_owned()),
-                    model_override: model.to_owned(),
+                    provider_override: Some(provider),
+                    model_override: model,
                 }));
             }
             Ok(PatchValue::Set(ModelOverridePatch {
@@ -13329,6 +13578,61 @@ fn parse_patch_model(
             }))
         }
         Some(_) => Err("model must be string or null".to_owned()),
+    }
+}
+
+fn normalize_provider_id(provider: &str) -> String {
+    match normalize(provider).as_str() {
+        "z.ai" | "z-ai" => "zai".to_owned(),
+        "opencode-zen" => "opencode".to_owned(),
+        "qwen" => "qwen-portal".to_owned(),
+        "kimi-code" => "kimi-coding".to_owned(),
+        normalized => normalized.to_owned(),
+    }
+}
+
+fn normalize_anthropic_model_id(model: &str) -> String {
+    match normalize(model).as_str() {
+        "opus-4.6" => "claude-opus-4-6".to_owned(),
+        "opus-4.5" => "claude-opus-4-5".to_owned(),
+        "sonnet-4.6" => "claude-sonnet-4-6".to_owned(),
+        "sonnet-4.5" => "claude-sonnet-4-5".to_owned(),
+        _ => model.trim().to_owned(),
+    }
+}
+
+fn normalize_provider_model_id(provider: &str, model: &str) -> String {
+    if provider == "anthropic" {
+        return normalize_anthropic_model_id(model);
+    }
+    model.trim().to_owned()
+}
+
+fn should_use_openai_codex_provider(provider: &str, model: &str) -> bool {
+    if provider != "openai" {
+        return false;
+    }
+    let normalized = normalize(model);
+    normalized == "gpt-5.3-codex" || normalized.starts_with("gpt-5.3-codex-")
+}
+
+fn normalize_model_ref(provider: &str, model: &str) -> (String, String) {
+    let normalized_provider = normalize_provider_id(provider);
+    let normalized_model = normalize_provider_model_id(&normalized_provider, model);
+    if should_use_openai_codex_provider(&normalized_provider, &normalized_model) {
+        return ("openai-codex".to_owned(), normalized_model);
+    }
+    (normalized_provider, normalized_model)
+}
+
+fn model_provider_failover_chain(provider: &str) -> Vec<String> {
+    match normalize_provider_id(provider).as_str() {
+        "openai-codex" => vec!["openai".to_owned(), "anthropic".to_owned()],
+        "openai" => vec!["openai-codex".to_owned(), "anthropic".to_owned()],
+        "anthropic" => vec!["openai".to_owned()],
+        "qwen-portal" => vec!["openai".to_owned()],
+        "zai" => vec!["openai".to_owned()],
+        _ => Vec::new(),
     }
 }
 
@@ -14204,6 +14508,111 @@ mod tests {
             }
             _ => panic!("expected off-clear patch handled"),
         }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_patch_model_normalizes_provider_aliases_and_failover_provider_rules() {
+        let dispatcher = RpcDispatcher::new();
+        let key = "agent:main:discord:group:g-model-normalize";
+
+        let patch_provider_alias = RpcRequestFrame {
+            id: "req-patch-model-provider-alias".to_owned(),
+            method: "sessions.patch".to_owned(),
+            params: serde_json::json!({
+                "key": key,
+                "model": "z.ai/glm-4.5"
+            }),
+        };
+        match dispatcher.handle_request(&patch_provider_alias).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/entry/providerOverride")
+                        .and_then(serde_json::Value::as_str),
+                    Some("zai")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/entry/modelOverride")
+                        .and_then(serde_json::Value::as_str),
+                    Some("glm-4.5")
+                );
+            }
+            _ => panic!("expected alias-normalized model patch"),
+        }
+
+        let patch_codex = RpcRequestFrame {
+            id: "req-patch-model-codex-provider".to_owned(),
+            method: "sessions.patch".to_owned(),
+            params: serde_json::json!({
+                "key": key,
+                "model": "openai/gpt-5.3-codex"
+            }),
+        };
+        match dispatcher.handle_request(&patch_codex).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/entry/providerOverride")
+                        .and_then(serde_json::Value::as_str),
+                    Some("openai-codex")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/entry/modelOverride")
+                        .and_then(serde_json::Value::as_str),
+                    Some("gpt-5.3-codex")
+                );
+            }
+            _ => panic!("expected codex provider model patch"),
+        }
+
+        let patch_anthropic_alias = RpcRequestFrame {
+            id: "req-patch-model-anthropic-alias".to_owned(),
+            method: "sessions.patch".to_owned(),
+            params: serde_json::json!({
+                "key": key,
+                "model": "anthropic/sonnet-4.5"
+            }),
+        };
+        match dispatcher.handle_request(&patch_anthropic_alias).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/entry/providerOverride")
+                        .and_then(serde_json::Value::as_str),
+                    Some("anthropic")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/entry/modelOverride")
+                        .and_then(serde_json::Value::as_str),
+                    Some("claude-sonnet-4-5")
+                );
+            }
+            _ => panic!("expected anthropic alias model patch"),
+        }
+    }
+
+    #[test]
+    fn model_provider_failover_chain_normalizes_aliases() {
+        assert_eq!(
+            super::model_provider_failover_chain("openai-codex"),
+            vec!["openai".to_owned(), "anthropic".to_owned()]
+        );
+        assert_eq!(
+            super::model_provider_failover_chain("openai"),
+            vec!["openai-codex".to_owned(), "anthropic".to_owned()]
+        );
+        assert_eq!(
+            super::model_provider_failover_chain("z.ai"),
+            vec!["openai".to_owned()]
+        );
+        assert_eq!(
+            super::model_provider_failover_chain("qwen"),
+            vec!["openai".to_owned()]
+        );
+        assert!(super::model_provider_failover_chain("unknown-provider").is_empty());
     }
 
     #[tokio::test]
@@ -20428,6 +20837,260 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_browser_open_routes_through_browser_proxy_runtime() {
+        let dispatcher = Arc::new(RpcDispatcher::new());
+
+        let pair = RpcRequestFrame {
+            id: "req-browser-open-node-pair".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "browser-open-node-1",
+                "displayName": "Browser Open Node",
+                "caps": ["browser"],
+                "commands": ["browser.proxy"]
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&pair).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("pair request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+        let approve = RpcRequestFrame {
+            id: "req-browser-open-node-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        let out = dispatcher.handle_request(&approve).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        let browser_open = RpcRequestFrame {
+            id: "req-browser-open".to_owned(),
+            method: "browser.open".to_owned(),
+            params: serde_json::json!({
+                "url": "https://example.com",
+                "timeoutMs": 500
+            }),
+        };
+        let task_dispatcher = Arc::clone(&dispatcher);
+        let browser_task =
+            tokio::spawn(async move { task_dispatcher.handle_request(&browser_open).await });
+
+        let mut invoke_id = None;
+        for _ in 0..100 {
+            if let Some(id) = dispatcher.node_runtime.latest_pending_invoke_id().await {
+                invoke_id = Some(id);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let invoke_id = invoke_id.expect("pending invoke id");
+        let invoke_result = RpcRequestFrame {
+            id: "req-browser-open-result".to_owned(),
+            method: "node.invoke.result".to_owned(),
+            params: serde_json::json!({
+                "id": invoke_id,
+                "nodeId": "browser-open-node-1",
+                "ok": true,
+                "payload": {
+                    "result": {
+                        "ok": true,
+                        "targetId": "tab-open-1",
+                        "url": "https://example.com"
+                    }
+                }
+            }),
+        };
+        let out = dispatcher.handle_request(&invoke_result).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        match browser_task.await.expect("browser open task") {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/ok").and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/targetId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("tab-open-1")
+                );
+                assert_eq!(
+                    payload.pointer("/url").and_then(serde_json::Value::as_str),
+                    Some("https://example.com")
+                );
+            }
+            _ => panic!("expected browser.open handled response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_canvas_present_routes_through_node_runtime() {
+        let dispatcher = Arc::new(RpcDispatcher::new());
+
+        let pair = RpcRequestFrame {
+            id: "req-canvas-present-node-pair".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "canvas-node-1",
+                "displayName": "Canvas Node",
+                "commands": ["canvas.present"]
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&pair).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("pair request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+        let approve = RpcRequestFrame {
+            id: "req-canvas-present-node-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        let out = dispatcher.handle_request(&approve).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        let canvas_present = RpcRequestFrame {
+            id: "req-canvas-present".to_owned(),
+            method: "canvas.present".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "canvas-node-1",
+                "target": "https://example.com/canvas",
+                "x": 10,
+                "y": 20,
+                "width": 800,
+                "height": 480,
+                "timeoutMs": 500
+            }),
+        };
+        let task_dispatcher = Arc::clone(&dispatcher);
+        let canvas_task =
+            tokio::spawn(async move { task_dispatcher.handle_request(&canvas_present).await });
+
+        let mut invoke_id = None;
+        for _ in 0..100 {
+            if let Some(id) = dispatcher.node_runtime.latest_pending_invoke_id().await {
+                invoke_id = Some(id);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let invoke_id = invoke_id.expect("pending invoke id");
+        let invoke_result = RpcRequestFrame {
+            id: "req-canvas-present-result".to_owned(),
+            method: "node.invoke.result".to_owned(),
+            params: serde_json::json!({
+                "id": invoke_id,
+                "nodeId": "canvas-node-1",
+                "ok": true,
+                "payload": {
+                    "ok": true,
+                    "shown": true
+                }
+            }),
+        };
+        let out = dispatcher.handle_request(&invoke_result).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        match canvas_task.await.expect("canvas present task") {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/ok").and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/nodeId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("canvas-node-1")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/command")
+                        .and_then(serde_json::Value::as_str),
+                    Some("canvas.present")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/shown")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected canvas.present handled response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_canvas_present_rejects_disallowed_command() {
+        let dispatcher = RpcDispatcher::new();
+
+        let pair = RpcRequestFrame {
+            id: "req-canvas-disallowed-node-pair".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "canvas-node-2",
+                "displayName": "Camera-only Node",
+                "commands": ["camera.capture"]
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&pair).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("pair request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+        let approve = RpcRequestFrame {
+            id: "req-canvas-disallowed-node-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        let out = dispatcher.handle_request(&approve).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        let canvas_present = RpcRequestFrame {
+            id: "req-canvas-disallowed-present".to_owned(),
+            method: "canvas.present".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "canvas-node-2",
+                "target": "https://example.com/canvas"
+            }),
+        };
+        match dispatcher.handle_request(&canvas_present).await {
+            RpcDispatchOutcome::Error {
+                code,
+                message,
+                details,
+            } => {
+                assert_eq!(code, 400);
+                assert_eq!(message, "node command not allowed");
+                assert_eq!(
+                    details
+                        .as_ref()
+                        .and_then(|value| value.pointer("/command"))
+                        .and_then(serde_json::Value::as_str),
+                    Some("canvas.present")
+                );
+            }
+            _ => panic!("expected canvas.present invalid-request response"),
+        }
+    }
+
+    #[tokio::test]
     async fn dispatcher_wizard_methods_manage_session_lifecycle() {
         let dispatcher = RpcDispatcher::new();
 
@@ -21223,6 +21886,88 @@ mod tests {
                 );
             }
             _ => panic!("expected node.event handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_node_invoke_supports_camera_screen_location_and_system_commands_when_declared(
+    ) {
+        let dispatcher = RpcDispatcher::new();
+
+        let pair_request = RpcRequestFrame {
+            id: "req-node-sensors-pair-request".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "node-sensors-1",
+                "commands": [
+                    "camera.snap",
+                    "screen.record",
+                    "location.get",
+                    "system.run"
+                ]
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&pair_request).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+        let pair_approve = RpcRequestFrame {
+            id: "req-node-sensors-pair-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        let out = dispatcher.handle_request(&pair_approve).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        for (idx, (command, params)) in [
+            ("camera.snap", serde_json::json!({ "quality": "high" })),
+            ("screen.record", serde_json::json!({ "seconds": 1 })),
+            ("location.get", serde_json::json!({})),
+            (
+                "system.run",
+                serde_json::json!({
+                    "command": "echo cp5"
+                }),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let invoke = RpcRequestFrame {
+                id: format!("req-node-sensors-invoke-{idx}"),
+                method: "node.invoke".to_owned(),
+                params: serde_json::json!({
+                    "nodeId": "node-sensors-1",
+                    "command": command,
+                    "params": params,
+                    "idempotencyKey": format!("idem-node-sensors-{idx}")
+                }),
+            };
+            match dispatcher.handle_request(&invoke).await {
+                RpcDispatchOutcome::Handled(payload) => {
+                    assert_eq!(
+                        payload.pointer("/ok").and_then(serde_json::Value::as_bool),
+                        Some(true)
+                    );
+                    assert_eq!(
+                        payload
+                            .pointer("/command")
+                            .and_then(serde_json::Value::as_str),
+                        Some(command)
+                    );
+                    assert!(payload
+                        .pointer("/payload/invokeId")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some());
+                }
+                _ => panic!("expected node.invoke handled for {command}"),
+            }
         }
     }
 

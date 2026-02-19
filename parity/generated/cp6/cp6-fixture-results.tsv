@@ -1,0 +1,6 @@
+test	duration_ms	status
+gateway::tests::dispatcher_models_list_returns_catalog_and_rejects_unknown_params	641	pass
+gateway::tests::dispatcher_patch_model_normalizes_provider_aliases_and_failover_provider_rules	572	pass
+gateway::tests::model_provider_failover_chain_normalizes_aliases	650	pass
+security::tool_policy::tests::provider_specific_rule_is_applied_after_global_policy	572	pass
+security::tool_policy::tests::provider_model_specific_rule_beats_provider_fallback	646	pass

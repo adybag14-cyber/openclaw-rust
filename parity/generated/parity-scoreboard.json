@@ -2,30 +2,30 @@
   "current": {
     "manifestVersion": "1.0.0",
     "methodSurface": {
-      "rustCount": 101,
+      "rustCount": 103,
       "base": {
         "upstreamCount": 89,
-        "rustCount": 101,
+        "rustCount": 103,
         "intersectionCount": 89,
         "coveragePercent": 100.0,
         "missingInRustCount": 0,
-        "rustOnlyCount": 12
+        "rustOnlyCount": 14
       },
       "handlers": {
         "upstreamCount": 98,
-        "rustCount": 101,
+        "rustCount": 103,
         "intersectionCount": 98,
         "coveragePercent": 100.0,
         "missingInRustCount": 0,
-        "rustOnlyCount": 3
+        "rustOnlyCount": 5
       }
     },
     "audit": {
       "counts": {
         "total": 21,
         "implemented": 9,
-        "partial": 10,
-        "deferred": 2,
+        "partial": 12,
+        "deferred": 0,
         "notStarted": 0,
         "unknown": 0
       },
@@ -36,9 +36,9 @@
         "Session model": "Partial",
         "Channel integrations": "Partial",
         "Tool execution layer": "Partial",
-        "Nodes + device features": "Deferred",
+        "Nodes + device features": "Partial",
         "Voice stack": "Partial",
-        "Model/provider layer": "Deferred",
+        "Model/provider layer": "Partial",
         "Prompt-injection defense": "Implemented",
         "Command safety defense": "Implemented",
         "Host integrity defense": "Implemented",
@@ -52,24 +52,35 @@
         "Test coverage (Rust)": "Partial",
         "Dockerized validation": "Partial"
       }
-    }
+    },
+    "generatedAtUtc": "2026-02-19T21:52:49.8748797Z"
   },
   "baselinePresent": true,
   "delta": {
     "audit": {
       "implemented": 0,
-      "partial": 1,
-      "deferred": -1,
+      "partial": 3,
+      "deferred": -3,
       "notStarted": 0
     },
     "methodSurface": {
-      "rustCount": 0,
+      "rustCount": 2,
       "baseCoveragePercent": 0.0,
       "handlersCoveragePercent": 0.0,
       "baseMissingInRustCount": 0,
       "handlersMissingInRustCount": 0
     },
     "changedSubsystems": [
+      {
+        "subsystem": "Model/provider layer",
+        "baseline": "Deferred",
+        "current": "Partial"
+      },
+      {
+        "subsystem": "Nodes + device features",
+        "baseline": "Deferred",
+        "current": "Partial"
+      },
       {
         "subsystem": "Tool execution layer",
         "baseline": "Deferred",
