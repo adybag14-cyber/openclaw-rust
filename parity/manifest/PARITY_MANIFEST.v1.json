@@ -93,19 +93,41 @@
   },
   "cp7Gate": {
     "id": "CP7",
-    "name": "CLI + Control UI Starter",
+    "name": "CLI + Control UI Parity",
     "requirements": [
       {
         "id": "CP7-R1",
-        "description": "Rust CLI exposes doctor diagnostics command with non-interactive output for runbook compatibility"
+        "description": "Rust CLI exposes runbook command families (`gateway`, `agent`, `message send`, `nodes`, `sessions`) with parity-compatible argument surfaces"
       },
       {
         "id": "CP7-R2",
-        "description": "Control-plane update workflow continues to expose doctor follow-up hint in restart sentinel payloads"
+        "description": "Rust CLI exposes doctor diagnostics command with deterministic non-interactive output (`doctor --non-interactive`, optional JSON)"
       },
       {
         "id": "CP7-R3",
+        "description": "Control-plane update workflow continues to expose doctor follow-up hint in restart sentinel payloads"
+      },
+      {
+        "id": "CP7-R4",
         "description": "CP7 fixtures run in CI and publish gate artifacts"
+      }
+    ]
+  },
+  "cp8Gate": {
+    "id": "CP8",
+    "name": "Reliability + Security Hardening Starter",
+    "requirements": [
+      {
+        "id": "CP8-R1",
+        "description": "Replay + soak reliability fixtures execute as a deterministic CP8 gate"
+      },
+      {
+        "id": "CP8-R2",
+        "description": "Security regression fixtures for prompt/command/tool-loop/policy-bundle protections execute in CP8 gate"
+      },
+      {
+        "id": "CP8-R3",
+        "description": "CP8 fixtures run in CI and publish reliability/security artifact metrics"
       }
     ]
   },
@@ -128,6 +150,7 @@
     ".\\scripts\\parity\\run-cp1-gate.ps1",
     ".\\scripts\\parity\\run-cp5-gate.ps1",
     ".\\scripts\\parity\\run-cp6-gate.ps1",
-    ".\\scripts\\parity\\run-cp7-gate.ps1"
+    ".\\scripts\\parity\\run-cp7-gate.ps1",
+    ".\\scripts\\parity\\run-cp8-gate.ps1"
   ]
 }

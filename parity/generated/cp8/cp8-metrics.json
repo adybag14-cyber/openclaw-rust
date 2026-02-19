@@ -1,0 +1,10 @@
+{
+  "gate": "cp8",
+  "passed": 6,
+  "totalFixtures": 6,
+  "totalDurationMs": 5522,
+  "avgFixtureDurationMs": 920,
+  "reliabilityFixtureCount": 2,
+  "securityFixtureCount": 4,
+  "resultsTsv": "cp8-fixture-results.tsv"
+}

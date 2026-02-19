@@ -39,10 +39,15 @@ export OPENCLAW_RS_VT_API_KEY="..."
 cargo run --release -- --config ./openclaw-rs.toml
 ```
 
-CP7 starter diagnostics:
+CP7 CLI parity quick checks:
 
 ```bash
 cargo run -- doctor --non-interactive
+cargo run -- gateway status --json
+cargo run -- agent --message "status check" --wait --json
+cargo run -- message send --to "+15551234567" --message "hello" --channel telegram --json
+cargo run -- nodes list --json
+cargo run -- sessions list --limit 5 --json
 ```
 
 ## Build + service on Ubuntu 20.04
@@ -247,10 +252,16 @@ CP6 model provider/auth/failover gate (provider alias normalization + auth overr
 .\scripts\parity\run-cp6-gate.ps1
 ```
 
-CP7 CLI/control starter gate (`doctor` diagnostics + control update contract checks):
+CP7 CLI/control parity gate (`doctor` + gateway/agent/message/nodes/sessions CLI fixtures + control update contract checks):
 
 ```powershell
 .\scripts\parity\run-cp7-gate.ps1
+```
+
+CP8 reliability/security starter gate (replay + soak + defender regression fixtures):
+
+```powershell
+.\scripts\parity\run-cp8-gate.ps1
 ```
 
 Current payload corpus coverage: `chat.*`, `tts.*`, `voicewake.*`, `web.login.*`, `update.run`, `sessions.*` envelope/alias flows, `browser.request`, `config.*`, `logs.tail`, `cron.*`, `exec.approvals.*`, `exec.approval.*`, and `wizard.*`.
@@ -270,6 +281,7 @@ Generated artifacts:
 - `tests/parity/gateway-payload-corpus.json`
 - `tests/parity/tool-runtime-corpus.json`
 - `parity/generated/cp7/*`
+- `parity/generated/cp8/*`
 
 PR automation:
 

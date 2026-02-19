@@ -5,8 +5,8 @@ Repo: `adybag14-cyber/openclaw-rust`
 
 ## Current Baseline (Evidence-Based)
 
-- Overall completion estimate toward true end-to-end Rust replacement: **~48%**
-- Remaining gap: **~52%**
+- Overall completion estimate toward true end-to-end Rust replacement: **~56%**
+- Remaining gap: **~44%**
 - Rust feature-audit status counts:
   - `Implemented`: 9
   - `Partial`: 9
@@ -179,7 +179,7 @@ Exit gates:
 - Existing operator runbooks execute without TS binaries.
 - Existing scripts/automation continue unmodified.
 
-Status: **Partial (doctor CLI diagnostics + CP7 starter gate implemented; broader command/runbook parity pending)**
+Status: **Completed (Gate Achieved)**
 
 ## CP8: Reliability, Performance, Security Hardening + Cutover
 
@@ -196,7 +196,7 @@ Exit gates:
 - Security suite has no critical findings.
 - Rust is default runtime in production; TS path decommissioned.
 
-Status: **Partial for defender/security, cutover not started**
+Status: **Partial (starter reliability/security gate implemented; benchmark + cutover tracks pending)**
 
 ## Progress Scorecard Template
 
@@ -211,7 +211,7 @@ Use this checklist for active tracking:
 - [ ] CP4 complete (Wave 3)
 - [x] CP5 complete
 - [x] CP6 complete
-- [ ] CP7 complete
+- [x] CP7 complete
 - [ ] CP8 complete
 
 ## Milestone Thresholds
@@ -231,5 +231,5 @@ Use this checklist for active tracking:
 ## Immediate Next Actions (Start Here)
 
 1. Complete CP4 Wave 1 transport lifecycle + webhook ingress parity on Telegram, WhatsApp, Discord, Slack, Signal, and WebChat using the new channel-runtime helper layer.
-2. Start CP7 parity for CLI/control workflows (`doctor` diagnostics + runbook-compatible command surface).
-3. Expand CP8 reliability gates with soak + chaos fixtures tied to parity drift artifacts and release cutover criteria.
+2. Expand CP8 reliability/performance hardening with benchmark fixtures (`p50/p95/p99`, throughput, memory) and chaos tracks beyond starter soak coverage.
+3. Define CP8 release-cutover criteria (`canary -> staged -> full`) with rollback-safe validation checklists and runbook acceptance fixtures.

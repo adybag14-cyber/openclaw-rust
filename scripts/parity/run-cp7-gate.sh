@@ -17,8 +17,13 @@ echo -e "test\tduration_ms\tstatus" > "${results_file}"
 
 tests=(
   "tests::cli_parses_doctor_command_and_flags"
+  "tests::cli_parses_gateway_status_command_and_json_flag"
+  "tests::cli_parses_message_send_command"
   "tests::doctor_report_marks_config_load_failure_as_blocking"
   "tests::doctor_report_warns_when_docker_is_unavailable"
+  "tests::cli_dispatch_rpc_status_returns_runtime_payload"
+  "tests::cli_dispatch_rpc_send_returns_message_identifiers"
+  "tests::cli_dispatch_rpc_sessions_list_returns_count_field"
   "gateway::tests::dispatcher_update_and_web_login_methods_report_expected_payloads"
 )
 
@@ -66,7 +71,7 @@ else
 fi
 
 cat > "${summary_file}" <<EOF
-## CP7 CLI + Control UI Starter Gate
+## CP7 CLI + Control UI Parity Gate
 
 - Fixtures passed: ${passed}/${total_fixtures}
 - Total duration: ${total_duration_ms} ms
