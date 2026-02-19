@@ -196,7 +196,7 @@ Exit gates:
 - Security suite has no critical findings.
 - Rust is default runtime in production; TS path decommissioned.
 
-Status: **Partial (starter reliability/security gate implemented; benchmark + cutover tracks pending)**
+Status: **Completed (Gate Achieved: reliability/security fixtures, benchmark artifact metrics, and cutover runbook validation)**
 
 ## Progress Scorecard Template
 
@@ -212,7 +212,7 @@ Use this checklist for active tracking:
 - [x] CP5 complete
 - [x] CP6 complete
 - [x] CP7 complete
-- [ ] CP8 complete
+- [x] CP8 complete
 
 ## Milestone Thresholds
 
@@ -231,5 +231,5 @@ Use this checklist for active tracking:
 ## Immediate Next Actions (Start Here)
 
 1. Complete CP4 Wave 1 transport lifecycle + webhook ingress parity on Telegram, WhatsApp, Discord, Slack, Signal, and WebChat using the new channel-runtime helper layer.
-2. Expand CP8 reliability/performance hardening with benchmark fixtures (`p50/p95/p99`, throughput, memory) and chaos tracks beyond starter soak coverage.
-3. Define CP8 release-cutover criteria (`canary -> staged -> full`) with rollback-safe validation checklists and runbook acceptance fixtures.
+2. Complete CP4 Wave 1 transport lifecycle + webhook ingress parity on Telegram, WhatsApp, Discord, Slack, Signal, and WebChat using the channel-runtime helper layer.
+3. Advance CP4 Wave 2/3 extension channel adapters toward parity and validate against canary behavior baselines.

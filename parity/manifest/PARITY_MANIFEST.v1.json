@@ -115,7 +115,7 @@
   },
   "cp8Gate": {
     "id": "CP8",
-    "name": "Reliability + Security Hardening Starter",
+    "name": "Reliability + Security Hardening + Cutover",
     "requirements": [
       {
         "id": "CP8-R1",
@@ -128,6 +128,14 @@
       {
         "id": "CP8-R3",
         "description": "CP8 fixtures run in CI and publish reliability/security artifact metrics"
+      },
+      {
+        "id": "CP8-R4",
+        "description": "CP8 benchmark fixture emits latency percentile (p50/p95/p99), throughput, and rss metrics as gate artifacts"
+      },
+      {
+        "id": "CP8-R5",
+        "description": "CP8 cutover runbook validation enforces canary/staged/full/rollback sections during gate execution"
       }
     ]
   },

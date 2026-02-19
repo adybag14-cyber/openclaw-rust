@@ -258,7 +258,7 @@ CP7 CLI/control parity gate (`doctor` + gateway/agent/message/nodes/sessions CLI
 .\scripts\parity\run-cp7-gate.ps1
 ```
 
-CP8 reliability/security starter gate (replay + soak + defender regression fixtures):
+CP8 reliability/security/performance gate (replay + soak + defender regression + benchmark + cutover runbook validation):
 
 ```powershell
 .\scripts\parity\run-cp8-gate.ps1
@@ -282,6 +282,7 @@ Generated artifacts:
 - `tests/parity/tool-runtime-corpus.json`
 - `parity/generated/cp7/*`
 - `parity/generated/cp8/*`
+- `parity/CP8_CUTOVER_RUNBOOK.md`
 
 PR automation:
 

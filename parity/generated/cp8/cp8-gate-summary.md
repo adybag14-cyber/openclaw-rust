@@ -1,9 +1,13 @@
-## CP8 Reliability + Security Hardening Starter Gate
+## CP8 Reliability + Security Hardening Gate
 
-- Fixtures passed: 6/6
-- Reliability fixtures: 2
+- Fixtures passed: 11/11
+- Reliability fixtures: 6
 - Security fixtures: 4
-- Total duration: 5522 ms
-- Avg fixture duration: 920 ms
+- Benchmark fixtures: 1
+- Total duration: 11486 ms
+- Avg fixture duration: 1044 ms
+- Benchmark latency(us): p50=29, p95=77, p99=93, throughput=19909.94 ops/s, rssKiB=null
+- Cutover runbook validated: parity/CP8_CUTOVER_RUNBOOK.md
 - Artifact log: cp8-gate.log
 - Artifact metrics: cp8-metrics.json
+- Artifact benchmark: cp8-benchmark.json

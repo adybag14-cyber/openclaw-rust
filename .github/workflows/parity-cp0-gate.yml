@@ -279,7 +279,7 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Run CP8 reliability/security starter fixtures
+      - name: Run CP8 reliability/security/performance fixtures
         run: PARITY_ARTIFACT_DIR=parity/generated/cp8 bash ./scripts/parity/run-cp8-gate.sh
 
       - name: Publish CP8 summary

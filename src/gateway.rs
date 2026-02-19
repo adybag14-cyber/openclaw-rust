@@ -14466,7 +14466,7 @@ fn next_wizard_session_id() -> String {
 mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use serde::Deserialize;
     use serde_json::{json, Value};
@@ -23903,6 +23903,104 @@ mod tests {
         };
         let out = dispatcher.handle_request(&invalid_webhook).await;
         assert!(matches!(out, RpcDispatchOutcome::Error { code: 400, .. }));
+    }
+
+    #[tokio::test]
+    async fn dispatcher_status_benchmark_emits_latency_profile() {
+        let dispatcher = RpcDispatcher::new();
+        let iterations = std::env::var("OPENCLAW_CP8_BENCH_ITERS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(512)
+            .clamp(64, 10_000);
+
+        let mut samples_us = Vec::with_capacity(iterations);
+        let benchmark_start = Instant::now();
+
+        for index in 0..iterations {
+            let request = RpcRequestFrame {
+                id: format!("cp8-bench-status-{index}"),
+                method: "status".to_owned(),
+                params: json!({}),
+            };
+            let started = Instant::now();
+            let outcome = dispatcher.handle_request(&request).await;
+            assert!(
+                matches!(outcome, RpcDispatchOutcome::Handled(_)),
+                "status benchmark request should be handled"
+            );
+            let elapsed_us = started.elapsed().as_micros() as u64;
+            samples_us.push(elapsed_us);
+        }
+
+        samples_us.sort_unstable();
+        let elapsed = benchmark_start.elapsed();
+        let elapsed_secs = elapsed.as_secs_f64().max(0.000_001);
+        let throughput_ops_per_sec = (iterations as f64) / elapsed_secs;
+        let p50_us = percentile_us(&samples_us, 0.50);
+        let p95_us = percentile_us(&samples_us, 0.95);
+        let p99_us = percentile_us(&samples_us, 0.99);
+        let max_us = *samples_us.last().unwrap_or(&0);
+        let min_us = *samples_us.first().unwrap_or(&0);
+        let rss_kib = current_rss_kib();
+
+        if let Ok(path) = std::env::var("OPENCLAW_CP8_BENCH_OUT") {
+            let benchmark = json!({
+                "fixture": "gateway::tests::dispatcher_status_benchmark_emits_latency_profile",
+                "iterations": iterations,
+                "elapsedMs": elapsed.as_millis() as u64,
+                "throughputOpsPerSec": throughput_ops_per_sec,
+                "latencyUs": {
+                    "min": min_us,
+                    "p50": p50_us,
+                    "p95": p95_us,
+                    "p99": p99_us,
+                    "max": max_us
+                },
+                "rssKiB": rss_kib
+            });
+            let bytes = serde_json::to_vec_pretty(&benchmark).expect("serialize benchmark");
+            std::fs::write(path, bytes).expect("write cp8 benchmark metrics");
+        }
+
+        // Keep guardrails generous to avoid host-specific flakiness while still catching extreme regressions.
+        assert!(
+            p99_us <= 150_000,
+            "cp8 benchmark regression: p99={}us exceeds 150000us",
+            p99_us
+        );
+        assert!(
+            throughput_ops_per_sec >= 10.0,
+            "cp8 benchmark regression: throughput={throughput_ops_per_sec:.2} ops/s below 10 ops/s"
+        );
+    }
+
+    fn percentile_us(samples: &[u64], percentile: f64) -> u64 {
+        if samples.is_empty() {
+            return 0;
+        }
+        let bounded = percentile.clamp(0.0, 1.0);
+        let index = ((samples.len() - 1) as f64 * bounded).round() as usize;
+        samples[index]
+    }
+
+    fn current_rss_kib() -> Option<u64> {
+        #[cfg(target_os = "linux")]
+        {
+            let content = std::fs::read_to_string("/proc/self/status").ok()?;
+            for line in content.lines() {
+                if let Some(rest) = line.strip_prefix("VmRSS:") {
+                    let value = rest.split_whitespace().next().unwrap_or("0");
+                    return value.parse::<u64>().ok();
+                }
+            }
+            None
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
     }
 
     #[tokio::test]

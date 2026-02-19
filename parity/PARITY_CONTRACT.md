@@ -96,7 +96,9 @@ Optional upstream location override:
 - `parity/generated/cp5/*` (CP5 node/browser/canvas/device gate logs/metrics/summary)
 - `parity/generated/cp6/*` (CP6 model provider/auth/failover gate logs/metrics/summary)
 - `parity/generated/cp7/*` (CP7 CLI/control parity gate logs/metrics/summary)
-- `parity/generated/cp8/*` (CP8 reliability/security starter gate logs/metrics/summary)
+- `parity/generated/cp8/*` (CP8 reliability/security/benchmark gate logs/metrics/summary)
+  - includes `cp8-benchmark.json` latency percentile + throughput + rss metrics
+- `parity/CP8_CUTOVER_RUNBOOK.md` (canary/staged/full/rollback cutover checklist)
 
 ## PR Gate
 
@@ -110,4 +112,5 @@ Optional upstream location override:
 - PR CI must keep CP5 node/browser/canvas/device fixtures green (`run-cp5-gate.sh`) and publish/upload `parity/generated/cp5` artifacts.
 - PR CI must keep CP6 model/auth/failover fixtures green (`run-cp6-gate.sh`) and publish/upload `parity/generated/cp6` artifacts.
 - PR CI must keep CP7 CLI/control parity fixtures green (`run-cp7-gate.sh`) and publish/upload `parity/generated/cp7` artifacts.
-- PR CI must keep CP8 reliability/security starter fixtures green (`run-cp8-gate.sh`) and publish/upload `parity/generated/cp8` artifacts.
+- PR CI must keep CP8 reliability/security fixtures green (`run-cp8-gate.sh`) and publish/upload `parity/generated/cp8` artifacts.
+- PR CI must ensure CP8 benchmark metrics are emitted (`cp8-benchmark.json`) and cutover runbook validation passes.
