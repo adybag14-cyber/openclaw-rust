@@ -1,0 +1,44 @@
+[parity] running CP7 fixture: tests::cli_parses_doctor_command_and_flags
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.84s
+     Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
+
+running 1 test
+test tests::cli_parses_doctor_command_and_flags ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.00s
+
+[parity] running CP7 fixture: tests::doctor_report_marks_config_load_failure_as_blocking
+    Blocking waiting for file lock on package cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.64s
+     Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
+
+running 1 test
+test tests::doctor_report_marks_config_load_failure_as_blocking ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.00s
+
+[parity] running CP7 fixture: tests::doctor_report_warns_when_docker_is_unavailable
+    Blocking waiting for file lock on package cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.57s
+     Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
+
+running 1 test
+test tests::doctor_report_warns_when_docker_is_unavailable ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.00s
+
+[parity] running CP7 fixture: gateway::tests::dispatcher_update_and_web_login_methods_report_expected_payloads
+    Blocking waiting for file lock on package cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.55s
+     Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
+
+running 1 test
+test gateway::tests::dispatcher_update_and_web_login_methods_report_expected_payloads ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.00s
+
+[parity] CP7 gate passed

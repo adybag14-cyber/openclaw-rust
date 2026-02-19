@@ -164,7 +164,7 @@ Exit gates:
 - Model selection/failover fixtures match TS.
 - Auth profile migration is transparent for operators.
 
-Status: **Partial (provider/model alias + failover-chain foundations implemented; auth profile + runtime failover execution pending)**
+Status: **Completed (Gate Achieved)**
 
 ## CP7: CLI + Control UI Parity
 
@@ -179,7 +179,7 @@ Exit gates:
 - Existing operator runbooks execute without TS binaries.
 - Existing scripts/automation continue unmodified.
 
-Status: **Not Started for full parity**
+Status: **Partial (doctor CLI diagnostics + CP7 starter gate implemented; broader command/runbook parity pending)**
 
 ## CP8: Reliability, Performance, Security Hardening + Cutover
 
@@ -210,7 +210,7 @@ Use this checklist for active tracking:
 - [ ] CP4 complete (Wave 2)
 - [ ] CP4 complete (Wave 3)
 - [x] CP5 complete
-- [ ] CP6 complete
+- [x] CP6 complete
 - [ ] CP7 complete
 - [ ] CP8 complete
 
@@ -231,5 +231,5 @@ Use this checklist for active tracking:
 ## Immediate Next Actions (Start Here)
 
 1. Complete CP4 Wave 1 transport lifecycle + webhook ingress parity on Telegram, WhatsApp, Discord, Slack, Signal, and WebChat using the new channel-runtime helper layer.
-2. Extend CP6 model-provider parity for auth profile resolution order and runtime failover execution semantics (beyond current alias/failover metadata foundations).
+2. Start CP7 parity for CLI/control workflows (`doctor` diagnostics + runbook-compatible command surface).
 3. Expand CP8 reliability gates with soak + chaos fixtures tied to parity drift artifacts and release cutover criteria.

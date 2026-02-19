@@ -1,4 +1,4 @@
-# Rust Parity Contract (Phase 1/2 + CP2/CP3/CP4/CP5/CP6 Gates)
+# Rust Parity Contract (Phase 1/2 + CP2/CP3/CP4/CP5/CP6/CP7 Gates)
 
 This contract defines the machine-checked parity checks that currently gate Rust
 gateway parity work.
@@ -66,6 +66,10 @@ From repo root:
 .\scripts\parity\run-cp6-gate.ps1
 ```
 
+```powershell
+.\scripts\parity\run-cp7-gate.ps1
+```
+
 Optional upstream location override:
 
 ```powershell
@@ -86,7 +90,8 @@ Optional upstream location override:
 - `parity/generated/cp4/*` (CP4 channel-runtime gate logs/metrics/summary)
   - includes wave-1 channel lifecycle/runtime snapshot fixtures (`channels.status` event-ingest parity + logout transition checks)
 - `parity/generated/cp5/*` (CP5 node/browser/canvas/device gate logs/metrics/summary)
-- `parity/generated/cp6/*` (CP6 model provider/auth/failover foundation gate logs/metrics/summary)
+- `parity/generated/cp6/*` (CP6 model provider/auth/failover gate logs/metrics/summary)
+- `parity/generated/cp7/*` (CP7 CLI/control starter gate logs/metrics/summary)
 
 ## PR Gate
 
@@ -98,4 +103,5 @@ Optional upstream location override:
 - PR CI must keep CP3 parity fixtures green (`run-cp3-gate.sh`) and publish/upload `parity/generated/cp3` artifacts.
 - PR CI must keep CP4 channel-runtime fixtures green (`run-cp4-gate.sh`) and publish/upload `parity/generated/cp4` artifacts.
 - PR CI must keep CP5 node/browser/canvas/device fixtures green (`run-cp5-gate.sh`) and publish/upload `parity/generated/cp5` artifacts.
-- PR CI must keep CP6 model/auth/failover foundation fixtures green (`run-cp6-gate.sh`) and publish/upload `parity/generated/cp6` artifacts.
+- PR CI must keep CP6 model/auth/failover fixtures green (`run-cp6-gate.sh`) and publish/upload `parity/generated/cp6` artifacts.
+- PR CI must keep CP7 CLI/control starter fixtures green (`run-cp7-gate.sh`) and publish/upload `parity/generated/cp7` artifacts.

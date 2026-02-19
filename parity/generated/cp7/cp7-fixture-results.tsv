@@ -1,0 +1,5 @@
+test	duration_ms	status
+tests::cli_parses_doctor_command_and_flags	1052	pass
+tests::doctor_report_marks_config_load_failure_as_blocking	808	pass
+tests::doctor_report_warns_when_docker_is_unavailable	738	pass
+gateway::tests::dispatcher_update_and_web_login_methods_report_expected_payloads	728	pass

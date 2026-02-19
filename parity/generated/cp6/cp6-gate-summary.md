@@ -1,7 +1,7 @@
-## CP6 Model Provider/Auth/Failover Foundation Gate
+## CP6 Model Provider/Auth/Failover Gate
 
-- Fixtures passed: 5/5
-- Total duration: 3081 ms
-- Avg fixture duration: 616 ms
+- Fixtures passed: 8/8
+- Total duration: 5768 ms
+- Avg fixture duration: 721 ms
 - Artifact log: cp6-gate.log
 - Artifact metrics: cp6-metrics.json

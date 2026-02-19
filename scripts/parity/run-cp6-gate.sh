@@ -12,6 +12,9 @@ metrics_file="${artifact_dir}/cp6-metrics.json"
 tests=(
   "gateway::tests::dispatcher_models_list_returns_catalog_and_rejects_unknown_params"
   "gateway::tests::dispatcher_patch_model_normalizes_provider_aliases_and_failover_provider_rules"
+  "gateway::tests::dispatcher_patch_model_clears_auth_profile_override_fields"
+  "gateway::tests::dispatcher_agent_runtime_failover_uses_fallback_provider_on_profile_cooldown"
+  "gateway::tests::dispatcher_compact_rotates_auto_auth_profile_override"
   "gateway::tests::model_provider_failover_chain_normalizes_aliases"
   "security::tool_policy::tests::provider_specific_rule_is_applied_after_global_policy"
   "security::tool_policy::tests::provider_model_specific_rule_beats_provider_fallback"
@@ -69,7 +72,7 @@ cat > "${metrics_file}" <<EOF
 EOF
 
 cat > "${summary_file}" <<EOF
-## CP6 Model Provider/Auth/Failover Foundation Gate
+## CP6 Model Provider/Auth/Failover Gate
 
 - Fixtures passed: ${passed}/${total_fixtures}
 - Total duration: ${total_duration_ms} ms

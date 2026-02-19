@@ -39,6 +39,12 @@ export OPENCLAW_RS_VT_API_KEY="..."
 cargo run --release -- --config ./openclaw-rs.toml
 ```
 
+CP7 starter diagnostics:
+
+```bash
+cargo run -- doctor --non-interactive
+```
+
 ## Build + service on Ubuntu 20.04
 
 ```bash
@@ -235,10 +241,16 @@ CP5 nodes/browser/canvas/device parity gate (runtime invoke + browser proxy + ca
 .\scripts\parity\run-cp5-gate.ps1
 ```
 
-CP6 model provider/auth/failover foundation gate (provider alias normalization + failover baseline fixtures):
+CP6 model provider/auth/failover gate (provider alias normalization + auth override + runtime failover fixtures):
 
 ```powershell
 .\scripts\parity\run-cp6-gate.ps1
+```
+
+CP7 CLI/control starter gate (`doctor` diagnostics + control update contract checks):
+
+```powershell
+.\scripts\parity\run-cp7-gate.ps1
 ```
 
 Current payload corpus coverage: `chat.*`, `tts.*`, `voicewake.*`, `web.login.*`, `update.run`, `sessions.*` envelope/alias flows, `browser.request`, `config.*`, `logs.tail`, `cron.*`, `exec.approvals.*`, `exec.approval.*`, and `wizard.*`.
@@ -257,6 +269,7 @@ Generated artifacts:
 - `parity/method-surface-report.md`
 - `tests/parity/gateway-payload-corpus.json`
 - `tests/parity/tool-runtime-corpus.json`
+- `parity/generated/cp7/*`
 
 PR automation:
 

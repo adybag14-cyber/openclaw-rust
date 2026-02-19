@@ -696,6 +696,7 @@ pub struct RpcDispatcher {
     tts: TtsRegistry,
     voicewake: VoiceWakeRegistry,
     models: ModelRegistry,
+    auth_profiles: AuthProfileRegistry,
     agents: AgentRegistry,
     agent_runs: AgentRunRegistry,
     nodes: NodePairRegistry,
@@ -731,6 +732,8 @@ const DEFAULT_AGENT_IDENTITY_THEME: &str = "default";
 const DEFAULT_AGENT_IDENTITY_EMOJI: &str = "claw";
 const DEFAULT_AGENT_IDENTITY_AVATAR: &str = "openclaw";
 const DEFAULT_AGENT_IDENTITY_AVATAR_URL: &str = "memory://agents/main/avatar";
+const DEFAULT_MODEL_PROVIDER: &str = "openai";
+const DEFAULT_MODEL_ID: &str = "gpt-5.3";
 const AGENT_BOOTSTRAP_FILE_NAMES: &[&str] = &[
     "AGENTS.md",
     "SOUL.md",
@@ -907,6 +910,7 @@ impl RpcDispatcher {
             tts: TtsRegistry::new(),
             voicewake: VoiceWakeRegistry::new(),
             models: ModelRegistry::new(),
+            auth_profiles: AuthProfileRegistry::new(),
             agents: AgentRegistry::new(),
             agent_runs: AgentRunRegistry::new(),
             nodes: NodePairRegistry::new(),
@@ -1715,6 +1719,10 @@ impl RpcDispatcher {
             message
         }
         .or_else(|| has_attachments.then(|| "[attachment]".to_owned()));
+        let resolved_session_key = session_key.clone();
+        let _ = self
+            .refresh_session_auth_profile(&resolved_session_key)
+            .await;
         if stored_message.is_some() {
             let _ = self
                 .sessions
@@ -1730,6 +1738,9 @@ impl RpcDispatcher {
                 })
                 .await;
         }
+        let resolved = self
+            .resolve_session_model_failover(&resolved_session_key)
+            .await;
         let agent_runs = self.agent_runs.clone();
         let complete_run_id = run_id.clone();
         tokio::spawn(async move {
@@ -1738,7 +1749,8 @@ impl RpcDispatcher {
         });
         let mut payload = json!({
             "runId": run_id,
-            "status": "started"
+            "status": "started",
+            "resolved": resolved
         });
         if let Some(reset) = reset_payload {
             payload["reset"] = reset;
@@ -4487,18 +4499,14 @@ impl RpcDispatcher {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(err),
         };
-        let resolved_model_provider = patched.provider_override.clone();
-        let resolved_model = patched.model_override.clone();
+        let resolved = self.resolve_session_model_failover(&session_key).await;
         let entry = patched.clone();
         RpcDispatchOutcome::Handled(json!({
             "ok": true,
             "path": SESSION_STORE_PATH,
             "key": session_key,
             "entry": entry,
-            "resolved": {
-                "modelProvider": resolved_model_provider,
-                "model": resolved_model
-            },
+            "resolved": resolved,
             "session": patched
         }))
     }
@@ -4643,6 +4651,14 @@ impl RpcDispatcher {
             None => 400,
         };
         let compacted = self.sessions.compact(&session_key, max_lines).await;
+        if compacted.compacted {
+            let _ = self.refresh_session_auth_profile(&session_key).await;
+        }
+        let resolved = if self.sessions.get(&session_key).await.is_some() {
+            Some(self.resolve_session_model_failover(&session_key).await)
+        } else {
+            None
+        };
         let archived = if compacted.compacted {
             vec![format!(
                 "{SESSION_STORE_PATH}/archives/{session_key}.compact"
@@ -4658,7 +4674,8 @@ impl RpcDispatcher {
             "kept": compacted.kept,
             "removed": compacted.removed,
             "reason": compacted.reason,
-            "archived": archived
+            "archived": archived,
+            "resolved": resolved
         }))
     }
 
@@ -4959,8 +4976,10 @@ impl RpcDispatcher {
         };
         if let Some(session_key) = normalize_session_key_input(params.session_key) {
             if let Some(session) = self.sessions.get(&session_key).await {
+                let resolved = self.resolve_session_model_failover(&session_key).await;
                 return RpcDispatchOutcome::Handled(json!({
-                    "session": session
+                    "session": session,
+                    "resolved": resolved
                 }));
             }
             return RpcDispatchOutcome::not_found("session not found");
@@ -4970,6 +4989,213 @@ impl RpcDispatcher {
         RpcDispatchOutcome::Handled(json!({
             "summary": summary
         }))
+    }
+
+    async fn refresh_session_auth_profile(&self, session_key: &str) -> Option<SessionView> {
+        let state = self.sessions.model_runtime_state(session_key).await?;
+        let provider = state.provider_override.as_deref()?;
+        let current_profile = state.auth_profile_override.as_deref();
+
+        let source = state.auth_profile_override_source.or_else(|| {
+            if state.auth_profile_override_compaction_count.is_some() {
+                Some(AuthProfileSource::Auto)
+            } else if state.auth_profile_override.is_some() {
+                Some(AuthProfileSource::User)
+            } else {
+                None
+            }
+        });
+
+        if matches!(source, Some(AuthProfileSource::User)) && current_profile.is_some() {
+            return self.sessions.get(session_key).await;
+        }
+
+        let stored_compaction = state
+            .auth_profile_override_compaction_count
+            .unwrap_or(state.compaction_count);
+        let should_advance = state.compaction_count > stored_compaction;
+        let selection = self
+            .auth_profiles
+            .select_for_provider(
+                provider,
+                current_profile,
+                state.compaction_count,
+                should_advance,
+            )
+            .await;
+
+        match selection {
+            Some(selection) => {
+                self.sessions
+                    .apply_auth_profile_resolution(
+                        session_key,
+                        Some(selection.profile_id),
+                        Some(AuthProfileSource::Auto),
+                        Some(state.compaction_count),
+                    )
+                    .await
+            }
+            None => {
+                self.sessions
+                    .apply_auth_profile_resolution(session_key, None, None, None)
+                    .await
+            }
+        }
+    }
+
+    async fn resolve_session_model_failover(
+        &self,
+        session_key: &str,
+    ) -> ModelFailoverResolutionView {
+        let state = self.sessions.model_runtime_state(session_key).await;
+        let base = self.models.primary_model();
+
+        let mut primary_provider = state
+            .as_ref()
+            .and_then(|value| value.provider_override.clone())
+            .map(|value| normalize_provider_id(&value))
+            .unwrap_or_else(|| base.provider.clone());
+        if primary_provider.is_empty() {
+            primary_provider = base.provider.clone();
+        }
+
+        let mut primary_model = state
+            .as_ref()
+            .and_then(|value| value.model_override.clone())
+            .unwrap_or_else(|| base.id.clone());
+        if primary_model.trim().is_empty() {
+            primary_model = base.id.clone();
+        }
+
+        let fallback_providers = model_provider_failover_chain(&primary_provider);
+        let mut provider_chain = Vec::with_capacity(1 + fallback_providers.len());
+        provider_chain.push(primary_provider.clone());
+        for provider in &fallback_providers {
+            if !provider_chain
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(provider))
+            {
+                provider_chain.push(provider.clone());
+            }
+        }
+
+        let mut attempts = Vec::new();
+        let mut selected_provider = primary_provider.clone();
+        let mut selected_model = primary_model.clone();
+        let mut selected_profile = state
+            .as_ref()
+            .and_then(|value| value.auth_profile_override.clone());
+        let compaction_count = state
+            .as_ref()
+            .map(|value| value.compaction_count)
+            .unwrap_or(0);
+        let preferred_profile = state
+            .as_ref()
+            .and_then(|value| value.auth_profile_override.clone());
+        let user_locked_profile = state
+            .as_ref()
+            .and_then(|value| {
+                matches!(
+                    value.auth_profile_override_source,
+                    Some(AuthProfileSource::User)
+                )
+                .then(|| value.auth_profile_override.clone())
+            })
+            .flatten();
+
+        for (idx, provider) in provider_chain.iter().enumerate() {
+            let model = if idx == 0 {
+                primary_model.clone()
+            } else {
+                self.models
+                    .default_model_for_provider(provider)
+                    .map(|value| value.id)
+                    .unwrap_or_else(|| primary_model.clone())
+            };
+
+            if idx == 0 {
+                if let Some(profile) = user_locked_profile.clone() {
+                    selected_provider = provider.clone();
+                    selected_model = model.clone();
+                    selected_profile = Some(profile.clone());
+                    attempts.push(ModelFailoverAttemptView {
+                        provider: provider.clone(),
+                        model,
+                        auth_profile: Some(profile),
+                        status: "ok".to_owned(),
+                        reason: None,
+                    });
+                    break;
+                }
+            }
+
+            let preferred = if idx == 0 {
+                preferred_profile.as_deref()
+            } else {
+                None
+            };
+            let selection = self
+                .auth_profiles
+                .select_for_provider(provider, preferred, compaction_count, false)
+                .await;
+
+            match selection {
+                Some(selection) if selection.available => {
+                    selected_provider = provider.clone();
+                    selected_model = model.clone();
+                    selected_profile = Some(selection.profile_id.clone());
+                    attempts.push(ModelFailoverAttemptView {
+                        provider: provider.clone(),
+                        model,
+                        auth_profile: Some(selection.profile_id),
+                        status: "ok".to_owned(),
+                        reason: None,
+                    });
+                    break;
+                }
+                Some(selection) => {
+                    attempts.push(ModelFailoverAttemptView {
+                        provider: provider.clone(),
+                        model,
+                        auth_profile: Some(selection.profile_id),
+                        status: "skipped".to_owned(),
+                        reason: Some("profile_cooldown".to_owned()),
+                    });
+                    continue;
+                }
+                None => {
+                    selected_provider = provider.clone();
+                    selected_model = model.clone();
+                    selected_profile = None;
+                    attempts.push(ModelFailoverAttemptView {
+                        provider: provider.clone(),
+                        model,
+                        auth_profile: None,
+                        status: "ok".to_owned(),
+                        reason: None,
+                    });
+                    break;
+                }
+            }
+        }
+
+        if attempts.is_empty() {
+            attempts.push(ModelFailoverAttemptView {
+                provider: selected_provider.clone(),
+                model: selected_model.clone(),
+                auth_profile: selected_profile.clone(),
+                status: "ok".to_owned(),
+                reason: None,
+            });
+        }
+
+        ModelFailoverResolutionView {
+            model_provider: selected_provider,
+            model: selected_model,
+            auth_profile: selected_profile,
+            fallback_providers,
+            attempts,
+        }
     }
 }
 
@@ -5480,6 +5706,178 @@ impl ModelRegistry {
     fn list(&self) -> Vec<ModelChoice> {
         self.models.clone()
     }
+
+    fn default_model_for_provider(&self, provider: &str) -> Option<ModelChoice> {
+        let provider = normalize_provider_id(provider);
+        self.models
+            .iter()
+            .find(|entry| entry.provider.eq_ignore_ascii_case(&provider))
+            .cloned()
+    }
+
+    fn primary_model(&self) -> ModelChoice {
+        self.default_model_for_provider(DEFAULT_MODEL_PROVIDER)
+            .unwrap_or_else(|| ModelChoice {
+                id: DEFAULT_MODEL_ID.to_owned(),
+                name: DEFAULT_MODEL_ID.to_owned(),
+                provider: DEFAULT_MODEL_PROVIDER.to_owned(),
+                context_window: Some(200_000),
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain(DEFAULT_MODEL_PROVIDER),
+            })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum AuthProfileSource {
+    Auto,
+    User,
+}
+
+#[derive(Debug, Clone)]
+struct AuthProfileRegistry {
+    state: Arc<Mutex<AuthProfileState>>,
+}
+
+#[derive(Debug, Clone)]
+struct AuthProfileState {
+    by_provider: HashMap<String, Vec<AuthProfileEntry>>,
+}
+
+#[derive(Debug, Clone)]
+struct AuthProfileEntry {
+    id: String,
+    cooldown_until_ms: Option<u64>,
+}
+
+impl AuthProfileEntry {
+    fn in_cooldown(&self, now_ms: u64) -> bool {
+        self.cooldown_until_ms
+            .map(|until| now_ms < until)
+            .unwrap_or(false)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AuthProfileSelection {
+    profile_id: String,
+    available: bool,
+}
+
+impl AuthProfileRegistry {
+    fn new() -> Self {
+        let mut by_provider: HashMap<String, Vec<AuthProfileEntry>> = HashMap::new();
+        let mut insert_profiles = |provider: &str, profile_ids: &[&str]| {
+            by_provider.insert(
+                normalize_provider_id(provider),
+                profile_ids
+                    .iter()
+                    .map(|id| AuthProfileEntry {
+                        id: (*id).to_owned(),
+                        cooldown_until_ms: None,
+                    })
+                    .collect(),
+            );
+        };
+
+        insert_profiles("anthropic", &["anthropic:default", "anthropic:backup"]);
+        insert_profiles("openai", &["openai:default", "openai:backup"]);
+        insert_profiles("openai-codex", &["openai-codex:default"]);
+        insert_profiles("qwen-portal", &["qwen-portal:default"]);
+        insert_profiles("zai", &["zai:default"]);
+        insert_profiles("opencode", &["opencode:default"]);
+        insert_profiles("kimi-coding", &["kimi-coding:default"]);
+
+        Self {
+            state: Arc::new(Mutex::new(AuthProfileState { by_provider })),
+        }
+    }
+
+    async fn select_for_provider(
+        &self,
+        provider: &str,
+        preferred_profile: Option<&str>,
+        compaction_count: u64,
+        advance_from_preferred: bool,
+    ) -> Option<AuthProfileSelection> {
+        let provider = normalize_provider_id(provider);
+        let now = now_ms();
+        let guard = self.state.lock().await;
+        let profiles = guard.by_provider.get(&provider)?;
+        if profiles.is_empty() {
+            return None;
+        }
+
+        let preferred_index = preferred_profile.and_then(|preferred| {
+            profiles
+                .iter()
+                .position(|profile| profile.id.eq_ignore_ascii_case(preferred))
+        });
+        let start_index = preferred_index
+            .map(|idx| {
+                if advance_from_preferred {
+                    (idx + 1) % profiles.len()
+                } else {
+                    idx
+                }
+            })
+            .unwrap_or((compaction_count as usize) % profiles.len());
+
+        for offset in 0..profiles.len() {
+            let idx = (start_index + offset) % profiles.len();
+            let profile = &profiles[idx];
+            if !profile.in_cooldown(now) {
+                return Some(AuthProfileSelection {
+                    profile_id: profile.id.clone(),
+                    available: true,
+                });
+            }
+        }
+
+        Some(AuthProfileSelection {
+            profile_id: profiles[start_index].id.clone(),
+            available: false,
+        })
+    }
+
+    #[cfg(test)]
+    async fn set_provider_cooldown_until(&self, provider: &str, cooldown_until_ms: Option<u64>) {
+        let provider = normalize_provider_id(provider);
+        let mut guard = self.state.lock().await;
+        if let Some(profiles) = guard.by_provider.get_mut(&provider) {
+            for profile in profiles {
+                profile.cooldown_until_ms = cooldown_until_ms;
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ModelFailoverAttemptView {
+    provider: String,
+    model: String,
+    #[serde(rename = "authProfile", skip_serializing_if = "Option::is_none")]
+    auth_profile: Option<String>,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ModelFailoverResolutionView {
+    #[serde(rename = "modelProvider")]
+    model_provider: String,
+    model: String,
+    #[serde(rename = "authProfile", skip_serializing_if = "Option::is_none")]
+    auth_profile: Option<String>,
+    #[serde(
+        rename = "fallbackProviders",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    fallback_providers: Vec<String>,
+    attempts: Vec<ModelFailoverAttemptView>,
 }
 
 struct AgentRegistry {
@@ -10632,6 +11030,22 @@ struct ChatSessionMeta {
     verbose_level: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct SessionModelRuntimeState {
+    provider_override: Option<String>,
+    model_override: Option<String>,
+    auth_profile_override: Option<String>,
+    auth_profile_override_source: Option<AuthProfileSource>,
+    auth_profile_override_compaction_count: Option<u64>,
+    compaction_count: u64,
+}
+
+fn clear_auth_profile_override(entry: &mut SessionEntry) {
+    entry.auth_profile_override = None;
+    entry.auth_profile_override_source = None;
+    entry.auth_profile_override_compaction_count = None;
+}
+
 impl SessionRegistry {
     fn new() -> Self {
         Self {
@@ -10792,10 +11206,12 @@ impl SessionRegistry {
             PatchValue::Clear => {
                 entry.model_override = None;
                 entry.provider_override = None;
+                clear_auth_profile_override(entry);
             }
             PatchValue::Set(model) => {
                 entry.model_override = Some(model.model_override);
                 entry.provider_override = model.provider_override;
+                clear_auth_profile_override(entry);
             }
         }
         Ok(entry.to_view(false, false))
@@ -10806,6 +11222,42 @@ impl SessionRegistry {
         guard
             .get(session_key)
             .map(|entry| entry.to_view(false, false))
+    }
+
+    async fn model_runtime_state(&self, session_key: &str) -> Option<SessionModelRuntimeState> {
+        let guard = self.entries.lock().await;
+        let entry = guard.get(session_key)?;
+        Some(SessionModelRuntimeState {
+            provider_override: entry.provider_override.clone(),
+            model_override: entry.model_override.clone(),
+            auth_profile_override: entry.auth_profile_override.clone(),
+            auth_profile_override_source: entry.auth_profile_override_source,
+            auth_profile_override_compaction_count: entry.auth_profile_override_compaction_count,
+            compaction_count: entry.compaction_count,
+        })
+    }
+
+    async fn apply_auth_profile_resolution(
+        &self,
+        session_key: &str,
+        profile_id: Option<String>,
+        source: Option<AuthProfileSource>,
+        compaction_count: Option<u64>,
+    ) -> Option<SessionView> {
+        let mut guard = self.entries.lock().await;
+        let entry = guard.get_mut(session_key)?;
+        match profile_id {
+            Some(profile_id) => {
+                entry.auth_profile_override = Some(profile_id);
+                entry.auth_profile_override_source = source;
+                entry.auth_profile_override_compaction_count = compaction_count;
+            }
+            None => {
+                clear_auth_profile_override(entry);
+            }
+        }
+        entry.updated_at_ms = now_ms();
+        Some(entry.to_view(false, false))
     }
 
     async fn resolve_key(&self, candidate: &str) -> Option<String> {
@@ -11160,6 +11612,7 @@ impl SessionRegistry {
             let _ = entry.history.pop_front();
         }
         entry.updated_at_ms = now_ms();
+        entry.compaction_count = entry.compaction_count.saturating_add(1);
         SessionCompactResult {
             compacted: true,
             kept: entry.history.len(),
@@ -11390,6 +11843,10 @@ struct SessionEntry {
     exec_node: Option<String>,
     model_override: Option<String>,
     provider_override: Option<String>,
+    compaction_count: u64,
+    auth_profile_override: Option<String>,
+    auth_profile_override_source: Option<AuthProfileSource>,
+    auth_profile_override_compaction_count: Option<u64>,
     history: VecDeque<SessionHistoryEvent>,
 }
 
@@ -11428,6 +11885,10 @@ impl SessionEntry {
             exec_node: None,
             model_override: None,
             provider_override: None,
+            compaction_count: 0,
+            auth_profile_override: None,
+            auth_profile_override_source: None,
+            auth_profile_override_compaction_count: None,
             history: VecDeque::new(),
         }
     }
@@ -11489,6 +11950,9 @@ impl SessionEntry {
             exec_node: self.exec_node.clone(),
             model_override: self.model_override.clone(),
             provider_override: self.provider_override.clone(),
+            auth_profile_override: self.auth_profile_override.clone(),
+            auth_profile_override_source: self.auth_profile_override_source,
+            auth_profile_override_compaction_count: self.auth_profile_override_compaction_count,
         }
     }
 
@@ -11838,6 +12302,21 @@ struct SessionView {
     model_override: Option<String>,
     #[serde(rename = "providerOverride", skip_serializing_if = "Option::is_none")]
     provider_override: Option<String>,
+    #[serde(
+        rename = "authProfileOverride",
+        skip_serializing_if = "Option::is_none"
+    )]
+    auth_profile_override: Option<String>,
+    #[serde(
+        rename = "authProfileOverrideSource",
+        skip_serializing_if = "Option::is_none"
+    )]
+    auth_profile_override_source: Option<AuthProfileSource>,
+    #[serde(
+        rename = "authProfileOverrideCompactionCount",
+        skip_serializing_if = "Option::is_none"
+    )]
+    auth_profile_override_compaction_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -14613,6 +15092,208 @@ mod tests {
             vec!["openai".to_owned()]
         );
         assert!(super::model_provider_failover_chain("unknown-provider").is_empty());
+    }
+
+    #[tokio::test]
+    async fn dispatcher_patch_model_clears_auth_profile_override_fields() {
+        let dispatcher = RpcDispatcher::new();
+        let key = "agent:main:discord:group:g-model-auth-clear";
+
+        let initial_patch = RpcRequestFrame {
+            id: "req-model-auth-clear-init".to_owned(),
+            method: "sessions.patch".to_owned(),
+            params: serde_json::json!({
+                "key": key,
+                "model": "anthropic/claude-opus-4-5"
+            }),
+        };
+        let out = dispatcher.handle_request(&initial_patch).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        let _ = dispatcher
+            .sessions
+            .apply_auth_profile_resolution(
+                key,
+                Some("anthropic:default".to_owned()),
+                Some(super::AuthProfileSource::User),
+                Some(3),
+            )
+            .await;
+
+        let next_patch = RpcRequestFrame {
+            id: "req-model-auth-clear-next".to_owned(),
+            method: "sessions.patch".to_owned(),
+            params: serde_json::json!({
+                "key": key,
+                "model": "openai/gpt-5.3"
+            }),
+        };
+        match dispatcher.handle_request(&next_patch).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert!(payload.pointer("/entry/authProfileOverride").is_none());
+                assert!(payload
+                    .pointer("/entry/authProfileOverrideSource")
+                    .is_none());
+                assert!(payload
+                    .pointer("/entry/authProfileOverrideCompactionCount")
+                    .is_none());
+            }
+            _ => panic!("expected model patch handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_agent_runtime_failover_uses_fallback_provider_on_profile_cooldown() {
+        let dispatcher = RpcDispatcher::new();
+        let key = "agent:main:discord:group:g-model-failover";
+
+        let patch = RpcRequestFrame {
+            id: "req-model-failover-patch".to_owned(),
+            method: "sessions.patch".to_owned(),
+            params: serde_json::json!({
+                "key": key,
+                "model": "openai/gpt-5.3-codex"
+            }),
+        };
+        let out = dispatcher.handle_request(&patch).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        dispatcher
+            .auth_profiles
+            .set_provider_cooldown_until("openai-codex", Some(super::now_ms() + 60_000))
+            .await;
+
+        let run = RpcRequestFrame {
+            id: "req-model-failover-agent".to_owned(),
+            method: "agent".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": key,
+                "idempotencyKey": "idem-model-failover-agent",
+                "message": "test fallback"
+            }),
+        };
+        match dispatcher.handle_request(&run).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/resolved/modelProvider")
+                        .and_then(serde_json::Value::as_str),
+                    Some("openai")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/resolved/attempts/0/provider")
+                        .and_then(serde_json::Value::as_str),
+                    Some("openai-codex")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/resolved/attempts/0/status")
+                        .and_then(serde_json::Value::as_str),
+                    Some("skipped")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/resolved/attempts/0/reason")
+                        .and_then(serde_json::Value::as_str),
+                    Some("profile_cooldown")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/resolved/attempts/1/provider")
+                        .and_then(serde_json::Value::as_str),
+                    Some("openai")
+                );
+            }
+            _ => panic!("expected agent run handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_compact_rotates_auto_auth_profile_override() {
+        let dispatcher = RpcDispatcher::new();
+        let key = "agent:main:discord:group:g-model-rotate";
+
+        let patch = RpcRequestFrame {
+            id: "req-model-rotate-patch".to_owned(),
+            method: "sessions.patch".to_owned(),
+            params: serde_json::json!({
+                "key": key,
+                "model": "anthropic/claude-sonnet-4-5"
+            }),
+        };
+        let out = dispatcher.handle_request(&patch).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        let agent = RpcRequestFrame {
+            id: "req-model-rotate-agent".to_owned(),
+            method: "agent".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": key,
+                "idempotencyKey": "idem-model-rotate-agent",
+                "message": "initialize profile"
+            }),
+        };
+        let out = dispatcher.handle_request(&agent).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        for idx in 0..3 {
+            let send = RpcRequestFrame {
+                id: format!("req-model-rotate-send-{idx}"),
+                method: "sessions.send".to_owned(),
+                params: serde_json::json!({
+                    "sessionKey": key,
+                    "message": format!("line-{idx}")
+                }),
+            };
+            let out = dispatcher.handle_request(&send).await;
+            assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+        }
+
+        let compact = RpcRequestFrame {
+            id: "req-model-rotate-compact".to_owned(),
+            method: "sessions.compact".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": key,
+                "maxLines": 1
+            }),
+        };
+        match dispatcher.handle_request(&compact).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/resolved/authProfile")
+                        .and_then(serde_json::Value::as_str),
+                    Some("anthropic:backup")
+                );
+            }
+            _ => panic!("expected compact handled"),
+        }
+
+        let status = RpcRequestFrame {
+            id: "req-model-rotate-status".to_owned(),
+            method: "session.status".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": key
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/session/authProfileOverride")
+                        .and_then(serde_json::Value::as_str),
+                    Some("anthropic:backup")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/session/authProfileOverrideSource")
+                        .and_then(serde_json::Value::as_str),
+                    Some("auto")
+                );
+            }
+            _ => panic!("expected session.status handled"),
+        }
     }
 
     #[tokio::test]
@@ -20521,6 +21202,12 @@ mod tests {
                         .pointer("/sentinel/payload/deliveryContext/channel")
                         .and_then(serde_json::Value::as_str),
                     Some("discord")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/sentinel/payload/doctorHint")
+                        .and_then(serde_json::Value::as_str),
+                    Some("Run `openclaw doctor --non-interactive` after restart.")
                 );
             }
             _ => panic!("expected update.run handled"),

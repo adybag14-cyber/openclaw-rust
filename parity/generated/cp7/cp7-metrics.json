@@ -1,0 +1,8 @@
+{
+  "gate": "cp7",
+  "passed": 4,
+  "totalFixtures": 4,
+  "totalDurationMs": 3326,
+  "avgFixtureDurationMs": 832,
+  "resultsTsv": "cp7-fixture-results.tsv"
+}

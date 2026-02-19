@@ -67,7 +67,7 @@
   },
   "cp6Gate": {
     "id": "CP6",
-    "name": "Model Provider + Auth + Failover Foundation",
+    "name": "Model Provider + Auth + Failover",
     "requirements": [
       {
         "id": "CP6-R1",
@@ -80,6 +80,32 @@
       {
         "id": "CP6-R3",
         "description": "Baseline provider failover chain fixtures are executable and published as CI artifacts"
+      },
+      {
+        "id": "CP6-R4",
+        "description": "Model patch parity clears persisted session auth-profile override state when model/provider changes"
+      },
+      {
+        "id": "CP6-R5",
+        "description": "Runtime model selection executes provider fallback routing under auth-profile cooldown pressure"
+      }
+    ]
+  },
+  "cp7Gate": {
+    "id": "CP7",
+    "name": "CLI + Control UI Starter",
+    "requirements": [
+      {
+        "id": "CP7-R1",
+        "description": "Rust CLI exposes doctor diagnostics command with non-interactive output for runbook compatibility"
+      },
+      {
+        "id": "CP7-R2",
+        "description": "Control-plane update workflow continues to expose doctor follow-up hint in restart sentinel payloads"
+      },
+      {
+        "id": "CP7-R3",
+        "description": "CP7 fixtures run in CI and publish gate artifacts"
       }
     ]
   },
@@ -93,8 +119,7 @@
   },
   "deferredSubsystems": [
     "Tool execution host runtime parity",
-    "Full node/device runtime host parity",
-    "Model provider/auth/failover parity"
+    "Full node/device runtime host parity"
   ],
   "acceptanceCommands": [
     ".\\scripts\\parity\\method-surface-diff.ps1 -Surface both -UpstreamRepoPath ..\\openclaw",
@@ -102,6 +127,7 @@
     ".\\scripts\\parity\\run-replay-corpus.ps1",
     ".\\scripts\\parity\\run-cp1-gate.ps1",
     ".\\scripts\\parity\\run-cp5-gate.ps1",
-    ".\\scripts\\parity\\run-cp6-gate.ps1"
+    ".\\scripts\\parity\\run-cp6-gate.ps1",
+    ".\\scripts\\parity\\run-cp7-gate.ps1"
   ]
 }
