@@ -24,8 +24,8 @@
       "counts": {
         "total": 21,
         "implemented": 9,
-        "partial": 9,
-        "deferred": 3,
+        "partial": 10,
+        "deferred": 2,
         "notStarted": 0,
         "unknown": 0
       },
@@ -35,7 +35,7 @@
         "Full Gateway replacement": "Partial",
         "Session model": "Partial",
         "Channel integrations": "Partial",
-        "Tool execution layer": "Deferred",
+        "Tool execution layer": "Partial",
         "Nodes + device features": "Deferred",
         "Voice stack": "Partial",
         "Model/provider layer": "Deferred",
@@ -58,8 +58,8 @@
   "delta": {
     "audit": {
       "implemented": 0,
-      "partial": 0,
-      "deferred": 0,
+      "partial": 1,
+      "deferred": -1,
       "notStarted": 0
     },
     "methodSurface": {
@@ -69,6 +69,12 @@
       "baseMissingInRustCount": 0,
       "handlersMissingInRustCount": 0
     },
-    "changedSubsystems": []
+    "changedSubsystems": [
+      {
+        "subsystem": "Tool execution layer",
+        "baseline": "Deferred",
+        "current": "Partial"
+      }
+    ]
   }
 }

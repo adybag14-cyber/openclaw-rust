@@ -7,8 +7,8 @@ Generated (UTC): deterministic
 | Metric | Value |
 | --- | ---: |
 | Audit Implemented | 9 |
-| Audit Partial | 9 |
-| Audit Deferred | 3 |
+| Audit Partial | 10 |
+| Audit Deferred | 2 |
 | Audit Not Started | 0 |
 | Rust RPC Methods | 101 |
 | Base Coverage (%) | 100 |
@@ -21,8 +21,8 @@ Generated (UTC): deterministic
 | Metric | Delta |
 | --- | ---: |
 | Implemented | 0 |
-| Partial | 0 |
-| Deferred | 0 |
+| Partial | +1 |
+| Deferred | -1 |
 | Not Started | 0 |
 | Rust RPC Methods | 0 |
 | Base Coverage (%) | 0 |
@@ -32,5 +32,5 @@ Generated (UTC): deterministic
 
 ## Subsystem Status Deltas
 
-- _No subsystem status changes vs baseline._
+- Tool execution layer: Deferred -> Partial
 
