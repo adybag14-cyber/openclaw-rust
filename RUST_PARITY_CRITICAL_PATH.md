@@ -63,7 +63,7 @@ Exit gates:
 - Authz matrix (roles/scopes) matches upstream behavior.
 - Backpressure/drop semantics pass fixture tests.
 
-Status: **Not Started (core blocker)**
+Status: **Completed (Gate Achieved)**
 
 ## CP2: Session + Routing Semantic Parity
 
@@ -203,7 +203,7 @@ Status: **Partial for defender/security, cutover not started**
 Use this checklist for active tracking:
 
 - [x] CP0 complete
-- [ ] CP1 complete
+- [x] CP1 complete
 - [ ] CP2 complete
 - [ ] CP3 complete
 - [ ] CP4 complete (Wave 1)
@@ -230,6 +230,6 @@ Use this checklist for active tracking:
 
 ## Immediate Next Actions (Start Here)
 
-1. Start CP1 Rust WS gateway server runtime (accept loop + authz + handler dispatch).
-2. Add role/scope authorization parity fixtures at the Rust gateway server boundary.
-3. Stand up differential replay harness for live gateway/session/tool high-volume traces.
+1. Start CP2 session/routing parity replay coverage for multi-agent channel/account/peer routes.
+2. Add crash/restart recovery fixtures for SQLite WAL session persistence.
+3. Extend soak tests for duplicate-dispatch/out-of-order reply detection under queue pressure.

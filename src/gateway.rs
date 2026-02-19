@@ -881,6 +881,10 @@ const SUPPORTED_RPC_METHODS: &[&str] = &[
     "session.status",
 ];
 
+pub fn supported_rpc_methods() -> &'static [&'static str] {
+    SUPPORTED_RPC_METHODS
+}
+
 impl RpcDispatcher {
     pub fn new() -> Self {
         let channel_capabilities = DriverRegistry::default_registry()

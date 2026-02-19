@@ -1,4 +1,4 @@
-name: parity-cp0-gate
+name: parity-cp0-cp1-gate
 
 on:
   pull_request:
@@ -71,3 +71,18 @@ jobs:
 
       - name: Run deterministic replay corpus tests
         run: bash ./scripts/parity/run-replay-corpus.sh
+
+  standalone-gateway-cp1:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout rust repo
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run CP1 standalone gateway fixtures
+        run: bash ./scripts/parity/run-cp1-gate.sh

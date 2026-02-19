@@ -384,6 +384,7 @@ mod tests {
             GatewayConfig {
                 url: format!("ws://{addr}"),
                 token: None,
+                ..Config::default().gateway
             },
             "security.decision".to_owned(),
             16,
@@ -484,6 +485,7 @@ mod tests {
             gateway: GatewayConfig {
                 url: format!("ws://{addr}"),
                 token: None,
+                ..Config::default().gateway
             },
             ..Config::default()
         };
@@ -572,6 +574,7 @@ mod tests {
             GatewayConfig {
                 url: format!("ws://{addr}"),
                 token: None,
+                ..Config::default().gateway
             },
             "security.decision".to_owned(),
             16,
@@ -658,6 +661,7 @@ mod tests {
             GatewayConfig {
                 url: format!("ws://{addr}"),
                 token: None,
+                ..Config::default().gateway
             },
             "security.decision".to_owned(),
             16,
@@ -739,6 +743,7 @@ mod tests {
             GatewayConfig {
                 url: format!("ws://{addr}"),
                 token: None,
+                ..Config::default().gateway
             },
             "security.decision".to_owned(),
             16,
@@ -836,6 +841,7 @@ mod tests {
             GatewayConfig {
                 url: format!("ws://{addr}"),
                 token: None,
+                ..Config::default().gateway
             },
             "security.decision".to_owned(),
             16,
@@ -933,6 +939,7 @@ mod tests {
             GatewayConfig {
                 url: format!("ws://{addr}"),
                 token: None,
+                ..Config::default().gateway
             },
             "security.decision".to_owned(),
             16,
@@ -1046,6 +1053,7 @@ mod tests {
             GatewayConfig {
                 url: format!("ws://{addr}"),
                 token: None,
+                ..Config::default().gateway
             },
             "security.decision".to_owned(),
             16,
@@ -1184,6 +1192,7 @@ mod tests {
             GatewayConfig {
                 url: format!("ws://{addr}"),
                 token: None,
+                ..Config::default().gateway
             },
             "security.decision".to_owned(),
             16,
@@ -1266,6 +1275,7 @@ mod tests {
             GatewayConfig {
                 url: format!("ws://{addr}"),
                 token: None,
+                ..Config::default().gateway
             },
             "security.decision".to_owned(),
             16,
@@ -1389,6 +1399,7 @@ mod tests {
             GatewayConfig {
                 url: format!("ws://{addr}"),
                 token: None,
+                ..Config::default().gateway
             },
             "security.decision".to_owned(),
             16,
@@ -1478,6 +1489,7 @@ mod tests {
             GatewayConfig {
                 url: format!("ws://{addr}"),
                 token: None,
+                ..Config::default().gateway
             },
             "security.decision".to_owned(),
             16,
@@ -1576,6 +1588,7 @@ mod tests {
             GatewayConfig {
                 url: format!("ws://{addr}"),
                 token: None,
+                ..Config::default().gateway
             },
             "security.decision".to_owned(),
             16,
@@ -1684,6 +1697,7 @@ mod tests {
             GatewayConfig {
                 url: format!("ws://{addr}"),
                 token: None,
+                ..Config::default().gateway
             },
             "security.decision".to_owned(),
             16,
@@ -1774,6 +1788,7 @@ mod tests {
             GatewayConfig {
                 url: format!("ws://{addr}"),
                 token: None,
+                ..Config::default().gateway
             },
             "security.decision".to_owned(),
             16,
@@ -1840,6 +1855,7 @@ mod tests {
             GatewayConfig {
                 url: format!("ws://{addr}"),
                 token: None,
+                ..Config::default().gateway
             },
             "security.decision".to_owned(),
             16,
@@ -1948,6 +1964,7 @@ mod tests {
             GatewayConfig {
                 url: format!("ws://{addr}"),
                 token: None,
+                ..Config::default().gateway
             },
             "security.decision".to_owned(),
             16,

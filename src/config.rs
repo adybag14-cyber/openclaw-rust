@@ -16,6 +16,54 @@ pub struct Config {
 pub struct GatewayConfig {
     pub url: String,
     pub token: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default = "default_gateway_runtime_mode")]
+    pub runtime_mode: GatewayRuntimeMode,
+    #[serde(default)]
+    pub server: GatewayServerConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayServerConfig {
+    #[serde(default = "default_gateway_server_bind")]
+    pub bind: String,
+    #[serde(default = "default_gateway_auth_mode")]
+    pub auth_mode: GatewayAuthMode,
+    #[serde(default = "default_gateway_handshake_timeout_ms")]
+    pub handshake_timeout_ms: u64,
+    #[serde(default = "default_gateway_event_queue_capacity")]
+    pub event_queue_capacity: usize,
+    #[serde(default = "default_gateway_reload_interval_secs")]
+    pub reload_interval_secs: u64,
+}
+
+impl Default for GatewayServerConfig {
+    fn default() -> Self {
+        Self {
+            bind: default_gateway_server_bind(),
+            auth_mode: default_gateway_auth_mode(),
+            handshake_timeout_ms: default_gateway_handshake_timeout_ms(),
+            event_queue_capacity: default_gateway_event_queue_capacity(),
+            reload_interval_secs: default_gateway_reload_interval_secs(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayRuntimeMode {
+    BridgeClient,
+    StandaloneServer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayAuthMode {
+    Auto,
+    None,
+    Token,
+    Password,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +138,15 @@ impl Default for Config {
             gateway: GatewayConfig {
                 url: "ws://127.0.0.1:18789/ws".to_owned(),
                 token: None,
+                password: None,
+                runtime_mode: default_gateway_runtime_mode(),
+                server: GatewayServerConfig {
+                    bind: default_gateway_server_bind(),
+                    auth_mode: default_gateway_auth_mode(),
+                    handshake_timeout_ms: default_gateway_handshake_timeout_ms(),
+                    event_queue_capacity: default_gateway_event_queue_capacity(),
+                    reload_interval_secs: default_gateway_reload_interval_secs(),
+                },
             },
             runtime: RuntimeConfig {
                 audit_only: false,
@@ -181,6 +238,40 @@ impl Config {
         if let Ok(v) = env::var("OPENCLAW_RS_GATEWAY_TOKEN") {
             self.gateway.token = Some(v);
         }
+        if let Ok(v) = env::var("OPENCLAW_RS_GATEWAY_PASSWORD") {
+            self.gateway.password = Some(v);
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_GATEWAY_RUNTIME_MODE") {
+            if let Some(mode) = parse_gateway_runtime_mode(&v) {
+                self.gateway.runtime_mode = mode;
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_GATEWAY_AUTH_MODE") {
+            if let Some(mode) = parse_gateway_auth_mode(&v) {
+                self.gateway.server.auth_mode = mode;
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_GATEWAY_SERVER_BIND") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.gateway.server.bind = trimmed.to_owned();
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_GATEWAY_EVENT_QUEUE_CAPACITY") {
+            if let Ok(n) = v.parse::<usize>() {
+                self.gateway.server.event_queue_capacity = n.max(8);
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_GATEWAY_HANDSHAKE_TIMEOUT_MS") {
+            if let Ok(n) = v.parse::<u64>() {
+                self.gateway.server.handshake_timeout_ms = n.max(500);
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_GATEWAY_RELOAD_INTERVAL_SECS") {
+            if let Ok(n) = v.parse::<u64>() {
+                self.gateway.server.reload_interval_secs = n;
+            }
+        }
         if let Ok(v) = env::var("OPENCLAW_RS_AUDIT_ONLY") {
             self.runtime.audit_only = parse_bool(&v);
         }
@@ -267,6 +358,44 @@ impl Config {
         if self.runtime.idempotency_max_entries == 0 {
             anyhow::bail!("runtime.idempotency_max_entries must be > 0");
         }
+        if self.gateway.server.bind.trim().is_empty() {
+            anyhow::bail!("gateway.server.bind must not be empty");
+        }
+        if self.gateway.server.event_queue_capacity == 0 {
+            anyhow::bail!("gateway.server.event_queue_capacity must be > 0");
+        }
+        if self.gateway.server.handshake_timeout_ms == 0 {
+            anyhow::bail!("gateway.server.handshake_timeout_ms must be > 0");
+        }
+        match self.gateway.server.auth_mode {
+            GatewayAuthMode::Token => {
+                let token = self
+                    .gateway
+                    .token
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or_default();
+                if token.is_empty() {
+                    anyhow::bail!(
+                        "gateway.server.auth_mode=token requires gateway.token or OPENCLAW_RS_GATEWAY_TOKEN",
+                    );
+                }
+            }
+            GatewayAuthMode::Password => {
+                let password = self
+                    .gateway
+                    .password
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or_default();
+                if password.is_empty() {
+                    anyhow::bail!(
+                        "gateway.server.auth_mode=password requires gateway.password or OPENCLAW_RS_GATEWAY_PASSWORD",
+                    );
+                }
+            }
+            GatewayAuthMode::Auto | GatewayAuthMode::None => {}
+        }
         Ok(())
     }
 }
@@ -329,6 +458,30 @@ fn default_group_activation_mode() -> GroupActivationMode {
     GroupActivationMode::Mention
 }
 
+fn default_gateway_runtime_mode() -> GatewayRuntimeMode {
+    GatewayRuntimeMode::BridgeClient
+}
+
+fn default_gateway_server_bind() -> String {
+    "127.0.0.1:18789".to_owned()
+}
+
+fn default_gateway_auth_mode() -> GatewayAuthMode {
+    GatewayAuthMode::Auto
+}
+
+fn default_gateway_handshake_timeout_ms() -> u64 {
+    10_000
+}
+
+fn default_gateway_event_queue_capacity() -> usize {
+    256
+}
+
+fn default_gateway_reload_interval_secs() -> u64 {
+    3
+}
+
 fn parse_session_queue_mode(s: &str) -> Option<SessionQueueMode> {
     match s.trim().to_ascii_lowercase().as_str() {
         "followup" => Some(SessionQueueMode::Followup),
@@ -342,6 +495,26 @@ fn parse_group_activation_mode(s: &str) -> Option<GroupActivationMode> {
     match s.trim().to_ascii_lowercase().as_str() {
         "mention" => Some(GroupActivationMode::Mention),
         "always" => Some(GroupActivationMode::Always),
+        _ => None,
+    }
+}
+
+fn parse_gateway_runtime_mode(s: &str) -> Option<GatewayRuntimeMode> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "bridge_client" | "bridge-client" | "client" => Some(GatewayRuntimeMode::BridgeClient),
+        "standalone_server" | "standalone-server" | "server" => {
+            Some(GatewayRuntimeMode::StandaloneServer)
+        }
+        _ => None,
+    }
+}
+
+fn parse_gateway_auth_mode(s: &str) -> Option<GatewayAuthMode> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "auto" => Some(GatewayAuthMode::Auto),
+        "none" => Some(GatewayAuthMode::None),
+        "token" => Some(GatewayAuthMode::Token),
+        "password" => Some(GatewayAuthMode::Password),
         _ => None,
     }
 }

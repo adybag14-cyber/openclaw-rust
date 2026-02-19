@@ -8,6 +8,7 @@ What is implemented now:
 
 - Native Rust runtime suitable for Ubuntu 20.04 deployment.
 - Gateway compatibility bridge over OpenClaw's WebSocket protocol.
+- Standalone Rust Gateway WebSocket runtime mode (no TypeScript gateway process).
 - Defender pipeline that can block/review suspicious actions before execution.
 - VirusTotal lookups (file hash + URL) to add external threat intelligence.
 - Host integrity baseline checks for key runtime files.
@@ -54,8 +55,10 @@ systemctl --user status openclaw-agent-rs.service
 
 ## Default runtime behavior
 
-- Connects to `gateway.url`.
-- Sends a `connect` frame as `openclaw-agent-rs`.
+- Runtime mode is selected by `gateway.runtime_mode`:
+  - `bridge_client`: connects to `gateway.url` as a defender sidecar.
+  - `standalone_server`: listens on `gateway.server.bind` and serves gateway RPCs directly.
+- In `bridge_client` mode, it sends a `connect` frame as `openclaw-agent-rs`.
 - Responds to core session RPCs (`sessions.list`, `sessions.preview`, `sessions.patch`, `sessions.resolve`, `sessions.reset`, `sessions.delete`, `sessions.compact`, `sessions.usage`, `sessions.usage.timeseries`, `sessions.usage.logs`, `sessions.history`, `sessions.send`, `session.status`) with typed `resp` frames.
 - Supports list filtering knobs on `sessions.list` (`includeGlobal`, `includeUnknown`, `agentId`, `search`, `label`, `spawnedBy`) plus optional hint fields (`displayName`, `derivedTitle`, `lastMessagePreview`) when `includeDerivedTitles`/`includeLastMessage` are set.
 - Supports `sessions.patch` via either `key` or `sessionKey` and returns parity-style envelope fields (`ok`, `path`, `key`, `entry`).
@@ -110,6 +113,13 @@ systemctl --user status openclaw-agent-rs.service
 - `security.channel_risk_bonus`: per-channel additive risk scoring.
 - `security.policy_bundle_path`: optional signed JSON policy bundle file to load at startup.
 - `security.policy_bundle_key`: HMAC key used to verify the bundle signature.
+- `gateway.password`: optional shared-secret password for gateway auth.
+- `gateway.runtime_mode`: `bridge_client` or `standalone_server`.
+- `gateway.server.bind`: standalone server bind address.
+- `gateway.server.auth_mode`: `auto`, `none`, `token`, or `password`.
+- `gateway.server.handshake_timeout_ms`: max connect handshake duration.
+- `gateway.server.event_queue_capacity`: per-connection outbound event queue cap.
+- `gateway.server.reload_interval_secs`: config live-reload polling interval (`0` disables live reload).
 
 ## Signed policy bundles
 
@@ -189,6 +199,12 @@ CP0 scoreboard and replay-corpus gate:
 .\scripts\parity\build-scoreboard.ps1
 .\scripts\parity\run-replay-corpus.ps1
 .\scripts\parity\run-cp0-gate.ps1 -UpstreamRepoPath ..\openclaw
+```
+
+CP1 standalone gateway runtime gate:
+
+```powershell
+.\scripts\parity\run-cp1-gate.ps1
 ```
 
 Current payload corpus coverage: `chat.*`, `tts.*`, `voicewake.*`, `web.login.*`, `update.run`, `sessions.*` envelope/alias flows, `browser.request`, `config.*`, `logs.tail`, `cron.*`, `exec.approvals.*`, `exec.approval.*`, and `wizard.*`.

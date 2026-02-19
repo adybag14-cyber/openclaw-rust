@@ -2,6 +2,7 @@ mod bridge;
 mod channels;
 mod config;
 mod gateway;
+mod gateway_server;
 mod memory;
 mod protocol;
 mod runtime;
@@ -54,7 +55,7 @@ async fn main() -> Result<()> {
         cli.audit_only,
     );
 
-    let runtime = runtime::AgentRuntime::new(cfg).await?;
+    let runtime = runtime::AgentRuntime::new(cfg, Some(cli.config.clone())).await?;
     runtime.run().await
 }
 

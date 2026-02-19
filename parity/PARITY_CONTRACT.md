@@ -42,6 +42,10 @@ From repo root:
 .\scripts\parity\run-replay-corpus.ps1
 ```
 
+```powershell
+.\scripts\parity\run-cp1-gate.ps1
+```
+
 Optional upstream location override:
 
 ```powershell
@@ -62,3 +66,4 @@ Optional upstream location override:
 - For any gateway method-surface parity change, regenerate method diff artifacts and include them in the commit.
 - For any gateway behavior-parity change touching payload shape, update `tests/parity/gateway-payload-corpus.json` and keep `dispatcher_payload_corpus_matches_upstream_fixtures` passing.
 - PR CI must publish `parity/generated/parity-scoreboard.md` as job summary, including subsystem status deltas versus `parity/manifest/scoreboard-baseline.json`.
+- PR CI must keep CP1 standalone runtime fixtures green (`run-cp1-gate.sh`) for authz matrix and event backpressure/drop semantics.

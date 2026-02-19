@@ -29,6 +29,24 @@
       }
     ]
   },
+  "cp1Gate": {
+    "id": "CP1",
+    "name": "Standalone Rust Gateway Runtime Core",
+    "requirements": [
+      {
+        "id": "CP1-R1",
+        "description": "Rust standalone gateway mode serves control-plane RPCs without TypeScript gateway runtime"
+      },
+      {
+        "id": "CP1-R2",
+        "description": "Role/scope authorization matrix is enforced at request dispatch boundary"
+      },
+      {
+        "id": "CP1-R3",
+        "description": "Event fanout applies bounded backpressure/drop semantics for slow consumers"
+      }
+    ]
+  },
   "artifacts": {
     "methodSurfaceDiffJson": "parity/generated/method-surface-diff.json",
     "methodSurfaceReportMd": "parity/method-surface-report.md",
@@ -45,6 +63,7 @@
   "acceptanceCommands": [
     ".\\scripts\\parity\\method-surface-diff.ps1 -Surface both -UpstreamRepoPath ..\\openclaw",
     ".\\scripts\\parity\\build-scoreboard.ps1",
-    ".\\scripts\\parity\\run-replay-corpus.ps1"
+    ".\\scripts\\parity\\run-replay-corpus.ps1",
+    ".\\scripts\\parity\\run-cp1-gate.ps1"
   ]
 }

@@ -356,6 +356,7 @@ mod tests {
             gateway: GatewayConfig {
                 url: "ws://127.0.0.1:18789/ws".to_owned(),
                 token: None,
+                ..Config::default().gateway
             },
             runtime: RuntimeConfig {
                 audit_only,
