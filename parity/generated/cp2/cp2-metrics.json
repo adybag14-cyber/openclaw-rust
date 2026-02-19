@@ -1,0 +1,11 @@
+{
+  "gate": "cp2",
+  "defaultPassed": 15,
+  "sqliteFeaturePassed": 2,
+  "totalFixtures": 17,
+  "totalDurationMs": 19806,
+  "avgFixtureDurationMs": 1165,
+  "soakFixtureCount": 3,
+  "soakFixtureDurationMs": 10647,
+  "resultsTsv": "cp2-fixture-results.tsv"
+}

@@ -1,0 +1,113 @@
+{
+  "cases": [
+    {
+      "name": "mention_activation_requires_mention",
+      "max_queue": 16,
+      "queue_mode": "followup",
+      "group_activation_mode": "mention",
+      "requests": [
+        {
+          "id": "req-ignore",
+          "session_key": "agent:main:discord:group:g1",
+          "command": "git status",
+          "chat_type": "group",
+          "was_mentioned": false
+        },
+        {
+          "id": "req-accept",
+          "session_key": "agent:main:discord:group:g1",
+          "command": "git status",
+          "chat_type": "group",
+          "was_mentioned": true
+        }
+      ],
+      "expect_request_ids": [
+        "req-accept"
+      ]
+    },
+    {
+      "name": "steer_mode_keeps_latest_followup",
+      "max_queue": 16,
+      "queue_mode": "steer",
+      "group_activation_mode": "always",
+      "requests": [
+        {
+          "id": "req-1",
+          "session_key": "agent:main:discord:group:g1",
+          "prompt": "hello-1",
+          "chat_type": "group",
+          "was_mentioned": true
+        },
+        {
+          "id": "req-2",
+          "session_key": "agent:main:discord:group:g1",
+          "prompt": "hello-2",
+          "chat_type": "group",
+          "was_mentioned": true
+        },
+        {
+          "id": "req-3",
+          "session_key": "agent:main:discord:group:g1",
+          "prompt": "hello-3",
+          "chat_type": "group",
+          "was_mentioned": true
+        }
+      ],
+      "expect_request_ids": [
+        "req-1",
+        "req-3"
+      ]
+    },
+    {
+      "name": "followup_queue_pressure_preserves_fifo_prefix",
+      "max_queue": 8,
+      "queue_mode": "followup",
+      "group_activation_mode": "always",
+      "requests": [
+        {"id":"req-1","session_key":"agent:main:discord:group:g1","prompt":"hello-1","chat_type":"group","was_mentioned":true},
+        {"id":"req-2","session_key":"agent:main:discord:group:g1","prompt":"hello-2","chat_type":"group","was_mentioned":true},
+        {"id":"req-3","session_key":"agent:main:discord:group:g1","prompt":"hello-3","chat_type":"group","was_mentioned":true},
+        {"id":"req-4","session_key":"agent:main:discord:group:g1","prompt":"hello-4","chat_type":"group","was_mentioned":true},
+        {"id":"req-5","session_key":"agent:main:discord:group:g1","prompt":"hello-5","chat_type":"group","was_mentioned":true},
+        {"id":"req-6","session_key":"agent:main:discord:group:g1","prompt":"hello-6","chat_type":"group","was_mentioned":true},
+        {"id":"req-7","session_key":"agent:main:discord:group:g1","prompt":"hello-7","chat_type":"group","was_mentioned":true},
+        {"id":"req-8","session_key":"agent:main:discord:group:g1","prompt":"hello-8","chat_type":"group","was_mentioned":true},
+        {"id":"req-9","session_key":"agent:main:discord:group:g1","prompt":"hello-9","chat_type":"group","was_mentioned":true},
+        {"id":"req-10","session_key":"agent:main:discord:group:g1","prompt":"hello-10","chat_type":"group","was_mentioned":true},
+        {"id":"req-11","session_key":"agent:main:discord:group:g1","prompt":"hello-11","chat_type":"group","was_mentioned":true},
+        {"id":"req-12","session_key":"agent:main:discord:group:g1","prompt":"hello-12","chat_type":"group","was_mentioned":true},
+        {"id":"req-13","session_key":"agent:main:discord:group:g1","prompt":"hello-13","chat_type":"group","was_mentioned":true},
+        {"id":"req-14","session_key":"agent:main:discord:group:g1","prompt":"hello-14","chat_type":"group","was_mentioned":true},
+        {"id":"req-15","session_key":"agent:main:discord:group:g1","prompt":"hello-15","chat_type":"group","was_mentioned":true},
+        {"id":"req-16","session_key":"agent:main:discord:group:g1","prompt":"hello-16","chat_type":"group","was_mentioned":true},
+        {"id":"req-17","session_key":"agent:main:discord:group:g1","prompt":"hello-17","chat_type":"group","was_mentioned":true},
+        {"id":"req-18","session_key":"agent:main:discord:group:g1","prompt":"hello-18","chat_type":"group","was_mentioned":true},
+        {"id":"req-19","session_key":"agent:main:discord:group:g1","prompt":"hello-19","chat_type":"group","was_mentioned":true},
+        {"id":"req-20","session_key":"agent:main:discord:group:g1","prompt":"hello-20","chat_type":"group","was_mentioned":true},
+        {"id":"req-21","session_key":"agent:main:discord:group:g1","prompt":"hello-21","chat_type":"group","was_mentioned":true},
+        {"id":"req-22","session_key":"agent:main:discord:group:g1","prompt":"hello-22","chat_type":"group","was_mentioned":true},
+        {"id":"req-23","session_key":"agent:main:discord:group:g1","prompt":"hello-23","chat_type":"group","was_mentioned":true},
+        {"id":"req-24","session_key":"agent:main:discord:group:g1","prompt":"hello-24","chat_type":"group","was_mentioned":true}
+      ],
+      "expect_request_ids": [
+        "req-1",
+        "req-2",
+        "req-3",
+        "req-4",
+        "req-5",
+        "req-6",
+        "req-7",
+        "req-8",
+        "req-9",
+        "req-10",
+        "req-11",
+        "req-12",
+        "req-13",
+        "req-14",
+        "req-15",
+        "req-16",
+        "req-17"
+      ]
+    }
+  ]
+}

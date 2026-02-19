@@ -1,0 +1,156 @@
+{
+  "cases": [
+    {
+      "name": "write-direct",
+      "request": {
+        "request_id": "cp3-direct-write-1",
+        "session_id": "cp3-direct",
+        "tool_name": "write",
+        "args": {
+          "path": "direct.txt",
+          "content": "alpha\nline2\n"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed"
+      }
+    },
+    {
+      "name": "read-direct",
+      "request": {
+        "request_id": "cp3-direct-read-1",
+        "session_id": "cp3-direct",
+        "tool_name": "read",
+        "args": {
+          "path": "direct.txt"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "alpha"
+      }
+    },
+    {
+      "name": "edit-direct",
+      "request": {
+        "request_id": "cp3-direct-edit-1",
+        "session_id": "cp3-direct",
+        "tool_name": "edit",
+        "args": {
+          "path": "direct.txt",
+          "oldText": "alpha",
+          "newText": "beta"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed"
+      }
+    },
+    {
+      "name": "apply-patch-direct",
+      "request": {
+        "request_id": "cp3-direct-patch-1",
+        "session_id": "cp3-direct",
+        "tool_name": "apply_patch",
+        "args": {
+          "input": "*** Begin Patch\n*** Update File: direct.txt\n@@\n-beta\n+gamma\n*** End Patch"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "direct.txt"
+      }
+    },
+    {
+      "name": "read-direct-after-patch",
+      "request": {
+        "request_id": "cp3-direct-read-2",
+        "session_id": "cp3-direct",
+        "tool_name": "read",
+        "args": {
+          "path": "direct.txt"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "gamma"
+      }
+    },
+    {
+      "name": "write-sandbox",
+      "request": {
+        "request_id": "cp3-sandbox-write-1",
+        "session_id": "cp3-sandbox",
+        "tool_name": "write",
+        "args": {
+          "path": "sandbox.txt",
+          "content": "sandbox-data"
+        },
+        "sandboxed": true
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed"
+      }
+    },
+    {
+      "name": "read-sandbox",
+      "request": {
+        "request_id": "cp3-sandbox-read-1",
+        "session_id": "cp3-sandbox",
+        "tool_name": "read",
+        "args": {
+          "path": "sandbox.txt"
+        },
+        "sandboxed": true
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "sandbox-data"
+      }
+    },
+    {
+      "name": "sandbox-path-escape-denied",
+      "request": {
+        "request_id": "cp3-sandbox-escape-1",
+        "session_id": "cp3-sandbox",
+        "tool_name": "read",
+        "args": {
+          "path": "../escape.txt"
+        },
+        "sandboxed": true
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "path_outside_root"
+      }
+    },
+    {
+      "name": "exec-direct",
+      "request": {
+        "request_id": "cp3-exec-direct-1",
+        "session_id": "cp3-exec",
+        "tool_name": "exec",
+        "args": {
+          "command": "echo cp3-exec"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "contains": "cp3-exec"
+      }
+    }
+  ]
+}

@@ -1,0 +1,2249 @@
+{
+  "cases": [
+    {
+      "name": "chat.inject emits final chat payload shape",
+      "prelude": [
+        {
+          "id": "prelude-chat-send-seed",
+          "method": "chat.send",
+          "params": {
+            "sessionKey": "main",
+            "message": "seed message",
+            "idempotencyKey": "chat-seed-run"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-chat-inject-parity",
+        "method": "chat.inject",
+        "params": {
+          "sessionKey": "main",
+          "message": "operator note",
+          "label": "ops"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/messageId",
+            "kind": "string",
+            "nonEmpty": true
+          }
+        ],
+        "event": {
+          "name": "chat",
+          "checks": [
+            {
+              "path": "/runId",
+              "kind": "string",
+              "startsWith": "inject-"
+            },
+            {
+              "path": "/sessionKey",
+              "equals": "agent:main:main"
+            },
+            {
+              "path": "/seq",
+              "equals": 0
+            },
+            {
+              "path": "/state",
+              "equals": "final"
+            },
+            {
+              "path": "/message/id",
+              "kind": "string",
+              "nonEmpty": true
+            },
+            {
+              "path": "/message/parentId",
+              "kind": "string",
+              "nonEmpty": true
+            },
+            {
+              "path": "/message/role",
+              "equals": "assistant"
+            },
+            {
+              "path": "/message/content",
+              "equals": "[ops] operator note"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "chat.history keeps id parentId chain fields",
+      "prelude": [
+        {
+          "id": "prelude-chat-send-a",
+          "method": "chat.send",
+          "params": {
+            "sessionKey": "main",
+            "message": "batch-a",
+            "idempotencyKey": "chat-run-a"
+          }
+        },
+        {
+          "id": "prelude-chat-send-b",
+          "method": "chat.send",
+          "params": {
+            "sessionKey": "main",
+            "message": "batch-b",
+            "idempotencyKey": "chat-run-b"
+          }
+        },
+        {
+          "id": "prelude-chat-inject-history",
+          "method": "chat.inject",
+          "params": {
+            "sessionKey": "main",
+            "message": "operator note",
+            "label": "ops"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-chat-history-parity",
+        "method": "chat.history",
+        "params": {
+          "sessionKey": "main",
+          "limit": 3
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/sessionKey",
+            "equals": "agent:main:main"
+          },
+          {
+            "path": "/sessionId",
+            "kind": "string",
+            "nonEmpty": true
+          },
+          {
+            "path": "/messages",
+            "kind": "array",
+            "nonEmpty": true
+          },
+          {
+            "path": "/messages/0/id",
+            "kind": "string"
+          },
+          {
+            "path": "/messages/0/parentId",
+            "kind": "null"
+          },
+          {
+            "path": "/messages/1/parentId",
+            "kind": "string",
+            "nonEmpty": true
+          },
+          {
+            "path": "/messages/2/parentId",
+            "kind": "string",
+            "nonEmpty": true
+          },
+          {
+            "path": "/messages/2/role",
+            "equals": "assistant"
+          },
+          {
+            "path": "/messages/2/content",
+            "equals": "[ops] operator note"
+          }
+        ]
+      }
+    },
+    {
+      "name": "chat.send rejects null bytes with bad request",
+      "request": {
+        "id": "req-chat-send-null-byte-parity",
+        "method": "chat.send",
+        "params": {
+          "sessionKey": "main",
+          "message": "hello\u0000world",
+          "idempotencyKey": "chat-null-byte"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "null bytes"
+        }
+      }
+    },
+    {
+      "name": "tts.status returns provider and prefs shape",
+      "request": {
+        "id": "req-tts-status-parity",
+        "method": "tts.status",
+        "params": {}
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/enabled",
+            "equals": false
+          },
+          {
+            "path": "/provider",
+            "equals": "edge"
+          },
+          {
+            "path": "/prefsPath",
+            "equals": "memory://tts/prefs.json"
+          },
+          {
+            "path": "/fallbackProviders",
+            "kind": "array",
+            "nonEmpty": true
+          },
+          {
+            "path": "/edgeEnabled",
+            "equals": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "tts.setProvider rejects unknown provider",
+      "request": {
+        "id": "req-tts-set-provider-invalid-parity",
+        "method": "tts.setProvider",
+        "params": {
+          "provider": "invalid-provider"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "Invalid provider"
+        }
+      }
+    },
+    {
+      "name": "tts.convert returns opus payload for telegram",
+      "prelude": [
+        {
+          "id": "prelude-tts-set-provider-openai",
+          "method": "tts.setProvider",
+          "params": {
+            "provider": "openai"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-tts-convert-parity",
+        "method": "tts.convert",
+        "params": {
+          "text": "hello voice",
+          "channel": "telegram"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/audioPath",
+            "kind": "string",
+            "startsWith": "memory://tts/audio-",
+            "contains": ".opus"
+          },
+          {
+            "path": "/provider",
+            "equals": "openai"
+          },
+          {
+            "path": "/outputFormat",
+            "equals": "opus"
+          },
+          {
+            "path": "/voiceCompatible",
+            "equals": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "tts.providers exposes active provider catalog",
+      "prelude": [
+        {
+          "id": "prelude-tts-set-provider-openai-providers",
+          "method": "tts.setProvider",
+          "params": {
+            "provider": "openai"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-tts-providers-parity",
+        "method": "tts.providers",
+        "params": {}
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/active",
+            "equals": "openai"
+          },
+          {
+            "path": "/providers",
+            "kind": "array",
+            "nonEmpty": true
+          },
+          {
+            "path": "/providers/0/id",
+            "equals": "openai"
+          },
+          {
+            "path": "/providers/1/id",
+            "equals": "elevenlabs"
+          },
+          {
+            "path": "/providers/2/id",
+            "equals": "edge"
+          },
+          {
+            "path": "/providers/2/configured",
+            "equals": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "voicewake.set normalizes triggers and emits changed event",
+      "request": {
+        "id": "req-voicewake-set-parity",
+        "method": "voicewake.set",
+        "params": {
+          "triggers": [
+            "  hello  ",
+            "",
+            "world",
+            42
+          ]
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/triggers",
+            "equals": [
+              "hello",
+              "world"
+            ]
+          }
+        ],
+        "event": {
+          "name": "voicewake.changed",
+          "checks": [
+            {
+              "path": "/triggers",
+              "equals": [
+                "hello",
+                "world"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "voicewake.get returns updated trigger set",
+      "prelude": [
+        {
+          "id": "prelude-voicewake-set-updated",
+          "method": "voicewake.set",
+          "params": {
+            "triggers": [
+              "hello",
+              "world"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "id": "req-voicewake-get-parity",
+        "method": "voicewake.get",
+        "params": {}
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/triggers",
+            "equals": [
+              "hello",
+              "world"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "voicewake.set rejects non-array triggers",
+      "request": {
+        "id": "req-voicewake-set-invalid-parity",
+        "method": "voicewake.set",
+        "params": {
+          "triggers": "openclaw"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "requires triggers: string[]"
+        }
+      }
+    },
+    {
+      "name": "web.login.start returns qr payload shape",
+      "request": {
+        "id": "req-web-login-start-parity",
+        "method": "web.login.start",
+        "params": {
+          "timeoutMs": 6000,
+          "verbose": true
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/providerId",
+            "equals": "whatsapp"
+          },
+          {
+            "path": "/accountId",
+            "equals": "default"
+          },
+          {
+            "path": "/sessionId",
+            "kind": "string",
+            "startsWith": "web-login-"
+          },
+          {
+            "path": "/qrDataUrl",
+            "kind": "string",
+            "startsWith": "data:image/png;base64,"
+          },
+          {
+            "path": "/verbose",
+            "equals": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "web.login.wait reports connected after start",
+      "prelude": [
+        {
+          "id": "prelude-web-login-start",
+          "method": "web.login.start",
+          "params": {
+            "timeoutMs": 6000,
+            "verbose": false
+          }
+        }
+      ],
+      "request": {
+        "id": "req-web-login-wait-connected-parity",
+        "method": "web.login.wait",
+        "params": {
+          "timeoutMs": 5000
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/providerId",
+            "equals": "whatsapp"
+          },
+          {
+            "path": "/accountId",
+            "equals": "default"
+          },
+          {
+            "path": "/connected",
+            "equals": true
+          },
+          {
+            "path": "/message",
+            "kind": "string",
+            "contains": "Linked!"
+          }
+        ]
+      }
+    },
+    {
+      "name": "web.login.wait reports inactive when no session exists",
+      "request": {
+        "id": "req-web-login-wait-inactive-parity",
+        "method": "web.login.wait",
+        "params": {
+          "timeoutMs": 5000
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/providerId",
+            "equals": "whatsapp"
+          },
+          {
+            "path": "/accountId",
+            "equals": "default"
+          },
+          {
+            "path": "/connected",
+            "equals": false
+          },
+          {
+            "path": "/message",
+            "kind": "string",
+            "contains": "No active WhatsApp login in progress."
+          }
+        ]
+      }
+    },
+    {
+      "name": "update.run returns restart sentinel delivery hints",
+      "request": {
+        "id": "req-update-run-parity",
+        "method": "update.run",
+        "params": {
+          "sessionKey": "agent:main:discord:group:g-upd:topic:42",
+          "note": "rollout",
+          "restartDelayMs": 2500,
+          "timeoutMs": 10
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/result/status",
+            "equals": "ok"
+          },
+          {
+            "path": "/restart/delayMs",
+            "equals": 2500
+          },
+          {
+            "path": "/sentinel/path",
+            "kind": "string",
+            "startsWith": "memory://restart-sentinel/update-"
+          },
+          {
+            "path": "/sentinel/payload/threadId",
+            "equals": "42"
+          },
+          {
+            "path": "/sentinel/payload/deliveryContext/channel",
+            "equals": "discord"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.patch canonicalizes main alias key",
+      "request": {
+        "id": "req-sessions-patch-main-parity",
+        "method": "sessions.patch",
+        "params": {
+          "key": "main",
+          "queueMode": "followup"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/path",
+            "equals": "memory://session-registry"
+          },
+          {
+            "path": "/key",
+            "equals": "agent:main:main"
+          },
+          {
+            "path": "/entry/key",
+            "equals": "agent:main:main"
+          },
+          {
+            "path": "/entry/queueMode",
+            "equals": "followup"
+          },
+          {
+            "path": "/session/key",
+            "equals": "agent:main:main"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.resolve normalizes short session key alias",
+      "prelude": [
+        {
+          "id": "prelude-sessions-patch-short",
+          "method": "sessions.patch",
+          "params": {
+            "key": "discord:group:g-short",
+            "queueMode": "followup"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-resolve-short-parity",
+        "method": "sessions.resolve",
+        "params": {
+          "key": "discord:group:g-short"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/key",
+            "equals": "agent:main:discord:group:g-short"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.list keeps canonical key forms",
+      "prelude": [
+        {
+          "id": "prelude-sessions-patch-main-list",
+          "method": "sessions.patch",
+          "params": {
+            "key": "main",
+            "queueMode": "followup"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-list-parity",
+        "method": "sessions.list",
+        "params": {
+          "limit": 10
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/path",
+            "equals": "memory://session-registry"
+          },
+          {
+            "path": "/sessions",
+            "kind": "array",
+            "nonEmpty": true
+          },
+          {
+            "path": "/sessions/0/key",
+            "equals": "agent:main:main"
+          },
+          {
+            "path": "/count",
+            "equals": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.list filters by channel account and peer route",
+      "prelude": [
+        {
+          "id": "prelude-sessions-send-route-a",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:alpha:slack:group:team-a",
+            "message": "route-a",
+            "channel": "slack",
+            "to": "peer-a",
+            "accountId": "acct-a"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-route-b",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:beta:slack:group:team-b",
+            "message": "route-b",
+            "channel": "slack",
+            "to": "peer-b",
+            "accountId": "acct-b"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-route-c",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:gamma:telegram:group:team-c",
+            "message": "route-c",
+            "channel": "telegram",
+            "to": "peer-c",
+            "accountId": "acct-c"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-list-route-filter-parity",
+        "method": "sessions.list",
+        "params": {
+          "limit": 10,
+          "includeGlobal": false,
+          "includeUnknown": false,
+          "channel": "slack",
+          "to": "peer-b",
+          "accountId": "acct-b"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/count",
+            "equals": 1
+          },
+          {
+            "path": "/sessions/0/key",
+            "equals": "agent:beta:slack:group:team-b"
+          },
+          {
+            "path": "/sessions/0/agentId",
+            "equals": "beta"
+          },
+          {
+            "path": "/sessions/0/deliveryContext/channel",
+            "equals": "slack"
+          },
+          {
+            "path": "/sessions/0/deliveryContext/to",
+            "equals": "peer-b"
+          },
+          {
+            "path": "/sessions/0/deliveryContext/accountId",
+            "equals": "acct-b"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.list disambiguates shared peer by channel and account selectors",
+      "prelude": [
+        {
+          "id": "prelude-sessions-send-list-collision-a",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:slack:group:peer-shared-a",
+            "message": "list collision a",
+            "channel": "slack",
+            "to": "peer-shared",
+            "accountId": "acct-a"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-list-collision-b",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:sales:slack:group:peer-shared-b",
+            "message": "list collision b",
+            "channel": "slack",
+            "to": "peer-shared",
+            "accountId": "acct-b"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-list-collision-c",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:telegram:group:peer-shared-c",
+            "message": "list collision c",
+            "channel": "telegram",
+            "to": "peer-shared",
+            "accountId": "acct-a"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-list-route-collision-parity",
+        "method": "sessions.list",
+        "params": {
+          "limit": 10,
+          "includeGlobal": false,
+          "includeUnknown": false,
+          "channel": "slack",
+          "to": "peer-shared",
+          "accountId": "acct-b"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/count",
+            "equals": 1
+          },
+          {
+            "path": "/sessions/0/key",
+            "equals": "agent:sales:slack:group:peer-shared-b"
+          },
+          {
+            "path": "/sessions/0/deliveryContext/channel",
+            "equals": "slack"
+          },
+          {
+            "path": "/sessions/0/deliveryContext/to",
+            "equals": "peer-shared"
+          },
+          {
+            "path": "/sessions/0/deliveryContext/accountId",
+            "equals": "acct-b"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.resolve supports multi-agent route selectors",
+      "prelude": [
+        {
+          "id": "prelude-sessions-send-resolve-route-ops",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:telegram:group:g-ops",
+            "message": "ops route",
+            "channel": "telegram",
+            "to": "peer-route",
+            "accountId": "acct-shared"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-resolve-route-sales",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:sales:telegram:group:g-sales",
+            "message": "sales route",
+            "channel": "telegram",
+            "to": "peer-route",
+            "accountId": "acct-shared"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-resolve-route-filter-parity",
+        "method": "sessions.resolve",
+        "params": {
+          "agentId": "ops",
+          "channel": "telegram",
+          "to": "peer-route",
+          "accountId": "acct-shared",
+          "includeGlobal": false,
+          "includeUnknown": false
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/key",
+            "equals": "agent:ops:telegram:group:g-ops"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.resolve disambiguates shared peer by channel and account selectors",
+      "prelude": [
+        {
+          "id": "prelude-sessions-send-resolve-collision-a",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:slack:group:peer-shared-a",
+            "message": "resolve collision a",
+            "channel": "slack",
+            "to": "peer-shared",
+            "accountId": "acct-a"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-resolve-collision-b",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:sales:slack:group:peer-shared-b",
+            "message": "resolve collision b",
+            "channel": "slack",
+            "to": "peer-shared",
+            "accountId": "acct-b"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-resolve-collision-c",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:telegram:group:peer-shared-c",
+            "message": "resolve collision c",
+            "channel": "telegram",
+            "to": "peer-shared",
+            "accountId": "acct-a"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-resolve-route-collision-parity",
+        "method": "sessions.resolve",
+        "params": {
+          "channel": "slack",
+          "to": "peer-shared",
+          "accountId": "acct-b",
+          "includeGlobal": false,
+          "includeUnknown": false
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/key",
+            "equals": "agent:sales:slack:group:peer-shared-b"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.resolve prioritizes sessionKey over route selectors",
+      "prelude": [
+        {
+          "id": "prelude-sessions-send-resolve-precedence-explicit",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:discord:group:g-explicit",
+            "message": "resolve precedence explicit",
+            "channel": "discord",
+            "to": "peer-explicit",
+            "accountId": "acct-explicit"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-resolve-precedence-route",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:sales:slack:group:g-route",
+            "message": "resolve precedence route",
+            "channel": "slack",
+            "to": "peer-route",
+            "accountId": "acct-route"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-resolve-route-precedence-parity",
+        "method": "sessions.resolve",
+        "params": {
+          "sessionKey": "agent:ops:discord:group:g-explicit",
+          "channel": "slack",
+          "to": "peer-route",
+          "accountId": "acct-route",
+          "includeGlobal": false,
+          "includeUnknown": false
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/key",
+            "equals": "agent:ops:discord:group:g-explicit"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.resolve supports label plus route selectors",
+      "prelude": [
+        {
+          "id": "prelude-sessions-patch-label-route-target",
+          "method": "sessions.patch",
+          "params": {
+            "sessionKey": "agent:ops:telegram:group:g-label-route-target",
+            "label": "label-route-target"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-label-route-target",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:telegram:group:g-label-route-target",
+            "message": "label route target",
+            "channel": "telegram",
+            "to": "peer-label-route",
+            "accountId": "acct-target"
+          }
+        },
+        {
+          "id": "prelude-sessions-patch-label-route-other",
+          "method": "sessions.patch",
+          "params": {
+            "sessionKey": "agent:sales:telegram:group:g-label-route-other",
+            "label": "label-route-other"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-label-route-other",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:sales:telegram:group:g-label-route-other",
+            "message": "label route other",
+            "channel": "telegram",
+            "to": "peer-label-route",
+            "accountId": "acct-other"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-resolve-label-route-hybrid-parity",
+        "method": "sessions.resolve",
+        "params": {
+          "label": "label-route-target",
+          "channel": "telegram",
+          "to": "peer-label-route",
+          "includeGlobal": false,
+          "includeUnknown": false
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/key",
+            "equals": "agent:ops:telegram:group:g-label-route-target"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.resolve prioritizes sessionId over label and route selectors",
+      "prelude": [
+        {
+          "id": "prelude-sessions-patch-session-id-priority",
+          "method": "sessions.patch",
+          "params": {
+            "sessionKey": "agent:ops:discord:group:g-session-id-priority",
+            "label": "hybrid-session-id"
+          },
+          "captures": [
+            {
+              "path": "/session/sessionId",
+              "as": "hybrid_session_id"
+            }
+          ]
+        },
+        {
+          "id": "prelude-sessions-patch-session-id-conflict",
+          "method": "sessions.patch",
+          "params": {
+            "sessionKey": "agent:sales:slack:group:g-session-id-conflict",
+            "label": "hybrid-conflict"
+          }
+        },
+        {
+          "id": "prelude-sessions-send-session-id-conflict",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:sales:slack:group:g-session-id-conflict",
+            "message": "session id conflict route",
+            "channel": "slack",
+            "to": "peer-hybrid",
+            "accountId": "acct-hybrid"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-resolve-session-id-priority-parity",
+        "method": "sessions.resolve",
+        "params": {
+          "sessionId": "${hybrid_session_id}",
+          "label": "hybrid-conflict",
+          "channel": "slack",
+          "to": "peer-hybrid",
+          "accountId": "acct-hybrid",
+          "includeGlobal": false,
+          "includeUnknown": false
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/key",
+            "equals": "agent:ops:discord:group:g-session-id-priority"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.resolve accepts partial route selectors without accountId",
+      "prelude": [
+        {
+          "id": "prelude-sessions-send-partial-route",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:slack:group:g-partial-route",
+            "message": "partial route seed",
+            "channel": "slack",
+            "to": "peer-partial",
+            "accountId": "acct-partial"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-resolve-partial-route-parity",
+        "method": "sessions.resolve",
+        "params": {
+          "channel": "slack",
+          "to": "peer-partial",
+          "includeGlobal": false,
+          "includeUnknown": false
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/key",
+            "equals": "agent:ops:slack:group:g-partial-route"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.resolve partial route collision prefers most recent update",
+      "prelude": [
+        {
+          "id": "prelude-sessions-send-partial-collision-older",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:slack:group:g-partial-collision-older",
+            "message": "partial collision older",
+            "channel": "slack",
+            "to": "peer-partial-collision",
+            "accountId": "acct-older"
+          }
+        },
+        {
+          "id": "prelude-sessions-sleep-partial-collision",
+          "method": "__sleep__",
+          "sleepMs": 5
+        },
+        {
+          "id": "prelude-sessions-send-partial-collision-newer",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:slack:group:g-partial-collision-newer",
+            "message": "partial collision newer",
+            "channel": "slack",
+            "to": "peer-partial-collision",
+            "accountId": "acct-newer"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-resolve-partial-collision-parity",
+        "method": "sessions.resolve",
+        "params": {
+          "channel": "slack",
+          "to": "peer-partial-collision",
+          "includeGlobal": false,
+          "includeUnknown": false
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/key",
+            "equals": "agent:ops:slack:group:g-partial-collision-newer"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.preview preserves requested alias key in output",
+      "prelude": [
+        {
+          "id": "prelude-sessions-send-preview",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "main",
+            "message": "hello preview"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-preview-parity",
+        "method": "sessions.preview",
+        "params": {
+          "keys": [
+            "main"
+          ],
+          "limit": 2,
+          "maxChars": 120
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/previews",
+            "kind": "array",
+            "nonEmpty": true
+          },
+          {
+            "path": "/previews/0/key",
+            "equals": "main"
+          },
+          {
+            "path": "/previews/0/status",
+            "equals": "ok"
+          },
+          {
+            "path": "/previews/0/items/0/text",
+            "contains": "hello preview"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessions.resolve rejects missing selector params",
+      "request": {
+        "id": "req-sessions-resolve-missing-parity",
+        "method": "sessions.resolve",
+        "params": {}
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "sessionKey|key|sessionId or label is required"
+        }
+      }
+    },
+    {
+      "name": "browser.request returns unavailable contract with details payload",
+      "request": {
+        "id": "req-browser-request-parity",
+        "method": "browser.request",
+        "params": {
+          "method": "get",
+          "path": "/tabs",
+          "query": {
+            "profile": "default"
+          },
+          "timeoutMs": 0
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 503,
+          "messageContains": "browser control is disabled"
+        },
+        "errorChecks": [
+          {
+            "path": "/details/method",
+            "equals": "GET"
+          },
+          {
+            "path": "/details/path",
+            "equals": "/tabs"
+          },
+          {
+            "path": "/details/query/profile",
+            "equals": "default"
+          }
+        ]
+      }
+    },
+    {
+      "name": "config.set applies update using captured base hash",
+      "prelude": [
+        {
+          "id": "prelude-config-get-set",
+          "method": "config.get",
+          "params": {},
+          "captures": [
+            {
+              "path": "/hash",
+              "as": "config_hash"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "id": "req-config-set-parity",
+        "method": "config.set",
+        "params": {
+          "baseHash": "${config_hash}",
+          "raw": "{\"session\":{\"mainKey\":\"primary\"},\"talk\":{\"outputFormat\":\"pcm16\"}}"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/path",
+            "equals": "memory://config.json"
+          },
+          {
+            "path": "/config/session/mainKey",
+            "equals": "primary"
+          },
+          {
+            "path": "/hash",
+            "kind": "string",
+            "nonEmpty": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "config.patch merges payload using latest hash",
+      "prelude": [
+        {
+          "id": "prelude-config-get-patch",
+          "method": "config.get",
+          "params": {},
+          "captures": [
+            {
+              "path": "/hash",
+              "as": "config_hash_initial"
+            }
+          ]
+        },
+        {
+          "id": "prelude-config-set-patch",
+          "method": "config.set",
+          "params": {
+            "baseHash": "${config_hash_initial}",
+            "raw": "{\"session\":{\"mainKey\":\"primary\"}}"
+          },
+          "captures": [
+            {
+              "path": "/hash",
+              "as": "config_hash_after_set"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "id": "req-config-patch-parity",
+        "method": "config.patch",
+        "params": {
+          "baseHash": "${config_hash_after_set}",
+          "raw": "{\"talk\":{\"interruptOnSpeech\":false}}"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/config/talk/interruptOnSpeech",
+            "equals": false
+          },
+          {
+            "path": "/hash",
+            "kind": "string",
+            "nonEmpty": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "config.apply returns restart envelope",
+      "prelude": [
+        {
+          "id": "prelude-config-get-apply",
+          "method": "config.get",
+          "params": {},
+          "captures": [
+            {
+              "path": "/hash",
+              "as": "config_hash_apply"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "id": "req-config-apply-parity",
+        "method": "config.apply",
+        "params": {
+          "baseHash": "${config_hash_apply}",
+          "raw": "{\"ui\":{\"seamColor\":\"#111111\"}}",
+          "sessionKey": "main",
+          "note": "payload-corpus",
+          "restartDelayMs": 25
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/config/ui/seamColor",
+            "equals": "#111111"
+          },
+          {
+            "path": "/restart/requested",
+            "equals": true
+          },
+          {
+            "path": "/restart/sessionKey",
+            "equals": "main"
+          },
+          {
+            "path": "/restart/restartDelayMs",
+            "equals": 25
+          }
+        ]
+      }
+    },
+    {
+      "name": "config.schema returns schema metadata",
+      "request": {
+        "id": "req-config-schema-parity",
+        "method": "config.schema",
+        "params": {}
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/schema/type",
+            "equals": "object"
+          },
+          {
+            "path": "/version",
+            "equals": "rust-parity-1"
+          },
+          {
+            "path": "/generatedAt",
+            "kind": "string",
+            "nonEmpty": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "config.set rejects missing base hash",
+      "request": {
+        "id": "req-config-set-missing-hash-parity",
+        "method": "config.set",
+        "params": {
+          "raw": "{\"session\":{\"mainKey\":\"primary\"}}"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "base hash required"
+        }
+      }
+    },
+    {
+      "name": "logs.tail returns bounded line slice and cursor",
+      "prelude": [
+        {
+          "id": "prelude-system-event-logs-tail",
+          "method": "system-event",
+          "params": {
+            "text": "payload-corpus-log-line"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-logs-tail-parity",
+        "method": "logs.tail",
+        "params": {
+          "limit": 1,
+          "maxBytes": 2048
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/file",
+            "equals": "memory://gateway.log"
+          },
+          {
+            "path": "/cursor",
+            "kind": "number"
+          },
+          {
+            "path": "/lines",
+            "kind": "array",
+            "nonEmpty": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "cron.add returns delivery fields and id",
+      "request": {
+        "id": "req-cron-add-parity",
+        "method": "cron.add",
+        "params": {
+          "name": "Payload Parity Reminder",
+          "enabled": true,
+          "schedule": {
+            "kind": "every",
+            "everyMs": 60000
+          },
+          "sessionTarget": "isolated",
+          "wakeMode": "next-heartbeat",
+          "payload": {
+            "kind": "agentTurn",
+            "message": "run periodic check",
+            "deliver": true,
+            "channel": "telegram",
+            "to": "42",
+            "bestEffortDeliver": true
+          }
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/id",
+            "kind": "string",
+            "nonEmpty": true
+          },
+          {
+            "path": "/delivery/mode",
+            "equals": "announce"
+          },
+          {
+            "path": "/delivery/channel",
+            "equals": "telegram"
+          },
+          {
+            "path": "/payload/kind",
+            "equals": "agentTurn"
+          }
+        ]
+      }
+    },
+    {
+      "name": "cron.status reports store path and job count",
+      "prelude": [
+        {
+          "id": "prelude-cron-add-status",
+          "method": "cron.add",
+          "params": {
+            "name": "Payload Parity Status",
+            "enabled": true,
+            "schedule": {
+              "kind": "every",
+              "everyMs": 60000
+            },
+            "sessionTarget": "main",
+            "wakeMode": "next-heartbeat",
+            "payload": {
+              "kind": "systemEvent",
+              "text": "cron status parity"
+            }
+          }
+        }
+      ],
+      "request": {
+        "id": "req-cron-status-parity",
+        "method": "cron.status",
+        "params": {}
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/enabled",
+            "equals": true
+          },
+          {
+            "path": "/jobs",
+            "equals": 1
+          },
+          {
+            "path": "/storePath",
+            "equals": "memory://cron/jobs.json"
+          }
+        ]
+      }
+    },
+    {
+      "name": "cron.run due mode skips disabled job",
+      "prelude": [
+        {
+          "id": "prelude-cron-add-disabled-run",
+          "method": "cron.add",
+          "params": {
+            "name": "Payload Parity Disabled",
+            "enabled": false,
+            "schedule": {
+              "kind": "every",
+              "everyMs": 60000
+            },
+            "sessionTarget": "main",
+            "wakeMode": "next-heartbeat",
+            "payload": {
+              "kind": "systemEvent",
+              "text": "cron disabled parity"
+            }
+          },
+          "captures": [
+            {
+              "path": "/id",
+              "as": "cron_disabled_id"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "id": "req-cron-run-disabled-parity",
+        "method": "cron.run",
+        "params": {
+          "id": "${cron_disabled_id}",
+          "mode": "due"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/status",
+            "equals": "skipped"
+          }
+        ]
+      }
+    },
+    {
+      "name": "cron.run force mode returns finished action",
+      "prelude": [
+        {
+          "id": "prelude-cron-add-force-run",
+          "method": "cron.add",
+          "params": {
+            "name": "Payload Parity Force",
+            "enabled": true,
+            "schedule": {
+              "kind": "every",
+              "everyMs": 60000
+            },
+            "sessionTarget": "main",
+            "wakeMode": "next-heartbeat",
+            "payload": {
+              "kind": "systemEvent",
+              "text": "cron force parity"
+            }
+          },
+          "captures": [
+            {
+              "path": "/id",
+              "as": "cron_force_id"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "id": "req-cron-run-force-parity",
+        "method": "cron.run",
+        "params": {
+          "id": "${cron_force_id}",
+          "mode": "force"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/status",
+            "equals": "ok"
+          },
+          {
+            "path": "/action",
+            "equals": "finished"
+          }
+        ]
+      }
+    },
+    {
+      "name": "cron.runs returns run history entries",
+      "prelude": [
+        {
+          "id": "prelude-cron-add-runs",
+          "method": "cron.add",
+          "params": {
+            "name": "Payload Parity Runs",
+            "enabled": true,
+            "schedule": {
+              "kind": "every",
+              "everyMs": 60000
+            },
+            "sessionTarget": "main",
+            "wakeMode": "next-heartbeat",
+            "payload": {
+              "kind": "systemEvent",
+              "text": "cron runs parity"
+            }
+          },
+          "captures": [
+            {
+              "path": "/id",
+              "as": "cron_runs_id"
+            }
+          ]
+        },
+        {
+          "id": "prelude-cron-run-runs",
+          "method": "cron.run",
+          "params": {
+            "id": "${cron_runs_id}",
+            "mode": "force"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-cron-runs-parity",
+        "method": "cron.runs",
+        "params": {
+          "id": "${cron_runs_id}",
+          "limit": 10
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/entries",
+            "kind": "array",
+            "nonEmpty": true
+          },
+          {
+            "path": "/entries/0/jobId",
+            "kind": "string",
+            "nonEmpty": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "cron.remove returns removed true",
+      "prelude": [
+        {
+          "id": "prelude-cron-add-remove",
+          "method": "cron.add",
+          "params": {
+            "name": "Payload Parity Remove",
+            "enabled": true,
+            "schedule": {
+              "kind": "every",
+              "everyMs": 60000
+            },
+            "sessionTarget": "main",
+            "wakeMode": "next-heartbeat",
+            "payload": {
+              "kind": "systemEvent",
+              "text": "cron remove parity"
+            }
+          },
+          "captures": [
+            {
+              "path": "/id",
+              "as": "cron_remove_id"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "id": "req-cron-remove-parity",
+        "method": "cron.remove",
+        "params": {
+          "id": "${cron_remove_id}"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/removed",
+            "equals": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "exec.approvals.get returns redacted snapshot",
+      "request": {
+        "id": "req-exec-approvals-get-parity",
+        "method": "exec.approvals.get",
+        "params": {}
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/path",
+            "equals": "memory://exec-approvals.json"
+          },
+          {
+            "path": "/exists",
+            "equals": true
+          },
+          {
+            "path": "/file/version",
+            "equals": 1
+          },
+          {
+            "path": "/hash",
+            "kind": "string",
+            "nonEmpty": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "exec.approvals.set accepts current base hash",
+      "prelude": [
+        {
+          "id": "prelude-exec-approvals-get-set",
+          "method": "exec.approvals.get",
+          "params": {},
+          "captures": [
+            {
+              "path": "/hash",
+              "as": "exec_global_hash"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "id": "req-exec-approvals-set-parity",
+        "method": "exec.approvals.set",
+        "params": {
+          "baseHash": "${exec_global_hash}",
+          "file": {
+            "version": 1,
+            "defaults": {
+              "security": "allowlist",
+              "ask": "on-miss"
+            },
+            "agents": {
+              "main": {
+                "allowlist": [
+                  {
+                    "pattern": "git status"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/file/defaults/security",
+            "equals": "allowlist"
+          },
+          {
+            "path": "/file/agents/main/allowlist/0/pattern",
+            "equals": "git status"
+          },
+          {
+            "path": "/hash",
+            "kind": "string",
+            "nonEmpty": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "exec.approvals.node.get reports not connected details",
+      "request": {
+        "id": "req-exec-approvals-node-get-not-connected-parity",
+        "method": "exec.approvals.node.get",
+        "params": {
+          "nodeId": "node-exec-missing"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 503,
+          "messageContains": "node not connected"
+        },
+        "errorChecks": [
+          {
+            "path": "/details/code",
+            "equals": "NOT_CONNECTED"
+          }
+        ]
+      }
+    },
+    {
+      "name": "exec.approvals.node.set updates paired node snapshot",
+      "prelude": [
+        {
+          "id": "prelude-node-pair-request-exec-corpus",
+          "method": "node.pair.request",
+          "params": {
+            "nodeId": "node-exec-corpus"
+          },
+          "captures": [
+            {
+              "path": "/request/requestId",
+              "as": "node_pair_request_id"
+            }
+          ]
+        },
+        {
+          "id": "prelude-node-pair-approve-exec-corpus",
+          "method": "node.pair.approve",
+          "params": {
+            "requestId": "${node_pair_request_id}"
+          }
+        },
+        {
+          "id": "prelude-exec-node-get-corpus",
+          "method": "exec.approvals.node.get",
+          "params": {
+            "nodeId": "node-exec-corpus"
+          },
+          "captures": [
+            {
+              "path": "/hash",
+              "as": "node_exec_hash"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "id": "req-exec-node-set-corpus-parity",
+        "method": "exec.approvals.node.set",
+        "params": {
+          "nodeId": "node-exec-corpus",
+          "baseHash": "${node_exec_hash}",
+          "file": {
+            "version": 1,
+            "agents": {
+              "main": {
+                "allowlist": [
+                  {
+                    "pattern": "cargo test"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/path",
+            "equals": "memory://nodes/node-exec-corpus/exec-approvals.json"
+          },
+          {
+            "path": "/file/agents/main/allowlist/0/pattern",
+            "equals": "cargo test"
+          }
+        ]
+      }
+    },
+    {
+      "name": "exec.approval.request two phase returns accepted envelope",
+      "request": {
+        "id": "req-exec-approval-request-two-phase-parity",
+        "method": "exec.approval.request",
+        "params": {
+          "id": "approval-corpus-1",
+          "command": "git status",
+          "twoPhase": true,
+          "timeoutMs": 1000
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/status",
+            "equals": "accepted"
+          },
+          {
+            "path": "/id",
+            "equals": "approval-corpus-1"
+          },
+          {
+            "path": "/createdAtMs",
+            "kind": "number"
+          },
+          {
+            "path": "/expiresAtMs",
+            "kind": "number"
+          }
+        ]
+      }
+    },
+    {
+      "name": "exec.approval.waitDecision returns resolved decision",
+      "prelude": [
+        {
+          "id": "prelude-exec-approval-request-wait",
+          "method": "exec.approval.request",
+          "params": {
+            "id": "approval-corpus-wait",
+            "command": "ls",
+            "twoPhase": true
+          }
+        },
+        {
+          "id": "prelude-exec-approval-resolve-wait",
+          "method": "exec.approval.resolve",
+          "params": {
+            "id": "approval-corpus-wait",
+            "decision": "allow-once"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-exec-approval-wait-parity",
+        "method": "exec.approval.waitDecision",
+        "params": {
+          "id": "approval-corpus-wait"
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/id",
+            "equals": "approval-corpus-wait"
+          },
+          {
+            "path": "/decision",
+            "equals": "allow-once"
+          }
+        ]
+      }
+    },
+    {
+      "name": "exec.approval.resolve rejects invalid decision",
+      "request": {
+        "id": "req-exec-approval-resolve-invalid-parity",
+        "method": "exec.approval.resolve",
+        "params": {
+          "id": "approval-corpus-invalid",
+          "decision": "approve"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "invalid decision"
+        }
+      }
+    },
+    {
+      "name": "exec.approval.waitDecision rejects unknown id",
+      "request": {
+        "id": "req-exec-approval-wait-unknown-parity",
+        "method": "exec.approval.waitDecision",
+        "params": {
+          "id": "approval-missing"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "approval expired or not found"
+        }
+      }
+    },
+    {
+      "name": "wizard.start returns running confirm step payload",
+      "request": {
+        "id": "req-wizard-start-parity",
+        "method": "wizard.start",
+        "params": {
+          "mode": "local",
+          "workspace": "."
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/sessionId",
+            "kind": "string",
+            "startsWith": "wizard-"
+          },
+          {
+            "path": "/done",
+            "equals": false
+          },
+          {
+            "path": "/status",
+            "equals": "running"
+          },
+          {
+            "path": "/step/id",
+            "equals": "confirm-setup"
+          },
+          {
+            "path": "/step/executor",
+            "equals": "gateway"
+          }
+        ]
+      }
+    },
+    {
+      "name": "wizard.start rejects concurrent running session",
+      "prelude": [
+        {
+          "id": "prelude-wizard-start-running",
+          "method": "wizard.start",
+          "params": {
+            "mode": "local",
+            "workspace": "."
+          }
+        }
+      ],
+      "request": {
+        "id": "req-wizard-start-duplicate-parity",
+        "method": "wizard.start",
+        "params": {
+          "mode": "local",
+          "workspace": "."
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 503,
+          "messageContains": "wizard already running"
+        }
+      }
+    },
+    {
+      "name": "wizard.status rejects unknown session id",
+      "request": {
+        "id": "req-wizard-status-unknown-parity",
+        "method": "wizard.status",
+        "params": {
+          "sessionId": "wizard-missing"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "wizard not found"
+        }
+      }
+    },
+    {
+      "name": "wizard.cancel rejects unknown session id",
+      "request": {
+        "id": "req-wizard-cancel-unknown-parity",
+        "method": "wizard.cancel",
+        "params": {
+          "sessionId": "wizard-missing"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "wizard not found"
+        }
+      }
+    }
+  ]
+}
