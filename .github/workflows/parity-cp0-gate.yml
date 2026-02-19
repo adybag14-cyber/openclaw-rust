@@ -86,3 +86,18 @@ jobs:
 
       - name: Run CP1 standalone gateway fixtures
         run: bash ./scripts/parity/run-cp1-gate.sh
+
+  session-routing-cp2:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout rust repo
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run CP2 session/routing fixtures
+        run: bash ./scripts/parity/run-cp2-gate.sh
