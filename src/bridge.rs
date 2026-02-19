@@ -275,6 +275,7 @@ fn spawn_session_worker(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::sync::Arc;
 
     use anyhow::Result;
@@ -671,6 +672,88 @@ mod tests {
         let evaluator: Arc<dyn ActionEvaluator> = Arc::new(SlowEvaluator);
         bridge.run_once(evaluator).await?;
         server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn followup_queue_pressure_preserves_order_without_duplicates() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let configured_max_queue = 8usize;
+        let effective_max_pending = configured_max_queue.max(16);
+        let total_requests = 40usize;
+        let expected_ids: Vec<String> = (1..=(effective_max_pending + 1))
+            .map(|idx| format!("req-{idx}"))
+            .collect();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let ws = accept_async(stream).await?;
+            let (mut write, mut read) = ws.split();
+
+            let _connect = read
+                .next()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("missing connect frame"))??;
+
+            for idx in 1..=total_requests {
+                write
+                    .send(Message::Text(
+                        json!({
+                            "type": "event",
+                            "event": "agent",
+                            "payload": {
+                                "id": format!("req-{idx}"),
+                                "sessionKey": "agent:main:discord:group:g1",
+                                "chatType": "group",
+                                "wasMentioned": true,
+                                "prompt": format!("hello-{idx}")
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .await?;
+            }
+
+            let mut seen = Vec::new();
+            loop {
+                match timeout(Duration::from_millis(450), read.next()).await {
+                    Ok(Some(Ok(decision))) => {
+                        let decision_json: Value = serde_json::from_str(decision.to_text()?)?;
+                        if let Some(req_id) = decision_json
+                            .pointer("/payload/requestId")
+                            .and_then(Value::as_str)
+                        {
+                            seen.push(req_id.to_owned());
+                        }
+                    }
+                    Ok(Some(Err(err))) => return Err(err.into()),
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+
+            write.send(Message::Close(None)).await?;
+            Ok::<Vec<String>, anyhow::Error>(seen)
+        });
+
+        let bridge = GatewayBridge::new(
+            GatewayConfig {
+                url: format!("ws://{addr}"),
+                token: None,
+                ..Config::default().gateway
+            },
+            "security.decision".to_owned(),
+            configured_max_queue,
+            SessionQueueMode::Followup,
+            GroupActivationMode::Always,
+        );
+        let evaluator: Arc<dyn ActionEvaluator> = Arc::new(SlowEvaluator);
+        bridge.run_once(evaluator).await?;
+        let seen = server.await??;
+        assert_eq!(seen, expected_ids);
+        let unique: HashSet<String> = seen.iter().cloned().collect();
+        assert_eq!(unique.len(), seen.len(), "duplicate decisions detected");
         Ok(())
     }
 

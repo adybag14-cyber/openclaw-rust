@@ -230,6 +230,6 @@ Use this checklist for active tracking:
 
 ## Immediate Next Actions (Start Here)
 
-1. Start CP2 session/routing parity replay coverage for multi-agent channel/account/peer routes.
-2. Add crash/restart recovery fixtures for SQLite WAL session persistence.
-3. Extend soak tests for duplicate-dispatch/out-of-order reply detection under queue pressure.
+1. Promote `scripts/parity/run-cp2-gate.ps1` into CI so CP2 session/routing fixtures run on every parity PR.
+2. Add differential CP2 replay corpus cases for group activation + reply-back behavior against upstream traces.
+3. Build longer multi-session soak coverage (parallel session churn) to stress duplicate/out-of-order invariants beyond unit scope.
