@@ -69,7 +69,8 @@ Optional upstream location override:
 - `parity/method-surface-report.md`
 - `tests/parity/gateway-payload-corpus.json` (fixture corpus)
 - `parity/generated/cp2/*` (CP2 gate fixture logs/metrics/summary)
-- `parity/generated/cp3/*` (CP3 gate fixture logs/metrics/summary)
+- `tests/parity/tool-runtime-corpus.json` (CP3 transcript/runtime fixture corpus)
+- `parity/generated/cp3/*` (CP3 gate logs/metrics/summary + runtime corpus artifact)
 
 ## PR Gate
 
@@ -78,4 +79,4 @@ Optional upstream location override:
 - PR CI must publish `parity/generated/parity-scoreboard.md` as job summary, including subsystem status deltas versus `parity/manifest/scoreboard-baseline.json`.
 - PR CI must keep CP1 standalone runtime fixtures green (`run-cp1-gate.sh`) for authz matrix and event backpressure/drop semantics.
 - PR CI must publish/upload CP2 gate artifacts (`parity/generated/cp2`) for session/routing trend tracking.
-- PR CI must keep CP3 foundation fixtures green (`run-cp3-gate.sh`) and publish/upload `parity/generated/cp3` artifacts.
+- PR CI must keep CP3 parity fixtures green (`run-cp3-gate.sh`) and publish/upload `parity/generated/cp3` artifacts.

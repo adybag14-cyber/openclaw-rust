@@ -10,6 +10,7 @@ mod scheduler;
 mod security;
 mod session_key;
 mod state;
+mod tool_runtime;
 mod types;
 
 use std::path::PathBuf;

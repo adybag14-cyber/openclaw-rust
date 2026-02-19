@@ -129,7 +129,7 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Run CP3 tool runtime foundation fixtures
+      - name: Run CP3 tool runtime parity fixtures
         run: PARITY_ARTIFACT_DIR=parity/generated/cp3 bash ./scripts/parity/run-cp3-gate.sh
 
       - name: Publish CP3 summary

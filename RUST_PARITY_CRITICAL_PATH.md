@@ -5,8 +5,8 @@ Repo: `adybag14-cyber/openclaw-rust`
 
 ## Current Baseline (Evidence-Based)
 
-- Overall completion estimate toward true end-to-end Rust replacement: **~33%**
-- Remaining gap: **~67%**
+- Overall completion estimate toward true end-to-end Rust replacement: **~41%**
+- Remaining gap: **~59%**
 - Rust feature-audit status counts:
   - `Implemented`: 9
   - `Partial`: 9
@@ -95,7 +95,7 @@ Exit gates:
 - Approval and policy behavior matches expected fixtures.
 - Sandboxed/non-sandboxed host execution parity verified.
 
-Status: **Partial (Gate 1 Achieved)**
+Status: **Completed (Gate Achieved)**
 
 ## CP4: Channel Runtime Parity (Wave Rollout)
 
@@ -205,7 +205,7 @@ Use this checklist for active tracking:
 - [x] CP0 complete
 - [x] CP1 complete
 - [x] CP2 complete
-- [ ] CP3 complete
+- [x] CP3 complete
 - [ ] CP4 complete (Wave 1)
 - [ ] CP4 complete (Wave 2)
 - [ ] CP4 complete (Wave 3)
@@ -230,6 +230,6 @@ Use this checklist for active tracking:
 
 ## Immediate Next Actions (Start Here)
 
-1. Expand CP3 Gate 1 into transcript-driven tool-runtime fixtures (`exec/process/read/write/edit/apply_patch`) and add artifact publication.
-2. Wire CP3 policy precedence + loop guard engine to tool-host execution paths (not only defender classification).
-3. Add sandboxed/non-sandboxed host execution parity fixtures and longitudinal CP3 drift artifacts in CI.
+1. Execute CP4 Wave 1 implementation for transport/runtime parity on Telegram, WhatsApp, Discord, Slack, Signal, and WebChat.
+2. Extend CP5 host runtime parity for browser/canvas/nodes command execution paths (beyond current control-plane shaping).
+3. Expand CP8 reliability gates with soak + chaos fixtures tied to parity drift artifacts and release cutover criteria.

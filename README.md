@@ -217,7 +217,7 @@ CP2 session/routing gate (includes fixture duration metrics + artifact logs):
 .\scripts\parity\run-cp2-gate.ps1
 ```
 
-CP3 tool-runtime foundation gate (`profile/allow/deny/byProvider` + loop guard):
+CP3 tool-runtime parity gate (`profile/allow/deny/byProvider` + loop guard + transcript/runtime corpus):
 
 ```powershell
 .\scripts\parity\run-cp3-gate.ps1
@@ -238,6 +238,7 @@ Generated artifacts:
 - `parity/generated/parity-scoreboard.md`
 - `parity/method-surface-report.md`
 - `tests/parity/gateway-payload-corpus.json`
+- `tests/parity/tool-runtime-corpus.json`
 
 PR automation:
 

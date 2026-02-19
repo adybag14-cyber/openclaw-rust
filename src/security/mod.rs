@@ -2,8 +2,8 @@ mod command_guard;
 mod host_guard;
 mod policy_bundle;
 mod prompt_guard;
-mod tool_loop;
-mod tool_policy;
+pub(crate) mod tool_loop;
+pub(crate) mod tool_policy;
 mod virustotal;
 
 use std::sync::Arc;

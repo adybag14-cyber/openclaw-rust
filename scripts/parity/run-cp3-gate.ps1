@@ -15,7 +15,10 @@ $tests = @(
   "security::tool_policy::tests::allowlisted_exec_implies_apply_patch",
   "security::tool_loop::tests::emits_warning_and_critical_on_repeated_identical_tool_calls",
   "security::tests::tool_runtime_policy_profile_blocks_non_profile_tools",
-  "security::tests::tool_loop_detection_escalates_warning_then_critical"
+  "security::tests::tool_loop_detection_escalates_warning_then_critical",
+  "tool_runtime::tests::tool_runtime_corpus_matches_expected_outcomes",
+  "tool_runtime::tests::tool_runtime_policy_and_loop_guard_enforced_on_tool_host",
+  "tool_runtime::tests::tool_runtime_background_exec_process_poll_roundtrip"
 )
 
 $toolchainArg = if ($Toolchain -and $Toolchain.Trim().Length -gt 0) {
@@ -32,6 +35,7 @@ $logFile = Join-Path $ArtifactDir "cp3-gate.log"
 $resultsFile = Join-Path $ArtifactDir "cp3-fixture-results.tsv"
 $summaryFile = Join-Path $ArtifactDir "cp3-gate-summary.md"
 $metricsFile = Join-Path $ArtifactDir "cp3-metrics.json"
+$corpusArtifact = Join-Path $ArtifactDir "tool-runtime-corpus.json"
 
 if (Test-Path -LiteralPath $logFile) {
   Remove-Item -LiteralPath $logFile -Force
@@ -74,6 +78,7 @@ foreach ($result in $results) {
   $lines += "$($result.test)`t$($result.duration_ms)`t$($result.status)"
 }
 Set-Content -Path $resultsFile -Value $lines -Encoding utf8
+Copy-Item -Path "tests/parity/tool-runtime-corpus.json" -Destination $corpusArtifact -Force
 
 $totalFixtures = $tests.Count
 $avgDurationMs = if ($totalFixtures -gt 0) { [int]($totalDurationMs / $totalFixtures) } else { 0 }
@@ -90,13 +95,14 @@ $metrics = [ordered]@{
 $metrics | ConvertTo-Json -Depth 5 | Set-Content -Path $metricsFile -Encoding utf8
 
 $summary = @(
-  "## CP3 Tool Runtime Foundation Gate",
+  "## CP3 Tool Runtime Parity Gate",
   "",
   "- Fixtures passed: $passed/$totalFixtures",
   "- Total duration: $totalDurationMs ms",
   "- Avg fixture duration: $avgDurationMs ms",
   "- Artifact log: cp3-gate.log",
-  "- Artifact metrics: cp3-metrics.json"
+  "- Artifact metrics: cp3-metrics.json",
+  "- Fixture corpus: tool-runtime-corpus.json"
 )
 Set-Content -Path $summaryFile -Value $summary -Encoding utf8
 
