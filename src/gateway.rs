@@ -2143,8 +2143,8 @@ impl RpcDispatcher {
                     "accountId": account_id,
                     "name": account_id,
                     "enabled": snapshot.enabled.unwrap_or(true),
-                    "configured": snapshot.configured.unwrap_or(true),
-                    "linked": snapshot.linked.unwrap_or(true),
+                    "configured": snapshot.configured.unwrap_or(false),
+                    "linked": snapshot.linked.unwrap_or(false),
                     "running": snapshot.running.unwrap_or(false),
                     "connected": snapshot.connected.unwrap_or(false),
                     "mode": snapshot.mode.clone().unwrap_or_else(|| "polling".to_owned())
@@ -2171,19 +2171,64 @@ impl RpcDispatcher {
                     account["lastOutboundAt"] = json!(last_outbound_at);
                 }
                 if probe {
+                    account["lastProbeAt"] = json!(now_ms());
+                } else if let Some(last_probe_at) = snapshot.last_probe_at {
+                    account["lastProbeAt"] = json!(last_probe_at);
+                } else {
+                    account["lastProbeAt"] = Value::Null;
+                }
+                if let Some(dm_policy) = snapshot.dm_policy.clone() {
+                    account["dmPolicy"] = json!(dm_policy);
+                }
+                if let Some(allow_from) = snapshot.allow_from.clone() {
+                    account["allowFrom"] = json!(allow_from);
+                }
+                if let Some(token_source) = snapshot.token_source.clone() {
+                    account["tokenSource"] = json!(token_source);
+                }
+                if let Some(bot_token_source) = snapshot.bot_token_source.clone() {
+                    account["botTokenSource"] = json!(bot_token_source);
+                }
+                if let Some(app_token_source) = snapshot.app_token_source.clone() {
+                    account["appTokenSource"] = json!(app_token_source);
+                }
+                if let Some(base_url) = snapshot.base_url.clone() {
+                    account["baseUrl"] = json!(base_url);
+                }
+                if let Some(allow_unmentioned_groups) = snapshot.allow_unmentioned_groups {
+                    account["allowUnmentionedGroups"] = json!(allow_unmentioned_groups);
+                }
+                if let Some(cli_path) = snapshot.cli_path.clone() {
+                    account["cliPath"] = cli_path;
+                }
+                if let Some(db_path) = snapshot.db_path.clone() {
+                    account["dbPath"] = db_path;
+                }
+                if let Some(port) = snapshot.port {
+                    account["port"] = json!(port);
+                }
+                if let Some(application) = snapshot.application.clone() {
+                    account["application"] = application;
+                }
+                if let Some(audit) = snapshot.audit.clone() {
+                    account["audit"] = audit;
+                }
+                if probe {
                     account["probe"] = json!({
                         "ok": true,
                         "source": "rust-parity",
                         "timeoutMs": timeout_ms
                     });
+                } else if let Some(probe_payload) = snapshot.probe.clone() {
+                    account["probe"] = probe_payload;
                 }
                 accounts_payload.push(account);
             }
 
             let mut channel_summary = json!({
-                "configured": default_snapshot.configured.unwrap_or(true),
+                "configured": default_snapshot.configured.unwrap_or(false),
                 "enabled": default_snapshot.enabled.unwrap_or(true),
-                "linked": default_snapshot.linked.unwrap_or(true),
+                "linked": default_snapshot.linked.unwrap_or(false),
                 "running": default_snapshot.running.unwrap_or(false),
                 "connected": default_snapshot.connected.unwrap_or(false),
                 "supports": {
@@ -7940,7 +7985,21 @@ struct ChannelAccountRuntime {
     last_stop_at: Option<u64>,
     last_inbound_at: Option<u64>,
     last_outbound_at: Option<u64>,
+    last_probe_at: Option<u64>,
     mode: Option<String>,
+    dm_policy: Option<String>,
+    allow_from: Option<Vec<String>>,
+    token_source: Option<String>,
+    bot_token_source: Option<String>,
+    app_token_source: Option<String>,
+    base_url: Option<String>,
+    allow_unmentioned_groups: Option<bool>,
+    cli_path: Option<Value>,
+    db_path: Option<Value>,
+    port: Option<u64>,
+    probe: Option<Value>,
+    audit: Option<Value>,
+    application: Option<Value>,
 }
 
 impl ChannelRuntimeRegistry {
@@ -8182,6 +8241,11 @@ fn ingest_runtime_entry(
         .or_else(|| runtime_map.get("last_outbound_at"))
         .and_then(value_as_u64)
         .or(account.last_outbound_at);
+    account.last_probe_at = runtime_map
+        .get("lastProbeAt")
+        .or_else(|| runtime_map.get("last_probe_at"))
+        .and_then(value_as_u64)
+        .or(account.last_probe_at);
     account.last_error = runtime_map
         .get("lastError")
         .or_else(|| runtime_map.get("last_error"))
@@ -8195,6 +8259,77 @@ fn ingest_runtime_entry(
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .or(account.mode.clone());
+    account.dm_policy = runtime_map
+        .get("dmPolicy")
+        .or_else(|| runtime_map.get("dm_policy"))
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or(account.dm_policy.clone());
+    account.allow_from = runtime_map
+        .get("allowFrom")
+        .or_else(|| runtime_map.get("allow_from"))
+        .and_then(value_as_string_vec)
+        .or(account.allow_from.clone());
+    account.token_source = runtime_map
+        .get("tokenSource")
+        .or_else(|| runtime_map.get("token_source"))
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or(account.token_source.clone());
+    account.bot_token_source = runtime_map
+        .get("botTokenSource")
+        .or_else(|| runtime_map.get("bot_token_source"))
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or(account.bot_token_source.clone());
+    account.app_token_source = runtime_map
+        .get("appTokenSource")
+        .or_else(|| runtime_map.get("app_token_source"))
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or(account.app_token_source.clone());
+    account.base_url = runtime_map
+        .get("baseUrl")
+        .or_else(|| runtime_map.get("base_url"))
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or(account.base_url.clone());
+    account.allow_unmentioned_groups = runtime_map
+        .get("allowUnmentionedGroups")
+        .or_else(|| runtime_map.get("allow_unmentioned_groups"))
+        .and_then(json_value_as_bool)
+        .or(account.allow_unmentioned_groups);
+    account.cli_path = runtime_map
+        .get("cliPath")
+        .or_else(|| runtime_map.get("cli_path"))
+        .and_then(value_as_optional_path_value)
+        .or(account.cli_path.clone());
+    account.db_path = runtime_map
+        .get("dbPath")
+        .or_else(|| runtime_map.get("db_path"))
+        .and_then(value_as_optional_path_value)
+        .or(account.db_path.clone());
+    account.port = runtime_map
+        .get("port")
+        .and_then(value_as_u64)
+        .or(account.port);
+    account.probe = runtime_map
+        .get("probe")
+        .cloned()
+        .or(account.probe.clone());
+    account.audit = runtime_map
+        .get("audit")
+        .cloned()
+        .or(account.audit.clone());
+    account.application = runtime_map
+        .get("application")
+        .cloned()
+        .or(account.application.clone());
 }
 
 fn runtime_map_has_inline_runtime_fields(
@@ -8220,9 +8355,33 @@ fn runtime_map_has_inline_runtime_fields(
         || runtime_map.contains_key("last_inbound_at")
         || runtime_map.contains_key("lastOutboundAt")
         || runtime_map.contains_key("last_outbound_at")
+        || runtime_map.contains_key("lastProbeAt")
+        || runtime_map.contains_key("last_probe_at")
         || runtime_map.contains_key("lastError")
         || runtime_map.contains_key("last_error")
         || runtime_map.contains_key("mode")
+        || runtime_map.contains_key("dmPolicy")
+        || runtime_map.contains_key("dm_policy")
+        || runtime_map.contains_key("allowFrom")
+        || runtime_map.contains_key("allow_from")
+        || runtime_map.contains_key("tokenSource")
+        || runtime_map.contains_key("token_source")
+        || runtime_map.contains_key("botTokenSource")
+        || runtime_map.contains_key("bot_token_source")
+        || runtime_map.contains_key("appTokenSource")
+        || runtime_map.contains_key("app_token_source")
+        || runtime_map.contains_key("baseUrl")
+        || runtime_map.contains_key("base_url")
+        || runtime_map.contains_key("allowUnmentionedGroups")
+        || runtime_map.contains_key("allow_unmentioned_groups")
+        || runtime_map.contains_key("cliPath")
+        || runtime_map.contains_key("cli_path")
+        || runtime_map.contains_key("dbPath")
+        || runtime_map.contains_key("db_path")
+        || runtime_map.contains_key("port")
+        || runtime_map.contains_key("probe")
+        || runtime_map.contains_key("audit")
+        || runtime_map.contains_key("application")
 }
 
 fn ingest_accounts_value(
@@ -8294,6 +8453,33 @@ fn value_as_u64(value: &Value) -> Option<u64> {
     match value {
         Value::Number(number) => number.as_u64(),
         Value::String(raw) => raw.trim().parse::<u64>().ok(),
+        _ => None,
+    }
+}
+
+fn value_as_string_vec(value: &Value) -> Option<Vec<String>> {
+    let values = value.as_array()?;
+    let items = values
+        .iter()
+        .filter_map(|item| item.as_str())
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    (!items.is_empty()).then_some(items)
+}
+
+fn value_as_optional_path_value(value: &Value) -> Option<Value> {
+    match value {
+        Value::Null => Some(Value::Null),
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(Value::String(trimmed.to_owned()))
+            }
+        }
         _ => None,
     }
 }
@@ -17691,6 +17877,279 @@ mod tests {
                         .and_then(serde_json::Value::as_u64)
                         .unwrap_or(0)
                         > 0
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_defaults_to_unconfigured_unlinked_without_runtime() {
+        let dispatcher = RpcDispatcher::new();
+        let status = RpcRequestFrame {
+            id: "req-channels-defaults-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channels/telegram/configured")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(false)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channels/telegram/linked")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(false)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/configured")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(false)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/linked")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(false)
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_probe_false_sets_null_account_last_probe_at() {
+        let dispatcher = RpcDispatcher::new();
+        let status = RpcRequestFrame {
+            id: "req-channels-account-probe-false".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert!(payload
+                    .pointer("/channelAccounts/discord/0/lastProbeAt")
+                    .is_some_and(|value| value.is_null()));
+                assert!(payload.pointer("/channelAccounts/discord/0/probe").is_none());
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_probe_true_sets_account_last_probe_at() {
+        let dispatcher = RpcDispatcher::new();
+        let status = RpcRequestFrame {
+            id: "req-channels-account-probe-true".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": true,
+                "timeoutMs": 2222
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/lastProbeAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/probe/ok")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/probe/timeoutMs")
+                        .and_then(serde_json::Value::as_u64),
+                    Some(2222)
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_ingests_extended_account_metadata_fields() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channelAccounts": {
+                        "discord": {
+                            "ops": {
+                                "running": true,
+                                "connected": true,
+                                "dmPolicy": "mentions",
+                                "allowFrom": ["alice", " bob "],
+                                "tokenSource": "env",
+                                "botTokenSource": "config",
+                                "appTokenSource": "vault",
+                                "baseUrl": "https://discord.example",
+                                "allowUnmentionedGroups": true,
+                                "cliPath": null,
+                                "dbPath": "/tmp/discord.db",
+                                "port": 4567
+                            }
+                        }
+                    },
+                    "channelDefaultAccountId": {
+                        "discord": "ops"
+                    }
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-runtime-metadata-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/dmPolicy")
+                        .and_then(serde_json::Value::as_str),
+                    Some("mentions")
+                );
+                assert_eq!(
+                    payload.pointer("/channelAccounts/discord/0/allowFrom"),
+                    Some(&serde_json::json!(["alice", "bob"]))
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/tokenSource")
+                        .and_then(serde_json::Value::as_str),
+                    Some("env")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/botTokenSource")
+                        .and_then(serde_json::Value::as_str),
+                    Some("config")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/appTokenSource")
+                        .and_then(serde_json::Value::as_str),
+                    Some("vault")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/baseUrl")
+                        .and_then(serde_json::Value::as_str),
+                    Some("https://discord.example")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/allowUnmentionedGroups")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert!(payload
+                    .pointer("/channelAccounts/discord/0/cliPath")
+                    .is_some_and(|value| value.is_null()));
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/dbPath")
+                        .and_then(serde_json::Value::as_str),
+                    Some("/tmp/discord.db")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/port")
+                        .and_then(serde_json::Value::as_u64),
+                    Some(4567)
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_ingests_runtime_probe_audit_and_application_payloads() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channelAccounts": {
+                        "signal": {
+                            "ops": {
+                                "running": true,
+                                "connected": true,
+                                "lastProbeAt": 999,
+                                "probe": {
+                                    "ok": false,
+                                    "source": "runtime"
+                                },
+                                "audit": {
+                                    "status": "warn"
+                                },
+                                "application": {
+                                    "name": "signal-cli"
+                                }
+                            }
+                        }
+                    },
+                    "channelDefaultAccountId": {
+                        "signal": "ops"
+                    }
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-runtime-probe-audit-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/lastProbeAt")
+                        .and_then(serde_json::Value::as_u64),
+                    Some(999)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/probe/source")
+                        .and_then(serde_json::Value::as_str),
+                    Some("runtime")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/audit/status")
+                        .and_then(serde_json::Value::as_str),
+                    Some("warn")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/application/name")
+                        .and_then(serde_json::Value::as_str),
+                    Some("signal-cli")
                 );
             }
             _ => panic!("expected channels.status handled"),

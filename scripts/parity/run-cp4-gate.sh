@@ -38,6 +38,11 @@ tests=(
   "gateway::tests::dispatcher_channels_status_ingests_snake_case_runtime_maps"
   "gateway::tests::dispatcher_channels_status_tracks_inbound_when_channel_is_only_in_payload"
   "gateway::tests::dispatcher_chat_send_updates_webchat_runtime_outbound_activity"
+  "gateway::tests::dispatcher_channels_status_defaults_to_unconfigured_unlinked_without_runtime"
+  "gateway::tests::dispatcher_channels_status_probe_false_sets_null_account_last_probe_at"
+  "gateway::tests::dispatcher_channels_status_probe_true_sets_account_last_probe_at"
+  "gateway::tests::dispatcher_channels_status_ingests_extended_account_metadata_fields"
+  "gateway::tests::dispatcher_channels_status_ingests_runtime_probe_audit_and_application_payloads"
 )
 
 echo -e "test\tduration_ms\tstatus" > "${results_file}"
