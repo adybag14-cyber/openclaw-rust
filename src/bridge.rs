@@ -316,6 +316,35 @@ mod tests {
         tags_include: Option<Vec<String>>,
     }
 
+    #[derive(Debug, Clone, Deserialize)]
+    struct SessionRoutingSuite {
+        cases: Vec<SessionRoutingCase>,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct SessionRoutingCase {
+        name: String,
+        max_queue: usize,
+        queue_mode: SessionQueueMode,
+        group_activation_mode: GroupActivationMode,
+        requests: Vec<SessionRoutingRequest>,
+        expect_request_ids: Vec<String>,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct SessionRoutingRequest {
+        id: String,
+        session_key: String,
+        #[serde(default)]
+        prompt: Option<String>,
+        #[serde(default)]
+        command: Option<String>,
+        #[serde(default)]
+        chat_type: Option<String>,
+        #[serde(default)]
+        was_mentioned: Option<bool>,
+    }
+
     #[async_trait]
     impl ActionEvaluator for StubEvaluator {
         async fn evaluate(&self, _request: ActionRequest) -> Decision {
@@ -754,6 +783,106 @@ mod tests {
         assert_eq!(seen, expected_ids);
         let unique: HashSet<String> = seen.iter().cloned().collect();
         assert_eq!(unique.len(), seen.len(), "duplicate decisions detected");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn session_routing_corpus_matches_expected_delivery_order() -> Result<()> {
+        let suite: SessionRoutingSuite =
+            serde_json::from_str(include_str!("../tests/parity/session-routing-corpus.json"))?;
+        for case in suite.cases {
+            let SessionRoutingCase {
+                name,
+                max_queue,
+                queue_mode,
+                group_activation_mode,
+                requests,
+                expect_request_ids,
+            } = case;
+
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let addr = listener.local_addr()?;
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await?;
+                let ws = accept_async(stream).await?;
+                let (mut write, mut read) = ws.split();
+
+                let _connect = read
+                    .next()
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("missing connect frame"))??;
+
+                for request in requests {
+                    let mut payload = serde_json::Map::new();
+                    payload.insert("id".to_owned(), json!(request.id));
+                    payload.insert("sessionKey".to_owned(), json!(request.session_key));
+                    if let Some(prompt) = request.prompt {
+                        payload.insert("prompt".to_owned(), json!(prompt));
+                    }
+                    if let Some(command) = request.command {
+                        payload.insert("command".to_owned(), json!(command));
+                    }
+                    if let Some(chat_type) = request.chat_type {
+                        payload.insert("chatType".to_owned(), json!(chat_type));
+                    }
+                    if let Some(was_mentioned) = request.was_mentioned {
+                        payload.insert("wasMentioned".to_owned(), json!(was_mentioned));
+                    }
+
+                    write
+                        .send(Message::Text(
+                            json!({
+                                "type": "event",
+                                "event": "agent",
+                                "payload": Value::Object(payload)
+                            })
+                            .to_string(),
+                        ))
+                        .await?;
+                }
+
+                let mut seen = Vec::new();
+                loop {
+                    match timeout(Duration::from_millis(700), read.next()).await {
+                        Ok(Some(Ok(decision))) => {
+                            let decision_json: Value = serde_json::from_str(decision.to_text()?)?;
+                            if let Some(req_id) = decision_json
+                                .pointer("/payload/requestId")
+                                .and_then(Value::as_str)
+                            {
+                                seen.push(req_id.to_owned());
+                            }
+                        }
+                        Ok(Some(Err(err))) => return Err(err.into()),
+                        Ok(None) => break,
+                        Err(_) => break,
+                    }
+                }
+
+                write.send(Message::Close(None)).await?;
+                Ok::<Vec<String>, anyhow::Error>(seen)
+            });
+
+            let bridge = GatewayBridge::new(
+                GatewayConfig {
+                    url: format!("ws://{addr}"),
+                    token: None,
+                    ..Config::default().gateway
+                },
+                "security.decision".to_owned(),
+                max_queue,
+                queue_mode,
+                group_activation_mode,
+            );
+            let evaluator: Arc<dyn ActionEvaluator> = Arc::new(SlowEvaluator);
+            bridge.run_once(evaluator).await?;
+
+            let seen = server.await??;
+            assert_eq!(seen, expect_request_ids, "case {name}");
+            let unique: HashSet<String> = seen.iter().cloned().collect();
+            assert_eq!(unique.len(), seen.len(), "case {name} duplicate decisions");
+        }
+
         Ok(())
     }
 
