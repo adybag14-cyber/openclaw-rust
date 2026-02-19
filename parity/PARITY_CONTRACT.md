@@ -1,4 +1,4 @@
-# Rust Parity Contract (Phase 1/2)
+# Rust Parity Contract (Phase 1/2 + CP2/CP3 Gates)
 
 This contract defines the machine-checked parity checks that currently gate Rust
 gateway parity work.
@@ -46,6 +46,14 @@ From repo root:
 .\scripts\parity\run-cp1-gate.ps1
 ```
 
+```powershell
+.\scripts\parity\run-cp2-gate.ps1
+```
+
+```powershell
+.\scripts\parity\run-cp3-gate.ps1
+```
+
 Optional upstream location override:
 
 ```powershell
@@ -60,6 +68,8 @@ Optional upstream location override:
 - `parity/generated/method-surface-diff.json`
 - `parity/method-surface-report.md`
 - `tests/parity/gateway-payload-corpus.json` (fixture corpus)
+- `parity/generated/cp2/*` (CP2 gate fixture logs/metrics/summary)
+- `parity/generated/cp3/*` (CP3 gate fixture logs/metrics/summary)
 
 ## PR Gate
 
@@ -67,3 +77,5 @@ Optional upstream location override:
 - For any gateway behavior-parity change touching payload shape, update `tests/parity/gateway-payload-corpus.json` and keep `dispatcher_payload_corpus_matches_upstream_fixtures` passing.
 - PR CI must publish `parity/generated/parity-scoreboard.md` as job summary, including subsystem status deltas versus `parity/manifest/scoreboard-baseline.json`.
 - PR CI must keep CP1 standalone runtime fixtures green (`run-cp1-gate.sh`) for authz matrix and event backpressure/drop semantics.
+- PR CI must publish/upload CP2 gate artifacts (`parity/generated/cp2`) for session/routing trend tracking.
+- PR CI must keep CP3 foundation fixtures green (`run-cp3-gate.sh`) and publish/upload `parity/generated/cp3` artifacts.

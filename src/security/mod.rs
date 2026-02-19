@@ -2,6 +2,8 @@ mod command_guard;
 mod host_guard;
 mod policy_bundle;
 mod prompt_guard;
+mod tool_loop;
+mod tool_policy;
 mod virustotal;
 
 use std::sync::Arc;
@@ -9,6 +11,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use serde_json::{Map, Value};
 use smallvec::SmallVec;
 use tokio::fs;
 use tokio::sync::Semaphore;
@@ -23,6 +26,8 @@ use self::command_guard::CommandGuard;
 use self::host_guard::HostIntegrityGuard;
 use self::policy_bundle::apply_signed_policy_bundle;
 use self::prompt_guard::PromptInjectionGuard;
+use self::tool_loop::{ToolLoopGuard, ToolLoopLevel};
+use self::tool_policy::ToolPolicyMatcher;
 use self::virustotal::VirusTotalClient;
 
 #[async_trait]
@@ -35,6 +40,8 @@ pub struct DefenderEngine {
     prompt_guard: PromptInjectionGuard,
     command_guard: CommandGuard,
     host_guard: HostIntegrityGuard,
+    tool_policy: ToolPolicyMatcher,
+    tool_loop_guard: ToolLoopGuard,
     vt: Option<VirusTotalClient>,
     permits: Arc<Semaphore>,
     idempotency: IdempotencyCache,
@@ -59,6 +66,9 @@ impl DefenderEngine {
             &cfg.security.blocked_command_patterns,
         )?;
         let host_guard = HostIntegrityGuard::new(&cfg.security.protect_paths).await?;
+        let tool_policy = ToolPolicyMatcher::new(cfg.security.tool_runtime_policy.clone());
+        let tool_loop_guard =
+            ToolLoopGuard::new(cfg.security.tool_runtime_policy.loop_detection.clone());
         let vt = VirusTotalClient::from_config(&cfg)?;
         let permits = Arc::new(Semaphore::new(cfg.runtime.worker_concurrency.max(1)));
         let idempotency = IdempotencyCache::new(
@@ -78,6 +88,8 @@ impl DefenderEngine {
             prompt_guard,
             command_guard,
             host_guard,
+            tool_policy,
+            tool_loop_guard,
             vt,
             permits,
             idempotency,
@@ -107,6 +119,22 @@ impl DefenderEngine {
 
         if let Some(tool_name) = &request.tool_name {
             let tool = normalize_key(tool_name);
+            let model_provider = find_first_string(
+                &request.raw,
+                &["modelProvider", "model_provider", "provider", "providerId"],
+            );
+            let model_id =
+                find_first_string(&request.raw, &["model", "modelId", "model_id", "modelName"]);
+
+            if !self
+                .tool_policy
+                .allows(&tool, model_provider.as_deref(), model_id.as_deref())
+            {
+                minimum_action = max_action(minimum_action, DecisionAction::Block);
+                tags.push("tool_policy_deny".to_owned());
+                reasons.push(format!("tool `{tool}` denied by runtime policy"));
+            }
+
             if let Some(bonus) = self.cfg.security.tool_risk_bonus.get(&tool) {
                 risk = risk.saturating_add(*bonus);
                 tags.push("tool_risk_bonus".to_owned());
@@ -116,6 +144,27 @@ impl DefenderEngine {
                 minimum_action = max_action(minimum_action, policy_action_to_decision(*policy));
                 tags.push("tool_policy".to_owned());
                 reasons.push(format!("tool `{tool}` policy is {:?}", policy));
+            }
+
+            if let Some(alert) = self.tool_loop_guard.observe(&request).await {
+                match alert.level {
+                    ToolLoopLevel::Warning => {
+                        minimum_action = max_action(minimum_action, DecisionAction::Review);
+                        tags.push("tool_loop_warning".to_owned());
+                        reasons.push(format!(
+                            "tool loop warning: `{tool}` repeated {} times with identical arguments",
+                            alert.count
+                        ));
+                    }
+                    ToolLoopLevel::Critical => {
+                        minimum_action = max_action(minimum_action, DecisionAction::Block);
+                        tags.push("tool_loop_critical".to_owned());
+                        reasons.push(format!(
+                            "tool loop critical: `{tool}` repeated {} times with identical arguments",
+                            alert.count
+                        ));
+                    }
+                }
             }
         }
 
@@ -310,6 +359,34 @@ fn normalize_key(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
 
+fn find_first_string(root: &Value, keys: &[&str]) -> Option<String> {
+    match root {
+        Value::Object(map) => {
+            if let Some(v) = find_map_string(map, keys) {
+                return Some(v);
+            }
+            map.values()
+                .find_map(|child| find_first_string(child, keys))
+        }
+        Value::Array(items) => items.iter().find_map(|item| find_first_string(item, keys)),
+        _ => None,
+    }
+}
+
+fn find_map_string(map: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(v) = map.get(*key) {
+            match v {
+                Value::String(s) => return Some(s.clone()),
+                Value::Number(n) => return Some(n.to_string()),
+                Value::Bool(b) => return Some(b.to_string()),
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 fn sanitize_id(id: &str) -> String {
     id.chars()
         .map(|c| {
@@ -329,7 +406,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::config::{
-        Config, GatewayConfig, GroupActivationMode, RuntimeConfig, SecurityConfig, SessionQueueMode,
+        Config, GatewayConfig, GroupActivationMode, RuntimeConfig, SecurityConfig,
+        SessionQueueMode, ToolRuntimePolicyConfig, ToolRuntimePolicyRule,
     };
     use crate::types::{ActionRequest, DecisionAction};
 
@@ -388,6 +466,7 @@ mod tests {
                 tool_policies: std::collections::HashMap::new(),
                 tool_risk_bonus: std::collections::HashMap::new(),
                 channel_risk_bonus: std::collections::HashMap::new(),
+                tool_runtime_policy: ToolRuntimePolicyConfig::default(),
             },
         }
     }
@@ -509,5 +588,101 @@ mod tests {
         assert_eq!(first.action, second.action);
         assert_eq!(first.risk_score, second.risk_score);
         assert!(second.tags.iter().any(|t| t == "idempotency_hit"));
+    }
+
+    #[tokio::test]
+    async fn tool_runtime_policy_profile_blocks_non_profile_tools() {
+        let mut cfg = test_config(false);
+        cfg.security.tool_runtime_policy.profile = Some("coding".to_owned());
+        let engine: Arc<dyn ActionEvaluator> = DefenderEngine::new(cfg).await.expect("engine");
+        let req = ActionRequest {
+            id: "runtime-policy-1".to_owned(),
+            source: "test".to_owned(),
+            session_id: Some("s-policy".to_owned()),
+            prompt: None,
+            command: None,
+            tool_name: Some("gateway".to_owned()),
+            channel: None,
+            url: None,
+            file_path: None,
+            raw: serde_json::json!({}),
+        };
+
+        let decision = engine.evaluate(req).await;
+        assert_eq!(decision.action, DecisionAction::Block);
+        assert!(decision.tags.iter().any(|tag| tag == "tool_policy_deny"));
+    }
+
+    #[tokio::test]
+    async fn tool_runtime_provider_policy_is_applied() {
+        let mut cfg = test_config(false);
+        cfg.security.tool_runtime_policy.allow = vec!["group:runtime".to_owned()];
+        cfg.security.tool_runtime_policy.by_provider.insert(
+            "openai".to_owned(),
+            ToolRuntimePolicyRule {
+                deny: vec!["exec".to_owned()],
+                ..ToolRuntimePolicyRule::default()
+            },
+        );
+        let engine: Arc<dyn ActionEvaluator> = DefenderEngine::new(cfg).await.expect("engine");
+        let req = ActionRequest {
+            id: "runtime-policy-2".to_owned(),
+            source: "test".to_owned(),
+            session_id: Some("s-policy".to_owned()),
+            prompt: None,
+            command: Some("git status".to_owned()),
+            tool_name: Some("exec".to_owned()),
+            channel: None,
+            url: None,
+            file_path: None,
+            raw: serde_json::json!({
+                "modelProvider": "openai",
+                "model": "gpt-5"
+            }),
+        };
+
+        let decision = engine.evaluate(req).await;
+        assert_eq!(decision.action, DecisionAction::Block);
+        assert!(decision.tags.iter().any(|tag| tag == "tool_policy_deny"));
+    }
+
+    #[tokio::test]
+    async fn tool_loop_detection_escalates_warning_then_critical() {
+        let mut cfg = test_config(false);
+        cfg.security.tool_runtime_policy.loop_detection.enabled = true;
+        cfg.security.tool_runtime_policy.loop_detection.history_size = 16;
+        cfg.security
+            .tool_runtime_policy
+            .loop_detection
+            .warning_threshold = 2;
+        cfg.security
+            .tool_runtime_policy
+            .loop_detection
+            .critical_threshold = 3;
+        let engine: Arc<dyn ActionEvaluator> = DefenderEngine::new(cfg).await.expect("engine");
+
+        let make_req = |id: &str| ActionRequest {
+            id: id.to_owned(),
+            source: "test".to_owned(),
+            session_id: Some("s-loop".to_owned()),
+            prompt: None,
+            command: Some("git status".to_owned()),
+            tool_name: Some("exec".to_owned()),
+            channel: None,
+            url: None,
+            file_path: None,
+            raw: serde_json::json!({}),
+        };
+
+        let first = engine.evaluate(make_req("loop-1")).await;
+        assert_eq!(first.action, DecisionAction::Allow);
+
+        let second = engine.evaluate(make_req("loop-2")).await;
+        assert_eq!(second.action, DecisionAction::Review);
+        assert!(second.tags.iter().any(|tag| tag == "tool_loop_warning"));
+
+        let third = engine.evaluate(make_req("loop-3")).await;
+        assert_eq!(third.action, DecisionAction::Block);
+        assert!(third.tags.iter().any(|tag| tag == "tool_loop_critical"));
     }
 }

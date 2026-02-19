@@ -79,7 +79,7 @@ Exit gates:
 - No duplicate dispatch or out-of-order reply regressions in soak tests.
 - SQLite parity fixtures pass with crash/restart recovery tests.
 
-Status: **Partial**
+Status: **Completed (Gate Achieved)**
 
 ## CP3: Tool Runtime Parity
 
@@ -95,7 +95,7 @@ Exit gates:
 - Approval and policy behavior matches expected fixtures.
 - Sandboxed/non-sandboxed host execution parity verified.
 
-Status: **Mostly Deferred**
+Status: **Partial (Gate 1 Achieved)**
 
 ## CP4: Channel Runtime Parity (Wave Rollout)
 
@@ -204,7 +204,7 @@ Use this checklist for active tracking:
 
 - [x] CP0 complete
 - [x] CP1 complete
-- [ ] CP2 complete
+- [x] CP2 complete
 - [ ] CP3 complete
 - [ ] CP4 complete (Wave 1)
 - [ ] CP4 complete (Wave 2)
@@ -230,6 +230,6 @@ Use this checklist for active tracking:
 
 ## Immediate Next Actions (Start Here)
 
-1. Publish CP2 soak metrics/artifacts in CI (decision ordering + duplicate counters) for trend tracking.
-2. Upload CP2 gate replay outputs/artifacts in CI for longitudinal drift review.
-3. Capture and encode upstream traces for `sessions.resolve` partial-selector collisions so Rust tie-break ordering is evidence-backed.
+1. Expand CP3 Gate 1 into transcript-driven tool-runtime fixtures (`exec/process/read/write/edit/apply_patch`) and add artifact publication.
+2. Wire CP3 policy precedence + loop guard engine to tool-host execution paths (not only defender classification).
+3. Add sandboxed/non-sandboxed host execution parity fixtures and longitudinal CP3 drift artifacts in CI.

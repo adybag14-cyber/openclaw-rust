@@ -52,3 +52,22 @@ prompt_injection_patterns = [
 tool_policies = { gateway = "review", nodes = "review" }
 tool_risk_bonus = { exec = 20, bash = 20, process = 10, apply_patch = 12, browser = 8, gateway = 20, nodes = 20 }
 channel_risk_bonus = { discord = 10, slack = 8, telegram = 6, whatsapp = 6, webchat = 8 }
+
+[security.tool_runtime_policy]
+profile = "full" # minimal | coding | messaging | full
+allow = []
+deny = []
+
+# Example provider/model overrides:
+# [security.tool_runtime_policy.byProvider.openai]
+# allow = ["group:runtime", "group:fs"]
+# deny = ["gateway"]
+#
+# [security.tool_runtime_policy.byProvider."openai/gpt-5"]
+# deny = ["exec"]
+
+[security.tool_runtime_policy.loop_detection]
+enabled = false
+history_size = 30
+warning_threshold = 10
+critical_threshold = 20

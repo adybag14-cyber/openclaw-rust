@@ -111,6 +111,10 @@ systemctl --user status openclaw-agent-rs.service
 - `security.tool_policies`: per-tool floor action (`allow`, `review`, `block`).
 - `security.tool_risk_bonus`: per-tool additive risk scoring.
 - `security.channel_risk_bonus`: per-channel additive risk scoring.
+- `security.tool_runtime_policy.profile`: base tool profile (`minimal`, `coding`, `messaging`, `full`).
+- `security.tool_runtime_policy.allow` / `security.tool_runtime_policy.deny`: wildcard/group policy filters (`group:fs`, `group:runtime`, etc.).
+- `security.tool_runtime_policy.byProvider`: provider/model-specific policy overrides.
+- `security.tool_runtime_policy.loop_detection`: loop guard controls (`enabled`, `history_size`, `warning_threshold`, `critical_threshold`).
 - `security.policy_bundle_path`: optional signed JSON policy bundle file to load at startup.
 - `security.policy_bundle_key`: HMAC key used to verify the bundle signature.
 - `gateway.password`: optional shared-secret password for gateway auth.
@@ -205,6 +209,18 @@ CP1 standalone gateway runtime gate:
 
 ```powershell
 .\scripts\parity\run-cp1-gate.ps1
+```
+
+CP2 session/routing gate (includes fixture duration metrics + artifact logs):
+
+```powershell
+.\scripts\parity\run-cp2-gate.ps1
+```
+
+CP3 tool-runtime foundation gate (`profile/allow/deny/byProvider` + loop guard):
+
+```powershell
+.\scripts\parity\run-cp3-gate.ps1
 ```
 
 Current payload corpus coverage: `chat.*`, `tts.*`, `voicewake.*`, `web.login.*`, `update.run`, `sessions.*` envelope/alias flows, `browser.request`, `config.*`, `logs.tail`, `cron.*`, `exec.approvals.*`, `exec.approval.*`, and `wizard.*`.

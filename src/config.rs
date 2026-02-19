@@ -107,6 +107,8 @@ pub struct SecurityConfig {
     pub tool_risk_bonus: HashMap<String, u8>,
     #[serde(default = "default_channel_risk_bonus")]
     pub channel_risk_bonus: HashMap<String, u8>,
+    #[serde(default)]
+    pub tool_runtime_policy: ToolRuntimePolicyConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +132,53 @@ pub enum SessionQueueMode {
 pub enum GroupActivationMode {
     Mention,
     Always,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolRuntimePolicyConfig {
+    #[serde(default)]
+    pub profile: Option<String>,
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default)]
+    pub deny: Vec<String>,
+    #[serde(default, rename = "byProvider", alias = "by_provider")]
+    pub by_provider: HashMap<String, ToolRuntimePolicyRule>,
+    #[serde(default)]
+    pub loop_detection: ToolLoopDetectionConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolRuntimePolicyRule {
+    #[serde(default)]
+    pub profile: Option<String>,
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default)]
+    pub deny: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolLoopDetectionConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_tool_loop_history_size")]
+    pub history_size: usize,
+    #[serde(default = "default_tool_loop_warning_threshold")]
+    pub warning_threshold: usize,
+    #[serde(default = "default_tool_loop_critical_threshold")]
+    pub critical_threshold: usize,
+}
+
+impl Default for ToolLoopDetectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            history_size: default_tool_loop_history_size(),
+            warning_threshold: default_tool_loop_warning_threshold(),
+            critical_threshold: default_tool_loop_critical_threshold(),
+        }
+    }
 }
 
 impl Default for Config {
@@ -194,6 +243,7 @@ impl Default for Config {
                 tool_policies: HashMap::new(),
                 tool_risk_bonus: default_tool_risk_bonus(),
                 channel_risk_bonus: default_channel_risk_bonus(),
+                tool_runtime_policy: ToolRuntimePolicyConfig::default(),
             },
         }
     }
@@ -367,6 +417,52 @@ impl Config {
         if self.gateway.server.handshake_timeout_ms == 0 {
             anyhow::bail!("gateway.server.handshake_timeout_ms must be > 0");
         }
+        if self
+            .security
+            .tool_runtime_policy
+            .loop_detection
+            .warning_threshold
+            == 0
+        {
+            anyhow::bail!(
+                "security.tool_runtime_policy.loop_detection.warning_threshold must be > 0"
+            );
+        }
+        if self
+            .security
+            .tool_runtime_policy
+            .loop_detection
+            .critical_threshold
+            == 0
+        {
+            anyhow::bail!(
+                "security.tool_runtime_policy.loop_detection.critical_threshold must be > 0"
+            );
+        }
+        if self
+            .security
+            .tool_runtime_policy
+            .loop_detection
+            .history_size
+            == 0
+        {
+            anyhow::bail!("security.tool_runtime_policy.loop_detection.history_size must be > 0");
+        }
+        if self
+            .security
+            .tool_runtime_policy
+            .loop_detection
+            .critical_threshold
+            <= self
+                .security
+                .tool_runtime_policy
+                .loop_detection
+                .warning_threshold
+        {
+            anyhow::bail!(
+                "security.tool_runtime_policy.loop_detection.critical_threshold must be greater than warning_threshold"
+            );
+        }
         match self.gateway.server.auth_mode {
             GatewayAuthMode::Token => {
                 let token = self
@@ -444,6 +540,18 @@ fn default_idempotency_ttl_secs() -> u64 {
 
 fn default_idempotency_max_entries() -> usize {
     5000
+}
+
+fn default_tool_loop_history_size() -> usize {
+    30
+}
+
+fn default_tool_loop_warning_threshold() -> usize {
+    10
+}
+
+fn default_tool_loop_critical_threshold() -> usize {
+    20
 }
 
 fn default_session_state_path() -> PathBuf {

@@ -1,4 +1,4 @@
-name: parity-cp0-cp1-gate
+name: parity-cp0-cp3-gate
 
 on:
   pull_request:
@@ -100,4 +100,49 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run CP2 session/routing fixtures
-        run: bash ./scripts/parity/run-cp2-gate.sh
+        run: PARITY_ARTIFACT_DIR=parity/generated/cp2 bash ./scripts/parity/run-cp2-gate.sh
+
+      - name: Publish CP2 summary
+        if: always()
+        run: |
+          if [ -f parity/generated/cp2/cp2-gate-summary.md ]; then
+            cat parity/generated/cp2/cp2-gate-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload CP2 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-cp2-artifacts
+          path: |
+            parity/generated/cp2
+
+  tool-runtime-cp3:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout rust repo
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run CP3 tool runtime foundation fixtures
+        run: PARITY_ARTIFACT_DIR=parity/generated/cp3 bash ./scripts/parity/run-cp3-gate.sh
+
+      - name: Publish CP3 summary
+        if: always()
+        run: |
+          if [ -f parity/generated/cp3/cp3-gate-summary.md ]; then
+            cat parity/generated/cp3/cp3-gate-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload CP3 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-cp3-artifacts
+          path: |
+            parity/generated/cp3
