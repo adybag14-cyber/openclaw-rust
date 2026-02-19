@@ -15,6 +15,8 @@ default_tests=(
   "gateway::tests::dispatcher_resolve_prefers_session_id_over_label_and_route_selectors"
   "gateway::tests::dispatcher_resolve_supports_label_plus_route_selectors"
   "gateway::tests::dispatcher_resolve_accepts_partial_route_selectors_without_account_id"
+  "gateway::tests::dispatcher_resolve_partial_route_collision_prefers_most_recent_update"
+  "gateway::tests::dispatcher_resolve_partial_route_collision_uses_key_tiebreak_when_timestamps_match"
 )
 
 sqlite_tests=(

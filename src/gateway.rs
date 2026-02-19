@@ -9564,7 +9564,11 @@ impl SessionRegistry {
                     .unwrap_or(false)
             });
         }
-        entries.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        entries.sort_by(|a, b| {
+            b.updated_at_ms
+                .cmp(&a.updated_at_ms)
+                .then_with(|| a.key.cmp(&b.key))
+        });
         entries.first().map(|entry| entry.key.clone())
     }
 
@@ -9661,7 +9665,11 @@ impl SessionRegistry {
                         .unwrap_or(false)
             });
         }
-        items.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        items.sort_by(|a, b| {
+            b.updated_at_ms
+                .cmp(&a.updated_at_ms)
+                .then_with(|| a.key.cmp(&b.key))
+        });
         items
             .into_iter()
             .take(query.limit)
@@ -12573,6 +12581,8 @@ mod tests {
         params: Value,
         #[serde(default)]
         captures: Vec<PayloadParityCapture>,
+        #[serde(rename = "sleepMs", alias = "sleep_ms", default)]
+        sleep_ms: Option<u64>,
     }
 
     #[derive(Debug, Clone, Deserialize)]
@@ -14489,6 +14499,131 @@ mod tests {
                 );
             }
             _ => panic!("expected partial-route resolve handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_resolve_partial_route_collision_prefers_most_recent_update() {
+        let dispatcher = RpcDispatcher::new();
+
+        let older = RpcRequestFrame {
+            id: "req-resolve-partial-collision-older".to_owned(),
+            method: "sessions.send".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": "agent:ops:slack:group:g-partial-collision-older",
+                "message": "older partial route",
+                "requestId": "req-resolve-partial-collision-older",
+                "channel": "slack",
+                "to": "peer-partial-collision",
+                "accountId": "acct-older"
+            }),
+        };
+        let _ = dispatcher.handle_request(&older).await;
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        let newer = RpcRequestFrame {
+            id: "req-resolve-partial-collision-newer".to_owned(),
+            method: "sessions.send".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": "agent:ops:slack:group:g-partial-collision-newer",
+                "message": "newer partial route",
+                "requestId": "req-resolve-partial-collision-newer",
+                "channel": "slack",
+                "to": "peer-partial-collision",
+                "accountId": "acct-newer"
+            }),
+        };
+        let _ = dispatcher.handle_request(&newer).await;
+
+        let resolve = RpcRequestFrame {
+            id: "req-resolve-partial-collision".to_owned(),
+            method: "sessions.resolve".to_owned(),
+            params: serde_json::json!({
+                "channel": "slack",
+                "to": "peer-partial-collision",
+                "includeGlobal": false,
+                "includeUnknown": false
+            }),
+        };
+        let out = dispatcher.handle_request(&resolve).await;
+        match out {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/ok").and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload.pointer("/key").and_then(serde_json::Value::as_str),
+                    Some("agent:ops:slack:group:g-partial-collision-newer")
+                );
+            }
+            _ => panic!("expected partial collision resolve handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_resolve_partial_route_collision_uses_key_tiebreak_when_timestamps_match() {
+        let dispatcher = RpcDispatcher::new();
+        let key_a = "agent:ops:slack:group:g-partial-collision-a";
+        let key_b = "agent:ops:slack:group:g-partial-collision-b";
+
+        for (id, key, account_id) in [
+            (
+                "req-resolve-partial-collision-key-a",
+                key_a,
+                "acct-partial-collision-a",
+            ),
+            (
+                "req-resolve-partial-collision-key-b",
+                key_b,
+                "acct-partial-collision-b",
+            ),
+        ] {
+            let send = RpcRequestFrame {
+                id: id.to_owned(),
+                method: "sessions.send".to_owned(),
+                params: serde_json::json!({
+                    "sessionKey": key,
+                    "message": format!("seed for {key}"),
+                    "requestId": id,
+                    "channel": "slack",
+                    "to": "peer-partial-collision-key-tie",
+                    "accountId": account_id
+                }),
+            };
+            let _ = dispatcher.handle_request(&send).await;
+        }
+
+        {
+            let mut guard = dispatcher.sessions.entries.lock().await;
+            let tie_timestamp = 1_762_000_000_000_u64;
+            guard.get_mut(key_a).expect("missing key_a").updated_at_ms = tie_timestamp;
+            guard.get_mut(key_b).expect("missing key_b").updated_at_ms = tie_timestamp;
+        }
+
+        let resolve = RpcRequestFrame {
+            id: "req-resolve-partial-collision-key-tie".to_owned(),
+            method: "sessions.resolve".to_owned(),
+            params: serde_json::json!({
+                "channel": "slack",
+                "to": "peer-partial-collision-key-tie",
+                "includeGlobal": false,
+                "includeUnknown": false
+            }),
+        };
+        let out = dispatcher.handle_request(&resolve).await;
+        match out {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/ok").and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload.pointer("/key").and_then(serde_json::Value::as_str),
+                    Some(key_a)
+                );
+            }
+            _ => panic!("expected key tie-break resolve handled"),
         }
     }
 
@@ -19309,6 +19444,13 @@ mod tests {
             let mut captures: HashMap<String, Value> = HashMap::new();
 
             for prelude in case.prelude {
+                if prelude.method == "__sleep__" {
+                    let delay_ms = prelude.sleep_ms.unwrap_or(0);
+                    if delay_ms > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    }
+                    continue;
+                }
                 let prelude_params = resolve_payload_template(&prelude.params, &captures);
                 let prelude_req = RpcRequestFrame {
                     id: prelude.id,

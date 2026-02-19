@@ -1171,6 +1171,61 @@
       }
     },
     {
+      "name": "sessions.resolve partial route collision prefers most recent update",
+      "prelude": [
+        {
+          "id": "prelude-sessions-send-partial-collision-older",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:slack:group:g-partial-collision-older",
+            "message": "partial collision older",
+            "channel": "slack",
+            "to": "peer-partial-collision",
+            "accountId": "acct-older"
+          }
+        },
+        {
+          "id": "prelude-sessions-sleep-partial-collision",
+          "method": "__sleep__",
+          "sleepMs": 5
+        },
+        {
+          "id": "prelude-sessions-send-partial-collision-newer",
+          "method": "sessions.send",
+          "params": {
+            "sessionKey": "agent:ops:slack:group:g-partial-collision-newer",
+            "message": "partial collision newer",
+            "channel": "slack",
+            "to": "peer-partial-collision",
+            "accountId": "acct-newer"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-sessions-resolve-partial-collision-parity",
+        "method": "sessions.resolve",
+        "params": {
+          "channel": "slack",
+          "to": "peer-partial-collision",
+          "includeGlobal": false,
+          "includeUnknown": false
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/ok",
+            "equals": true
+          },
+          {
+            "path": "/key",
+            "equals": "agent:ops:slack:group:g-partial-collision-newer"
+          }
+        ]
+      }
+    },
+    {
       "name": "sessions.preview preserves requested alias key in output",
       "prelude": [
         {

@@ -231,5 +231,5 @@ Use this checklist for active tracking:
 ## Immediate Next Actions (Start Here)
 
 1. Publish CP2 soak metrics/artifacts in CI (decision ordering + duplicate counters) for trend tracking.
-2. Add deterministic tie-break fixtures for partial route-selector matches (`channel + to` collisions with no `accountId`) using upstream trace evidence.
-3. Upload CP2 gate replay outputs/artifacts in CI for longitudinal drift review.
+2. Upload CP2 gate replay outputs/artifacts in CI for longitudinal drift review.
+3. Capture and encode upstream traces for `sessions.resolve` partial-selector collisions so Rust tie-break ordering is evidence-backed.
