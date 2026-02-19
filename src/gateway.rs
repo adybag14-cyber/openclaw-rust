@@ -11,8 +11,8 @@ use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
 use crate::channels::{
-    chunk_text_with_mode, default_chunk_mode, default_text_chunk_limit, ChannelCapabilities,
-    DriverRegistry, normalize_channel_id,
+    chunk_text_with_mode, default_chunk_mode, default_text_chunk_limit, normalize_channel_id,
+    ChannelCapabilities, DriverRegistry,
 };
 use crate::config::{GroupActivationMode, SessionQueueMode};
 use crate::protocol::{MethodFamily, RpcRequestFrame};
@@ -775,6 +775,7 @@ static DEVICE_TOKEN_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NODE_PAIR_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NODE_TOKEN_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NODE_INVOKE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static BROWSER_PROXY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static EXEC_APPROVAL_TOKEN_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static EXEC_APPROVAL_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static CHAT_INJECT_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -2103,7 +2104,8 @@ impl RpcDispatcher {
             if runtime_accounts.is_empty() {
                 runtime_accounts.push(("default".to_owned(), ChannelAccountRuntime::default()));
             }
-            let hinted_default_account_id = self.channel_runtime.default_account_for_channel(&id).await;
+            let hinted_default_account_id =
+                self.channel_runtime.default_account_for_channel(&id).await;
             let default_account_id = resolve_default_account_id(
                 runtime_accounts.as_slice(),
                 hinted_default_account_id.as_deref(),
@@ -3032,6 +3034,16 @@ impl RpcDispatcher {
             .and_then(|value| value.get("query"))
             .filter(|value| value.is_object())
             .cloned();
+        let body = params.and_then(|value| value.get("body")).cloned();
+        let requested_node = params
+            .and_then(|value| {
+                value
+                    .get("nodeId")
+                    .or_else(|| value.get("node_id"))
+                    .or_else(|| value.get("node"))
+            })
+            .and_then(Value::as_str)
+            .and_then(|value| normalize_optional_text(Some(value.to_owned()), 128));
 
         if method.is_empty() || path.is_empty() {
             return RpcDispatchOutcome::bad_request("method and path are required");
@@ -3049,15 +3061,161 @@ impl RpcDispatcher {
             ))
             .await;
 
-        RpcDispatchOutcome::Error {
-            code: 503,
-            message: "browser control is disabled".to_owned(),
-            details: Some(json!({
-                "method": method,
-                "path": path,
-                "query": query
-            })),
+        let nodes = self.nodes.list_nodes().await;
+        let browser_nodes = nodes
+            .into_iter()
+            .filter(node_inventory_browser_capable)
+            .collect::<Vec<_>>();
+        let selected_node =
+            match resolve_browser_node_target(&browser_nodes, requested_node.as_deref()) {
+                Ok(node) => node,
+                Err(message) => {
+                    return RpcDispatchOutcome::Error {
+                        code: 503,
+                        message,
+                        details: Some(json!({
+                            "method": method,
+                            "path": path,
+                            "query": query,
+                            "node": requested_node
+                        })),
+                    };
+                }
+            };
+        let Some(node) = selected_node else {
+            return RpcDispatchOutcome::Error {
+                code: 503,
+                message: "browser control is disabled".to_owned(),
+                details: Some(json!({
+                    "method": method,
+                    "path": path,
+                    "query": query
+                })),
+            };
+        };
+        if !node_inventory_command_allowed(&node, "browser.proxy") {
+            return RpcDispatchOutcome::Error {
+                code: 400,
+                message: "node command not allowed".to_owned(),
+                details: Some(json!({
+                    "reason": "command-not-declared",
+                    "command": "browser.proxy",
+                    "nodeId": node.node_id
+                })),
+            };
         }
+        let timeout_ms = timeout_ms.unwrap_or(20_000).min(120_000);
+        let idempotency_key = next_browser_proxy_idempotency_key(&node.node_id);
+        let proxy_params = {
+            let mut payload = serde_json::Map::new();
+            payload.insert("method".to_owned(), Value::String(method.clone()));
+            payload.insert("path".to_owned(), Value::String(path.clone()));
+            if let Some(query) = query.clone() {
+                payload.insert("query".to_owned(), query);
+            }
+            if let Some(body) = body {
+                payload.insert("body".to_owned(), body);
+            }
+            payload.insert("timeoutMs".to_owned(), json!(timeout_ms));
+            Value::Object(payload)
+        };
+        let (invoke_id, waiter) = self
+            .node_runtime
+            .begin_invoke_with_wait(
+                &node.node_id,
+                "browser.proxy",
+                Some(timeout_ms),
+                &idempotency_key,
+            )
+            .await;
+        self.system
+            .log_line(format!(
+                "browser.request dispatched node={} invokeId={} path={}",
+                node.node_id,
+                invoke_id,
+                truncate_text(&path, 256)
+            ))
+            .await;
+        self.node_runtime
+            .record_event(
+                "node.invoke.request".to_owned(),
+                serde_json::to_string(&json!({
+                    "id": invoke_id,
+                    "nodeId": node.node_id,
+                    "command": "browser.proxy",
+                    "params": proxy_params,
+                    "idempotencyKey": idempotency_key
+                }))
+                .ok(),
+            )
+            .await;
+        let completion = match tokio::time::timeout(Duration::from_millis(timeout_ms), waiter).await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                return RpcDispatchOutcome::Error {
+                    code: 503,
+                    message: "browser proxy failed".to_owned(),
+                    details: Some(json!({
+                        "nodeId": node.node_id,
+                        "invokeId": invoke_id
+                    })),
+                };
+            }
+            Err(_) => {
+                self.node_runtime.cancel_invoke(&invoke_id).await;
+                return RpcDispatchOutcome::Error {
+                    code: 503,
+                    message: "browser proxy timed out".to_owned(),
+                    details: Some(json!({
+                        "nodeId": node.node_id,
+                        "invokeId": invoke_id,
+                        "timeoutMs": timeout_ms
+                    })),
+                };
+            }
+        };
+        if !completion.ok {
+            let message = completion
+                .error
+                .as_ref()
+                .and_then(|error| error.message.clone())
+                .unwrap_or_else(|| "browser proxy failed".to_owned());
+            return RpcDispatchOutcome::Error {
+                code: 503,
+                message,
+                details: Some(json!({
+                    "nodeId": node.node_id,
+                    "invokeId": invoke_id,
+                    "nodeError": completion.error.as_ref().map(|error| json!({
+                        "code": error.code,
+                        "message": error.message
+                    })).unwrap_or(Value::Null)
+                })),
+            };
+        }
+        let proxy_payload = completion
+            .payload_json
+            .as_deref()
+            .and_then(parse_payload_json)
+            .or(completion.payload);
+        let Some(result) = proxy_payload
+            .as_ref()
+            .and_then(|payload| payload.as_object())
+            .and_then(|payload| payload.get("result"))
+            .cloned()
+        else {
+            return RpcDispatchOutcome::Error {
+                code: 503,
+                message: "browser proxy failed".to_owned(),
+                details: Some(json!({
+                    "nodeId": node.node_id,
+                    "invokeId": invoke_id,
+                    "payload": proxy_payload
+                })),
+            };
+        };
+        RpcDispatchOutcome::Handled(result)
     }
 
     async fn handle_exec_approvals_get(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
@@ -7067,13 +7225,118 @@ fn node_command_allowed(node: &PairedNodeEntry, command: &str) -> bool {
         .any(|allowed| allowed.eq_ignore_ascii_case(normalized))
 }
 
+fn node_inventory_command_allowed(node: &NodeInventoryEntry, command: &str) -> bool {
+    let normalized = command.trim();
+    if normalized.is_empty() {
+        return false;
+    }
+    if node.commands.is_empty() {
+        return true;
+    }
+    node.commands
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(normalized))
+}
+
+fn node_inventory_browser_capable(node: &NodeInventoryEntry) -> bool {
+    node.caps
+        .iter()
+        .any(|cap| cap.eq_ignore_ascii_case("browser"))
+        || node
+            .commands
+            .iter()
+            .any(|command| command.eq_ignore_ascii_case("browser.proxy"))
+}
+
+fn normalize_browser_node_key(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect()
+}
+
+fn resolve_browser_node(
+    nodes: &[NodeInventoryEntry],
+    requested: &str,
+) -> Result<Option<NodeInventoryEntry>, String> {
+    let query = requested.trim();
+    if query.is_empty() {
+        return Ok(None);
+    }
+    let normalized_query = normalize_browser_node_key(query);
+    let mut matches = nodes
+        .iter()
+        .filter(|node| {
+            if node.node_id == query {
+                return true;
+            }
+            if node
+                .remote_ip
+                .as_deref()
+                .is_some_and(|remote_ip| remote_ip == query)
+            {
+                return true;
+            }
+            if node.display_name.as_deref().is_some_and(|display_name| {
+                normalize_browser_node_key(display_name) == normalized_query
+            }) {
+                return true;
+            }
+            query.len() >= 6 && node.node_id.starts_with(query)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if matches.len() == 1 {
+        return Ok(matches.pop());
+    }
+    if matches.is_empty() {
+        return Ok(None);
+    }
+    let candidates = matches
+        .iter()
+        .map(|node| {
+            node.display_name
+                .clone()
+                .or_else(|| node.remote_ip.clone())
+                .unwrap_or_else(|| node.node_id.clone())
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!("ambiguous node: {query} (matches: {candidates})"))
+}
+
+fn resolve_browser_node_target(
+    browser_nodes: &[NodeInventoryEntry],
+    requested: Option<&str>,
+) -> Result<Option<NodeInventoryEntry>, String> {
+    if browser_nodes.is_empty() {
+        return Ok(None);
+    }
+    if let Some(requested) = requested {
+        return match resolve_browser_node(browser_nodes, requested)? {
+            Some(node) => Ok(Some(node)),
+            None => Err(format!(
+                "Configured browser node not connected: {}",
+                requested.trim()
+            )),
+        };
+    }
+    if browser_nodes.len() == 1 {
+        return Ok(browser_nodes.first().cloned());
+    }
+    Ok(None)
+}
+
 struct NodeRuntimeRegistry {
     state: Mutex<NodeRuntimeState>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Default)]
 struct NodeRuntimeState {
     pending_invokes: HashMap<String, NodeInvokePendingEntry>,
+    invoke_waiters: HashMap<String, oneshot::Sender<NodeInvokeCompletion>>,
     recent_results: VecDeque<Value>,
     recent_events: VecDeque<Value>,
 }
@@ -7086,6 +7349,14 @@ struct NodeInvokePendingEntry {
     idempotency_key: String,
     created_at_ms: u64,
     timeout_ms: Option<u64>,
+}
+
+#[derive(Debug)]
+struct NodeInvokeCompletion {
+    ok: bool,
+    payload: Option<Value>,
+    payload_json: Option<String>,
+    error: Option<NodeInvokeResultError>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7121,13 +7392,55 @@ impl NodeRuntimeRegistry {
         };
         let mut guard = self.state.lock().await;
         guard.pending_invokes.insert(invoke_id.clone(), entry);
-        prune_oldest_node_invoke_pending(&mut guard.pending_invokes, 4_096);
+        let dropped = prune_oldest_node_invoke_pending(&mut guard.pending_invokes, 4_096);
+        for dropped_id in dropped {
+            let _ = guard.invoke_waiters.remove(&dropped_id);
+        }
         invoke_id
+    }
+
+    async fn begin_invoke_with_wait(
+        &self,
+        node_id: &str,
+        command: &str,
+        timeout_ms: Option<u64>,
+        idempotency_key: &str,
+    ) -> (String, oneshot::Receiver<NodeInvokeCompletion>) {
+        let now = now_ms();
+        let invoke_id = next_node_invoke_id();
+        let entry = NodeInvokePendingEntry {
+            id: invoke_id.clone(),
+            node_id: node_id.to_owned(),
+            command: command.to_owned(),
+            idempotency_key: idempotency_key.to_owned(),
+            created_at_ms: now,
+            timeout_ms,
+        };
+        let (tx, rx) = oneshot::channel();
+        let mut guard = self.state.lock().await;
+        guard.pending_invokes.insert(invoke_id.clone(), entry);
+        guard.invoke_waiters.insert(invoke_id.clone(), tx);
+        let dropped = prune_oldest_node_invoke_pending(&mut guard.pending_invokes, 4_096);
+        for dropped_id in dropped {
+            let _ = guard.invoke_waiters.remove(&dropped_id);
+        }
+        (invoke_id, rx)
+    }
+
+    async fn cancel_invoke(&self, invoke_id: &str) {
+        let normalized = invoke_id.trim();
+        if normalized.is_empty() {
+            return;
+        }
+        let mut guard = self.state.lock().await;
+        let _ = guard.pending_invokes.remove(normalized);
+        let _ = guard.invoke_waiters.remove(normalized);
     }
 
     async fn complete_invoke(&self, params: NodeInvokeResultParams) -> NodeInvokeCompleteResult {
         let mut guard = self.state.lock().await;
         let Some(pending) = guard.pending_invokes.remove(&params.id) else {
+            let _ = guard.invoke_waiters.remove(&params.id);
             return NodeInvokeCompleteResult::Ignored;
         };
         if !pending.node_id.eq_ignore_ascii_case(&params.node_id) {
@@ -7140,6 +7453,15 @@ impl NodeRuntimeRegistry {
                 .as_ref()
                 .and_then(|value| serde_json::to_string(value).ok())
         });
+        let completion = NodeInvokeCompletion {
+            ok: params.ok,
+            payload: params.payload.clone(),
+            payload_json: payload_json.clone(),
+            error: params.error.clone(),
+        };
+        if let Some(waiter) = guard.invoke_waiters.remove(&params.id) {
+            let _ = waiter.send(completion);
+        }
         guard.recent_results.push_back(json!({
             "id": params.id,
             "nodeId": params.node_id,
@@ -7182,12 +7504,23 @@ impl NodeRuntimeRegistry {
         let guard = self.state.lock().await;
         guard.recent_events.len()
     }
+
+    #[cfg(test)]
+    async fn latest_pending_invoke_id(&self) -> Option<String> {
+        let guard = self.state.lock().await;
+        guard
+            .pending_invokes
+            .values()
+            .max_by_key(|entry| (entry.created_at_ms, &entry.id))
+            .map(|entry| entry.id.clone())
+    }
 }
 
 fn prune_oldest_node_invoke_pending(
     pending_invokes: &mut HashMap<String, NodeInvokePendingEntry>,
     max_pending: usize,
-) {
+) -> Vec<String> {
+    let mut dropped = Vec::new();
     while pending_invokes.len() > max_pending {
         let Some(oldest_key) = pending_invokes
             .iter()
@@ -7197,12 +7530,20 @@ fn prune_oldest_node_invoke_pending(
             break;
         };
         let _ = pending_invokes.remove(&oldest_key);
+        dropped.push(oldest_key);
     }
+    dropped
 }
 
 fn next_node_invoke_id() -> String {
     let sequence = NODE_INVOKE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     format!("node-invoke-{}-{sequence}", now_ms())
+}
+
+fn next_browser_proxy_idempotency_key(node_id: &str) -> String {
+    let sequence = BROWSER_PROXY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let normalized_node = normalize(node_id);
+    format!("browser-proxy-{}-{}-{sequence}", now_ms(), normalized_node)
 }
 
 struct ExecApprovalsRegistry {
@@ -8092,8 +8433,9 @@ impl ChannelRuntimeRegistry {
                     }
                 }
             }
-            if let Some(channel_accounts_value) =
-                map.get("channelAccounts").or_else(|| map.get("channel_accounts"))
+            if let Some(channel_accounts_value) = map
+                .get("channelAccounts")
+                .or_else(|| map.get("channel_accounts"))
             {
                 if let Some(channel_accounts_map) = channel_accounts_value.as_object() {
                     for (channel_id, accounts_value) in channel_accounts_map {
@@ -8151,7 +8493,8 @@ impl ChannelRuntimeState {
     fn set_default_account(&mut self, channel: &str, account_id: &str) {
         let channel_id = canonicalize_runtime_channel_id(channel);
         let account_id = normalize_account_id(account_id);
-        self.default_account_by_channel.insert(channel_id, account_id);
+        self.default_account_by_channel
+            .insert(channel_id, account_id);
     }
 }
 
@@ -8324,14 +8667,8 @@ fn ingest_runtime_entry(
         .get("port")
         .and_then(value_as_u64)
         .or(account.port);
-    account.probe = runtime_map
-        .get("probe")
-        .cloned()
-        .or(account.probe.clone());
-    account.audit = runtime_map
-        .get("audit")
-        .cloned()
-        .or(account.audit.clone());
+    account.probe = runtime_map.get("probe").cloned().or(account.probe.clone());
+    account.audit = runtime_map.get("audit").cloned().or(account.audit.clone());
     account.application = runtime_map
         .get("application")
         .cloned()
@@ -9568,6 +9905,16 @@ fn json_value_as_timeout_ms(value: &Value) -> Option<u64> {
         return None;
     }
     Some(value.floor().max(1.0) as u64)
+}
+
+fn parse_payload_json(payload_json: &str) -> Option<Value> {
+    let trimmed = payload_json.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    serde_json::from_str::<Value>(trimmed)
+        .ok()
+        .or_else(|| Some(json!({ "payloadJSON": payload_json })))
 }
 
 fn normalize_node_invoke_result_params(params: Value) -> Value {
@@ -13335,6 +13682,8 @@ fn next_wizard_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::Duration;
 
     use serde::Deserialize;
     use serde_json::{json, Value};
@@ -18001,7 +18350,9 @@ mod tests {
                 assert!(payload
                     .pointer("/channelAccounts/discord/0/lastProbeAt")
                     .is_some_and(|value| value.is_null()));
-                assert!(payload.pointer("/channelAccounts/discord/0/probe").is_none());
+                assert!(payload
+                    .pointer("/channelAccounts/discord/0/probe")
+                    .is_none());
             }
             _ => panic!("expected channels.status handled"),
         }
@@ -19919,6 +20270,161 @@ mod tests {
         };
         let out = dispatcher.handle_request(&non_numeric_timeout).await;
         assert!(matches!(out, RpcDispatchOutcome::Error { code: 503, .. }));
+    }
+
+    #[tokio::test]
+    async fn dispatcher_browser_request_routes_through_node_proxy_runtime() {
+        let dispatcher = Arc::new(RpcDispatcher::new());
+
+        let pair = RpcRequestFrame {
+            id: "req-browser-node-pair".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "browser-node-1",
+                "displayName": "Browser Node",
+                "caps": ["browser"],
+                "commands": ["browser.proxy"]
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&pair).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("pair request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+        let approve = RpcRequestFrame {
+            id: "req-browser-node-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        let out = dispatcher.handle_request(&approve).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        let browser_req = RpcRequestFrame {
+            id: "req-browser-node-proxy".to_owned(),
+            method: "browser.request".to_owned(),
+            params: serde_json::json!({
+                "method": "GET",
+                "path": "/tabs",
+                "query": {
+                    "profile": "default"
+                },
+                "timeoutMs": 500
+            }),
+        };
+        let task_dispatcher = Arc::clone(&dispatcher);
+        let browser_task =
+            tokio::spawn(async move { task_dispatcher.handle_request(&browser_req).await });
+
+        let mut invoke_id = None;
+        for _ in 0..100 {
+            if let Some(id) = dispatcher.node_runtime.latest_pending_invoke_id().await {
+                invoke_id = Some(id);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let invoke_id = invoke_id.expect("pending invoke id");
+        let invoke_result = RpcRequestFrame {
+            id: "req-browser-node-proxy-result".to_owned(),
+            method: "node.invoke.result".to_owned(),
+            params: serde_json::json!({
+                "id": invoke_id,
+                "nodeId": "browser-node-1",
+                "ok": true,
+                "payload": {
+                    "result": {
+                        "ok": true,
+                        "tabs": [
+                            {"id": "tab-1"}
+                        ]
+                    }
+                }
+            }),
+        };
+        let out = dispatcher.handle_request(&invoke_result).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        match browser_task.await.expect("browser request task") {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/ok").and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/tabs/0/id")
+                        .and_then(serde_json::Value::as_str),
+                    Some("tab-1")
+                );
+            }
+            _ => panic!("expected browser.request handled response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_browser_request_enforces_browser_proxy_command_allowlist() {
+        let dispatcher = RpcDispatcher::new();
+
+        let pair = RpcRequestFrame {
+            id: "req-browser-disallowed-node-pair".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "browser-node-2",
+                "displayName": "Camera Node",
+                "caps": ["browser"],
+                "commands": ["camera.capture"]
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&pair).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("pair request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+        let approve = RpcRequestFrame {
+            id: "req-browser-disallowed-node-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        let out = dispatcher.handle_request(&approve).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        let browser_req = RpcRequestFrame {
+            id: "req-browser-disallowed-node-proxy".to_owned(),
+            method: "browser.request".to_owned(),
+            params: serde_json::json!({
+                "method": "GET",
+                "path": "/tabs",
+                "timeoutMs": 250
+            }),
+        };
+        match dispatcher.handle_request(&browser_req).await {
+            RpcDispatchOutcome::Error {
+                code,
+                message,
+                details,
+            } => {
+                assert_eq!(code, 400);
+                assert_eq!(message, "node command not allowed");
+                assert_eq!(
+                    details
+                        .as_ref()
+                        .and_then(|value| value.pointer("/command"))
+                        .and_then(serde_json::Value::as_str),
+                    Some("browser.proxy")
+                );
+            }
+            _ => panic!("expected browser.request invalid-request response"),
+        }
     }
 
     #[tokio::test]
