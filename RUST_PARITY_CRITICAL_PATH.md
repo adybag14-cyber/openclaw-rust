@@ -230,6 +230,6 @@ Use this checklist for active tracking:
 
 ## Immediate Next Actions (Start Here)
 
-1. Expand CP2 session-routing corpus with multi-agent channel/account/peer route cases against upstream traces.
-2. Extend CP2 replay harness assertions to include reply-back behavior equivalence (group vs direct routing).
-3. Publish CP2 soak metrics/artifacts in CI (decision ordering + duplicate counters) for trend tracking.
+1. Add CP2 replay harness assertions to include reply-back behavior equivalence (group vs direct routing).
+2. Publish CP2 soak metrics/artifacts in CI (decision ordering + duplicate counters) for trend tracking.
+3. Add differential replay captures from upstream for ambiguous route-selector collisions (same peer across accounts/channels).
