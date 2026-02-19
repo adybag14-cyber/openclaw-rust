@@ -133,7 +133,7 @@ Exit gates:
 - Channel acceptance suite green per migrated channel.
 - Canary chat behavior matches TS reference runs.
 
-Status: **Partial (Wave-1 foundations + runtime lifecycle snapshot ingestion implemented, including upstream-shaped `channelAccounts` map ingestion, payload-only webhook message ingress hydration, webchat outbound activity updates, and `channels.logout` runtime-aware result semantics; channel acceptance/canary parity pending)**
+Status: **Partial (Wave-1 foundations + runtime lifecycle snapshot ingestion implemented, plus Wave-2 channel registry/canonicalization foundations for `bluebubbles`, `googlechat`, `msteams`, `matrix`, `zalo`, and `zalouser`; channel acceptance/canary parity pending)**
 
 ## CP5: Nodes, Browser, Canvas, Device Flows
 
@@ -230,6 +230,6 @@ Use this checklist for active tracking:
 
 ## Immediate Next Actions (Start Here)
 
-1. Complete CP4 Wave 1 transport lifecycle + webhook ingress parity on Telegram, WhatsApp, Discord, Slack, Signal, and WebChat using the new channel-runtime helper layer.
-2. Complete CP4 Wave 1 transport lifecycle + webhook ingress parity on Telegram, WhatsApp, Discord, Slack, Signal, and WebChat using the channel-runtime helper layer.
-3. Advance CP4 Wave 2/3 extension channel adapters toward parity and validate against canary behavior baselines.
+1. Complete CP4 Wave-1 transport lifecycle + webhook ingress acceptance/canary parity on Telegram, WhatsApp, Discord, Slack, Signal, and WebChat.
+2. Expand CP4 Wave-2 runtime behavior parity beyond registry/canonicalization into transport/webhook acceptance fixtures for BlueBubbles, Google Chat, Teams, Matrix, Zalo, and Zalo Personal.
+3. Advance CP4 Wave-3 extension channel adapters toward parity and validate against canary behavior baselines.

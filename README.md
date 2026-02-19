@@ -234,7 +234,7 @@ CP3 tool-runtime parity gate (`profile/allow/deny/byProvider` + loop guard + tra
 .\scripts\parity\run-cp3-gate.ps1
 ```
 
-CP4 channel-runtime wave-1 foundation gate (registry + normalization + mention/chunk/retry parity helpers):
+CP4 channel-runtime wave-1/wave-2 foundation gate (registry + normalization + mention/chunk/retry parity helpers):
 
 ```powershell
 .\scripts\parity\run-cp4-gate.ps1

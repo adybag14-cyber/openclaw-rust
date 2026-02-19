@@ -3753,24 +3753,25 @@ impl RpcDispatcher {
         }
 
         let channel_input = normalize_optional_text(params.channel.clone(), 64);
-        if channel_input
-            .as_deref()
-            .map(|value| value.eq_ignore_ascii_case("webchat"))
-            .unwrap_or(false)
-        {
+        let requested_channel = channel_input
+            .clone()
+            .unwrap_or_else(|| DEFAULT_SEND_CHANNEL.to_owned());
+        let normalized_channel = normalize_channel_id(Some(requested_channel.as_str()))
+            .unwrap_or_else(|| normalize(&requested_channel));
+        if normalized_channel.eq_ignore_ascii_case("webchat") {
             return RpcDispatchOutcome::bad_request(
                 "unsupported channel: webchat (internal-only). Use `chat.send` for WebChat UI messages or choose a deliverable channel.",
             );
         }
-        let channel = channel_input.unwrap_or_else(|| DEFAULT_SEND_CHANNEL.to_owned());
-        let supported_channel = self
+        let Some(capability) = self
             .channel_capabilities
             .iter()
-            .any(|capability| capability.name.eq_ignore_ascii_case(&channel));
-        if !supported_channel {
-            let unsupported = params.channel.unwrap_or(channel.clone());
+            .find(|capability| capability.name.eq_ignore_ascii_case(&normalized_channel))
+        else {
+            let unsupported = params.channel.unwrap_or(requested_channel);
             return RpcDispatchOutcome::bad_request(format!("unsupported channel: {unsupported}"));
-        }
+        };
+        let channel = capability.name.to_owned();
 
         let account_id = normalize_optional_text(params.account_id, 128);
         let thread_id = normalize_optional_text(params.thread_id, 128);
@@ -3887,11 +3888,15 @@ impl RpcDispatcher {
         }
 
         let channel_input = normalize_optional_text(params.channel.clone(), 64);
-        let requested_channel = channel_input.unwrap_or_else(|| DEFAULT_SEND_CHANNEL.to_owned());
+        let requested_channel = channel_input
+            .clone()
+            .unwrap_or_else(|| DEFAULT_SEND_CHANNEL.to_owned());
+        let normalized_channel = normalize_channel_id(Some(requested_channel.as_str()))
+            .unwrap_or_else(|| normalize(&requested_channel));
         let Some(capability) = self
             .channel_capabilities
             .iter()
-            .find(|capability| capability.name.eq_ignore_ascii_case(&requested_channel))
+            .find(|capability| capability.name.eq_ignore_ascii_case(&normalized_channel))
         else {
             let unsupported = params.channel.unwrap_or(requested_channel);
             return RpcDispatchOutcome::bad_request(format!(
@@ -13756,6 +13761,12 @@ fn channel_label(id: &str) -> String {
         "discord" => "Discord".to_owned(),
         "signal" => "Signal".to_owned(),
         "webchat" => "WebChat".to_owned(),
+        "bluebubbles" => "BlueBubbles".to_owned(),
+        "googlechat" => "Google Chat".to_owned(),
+        "msteams" => "Microsoft Teams".to_owned(),
+        "matrix" => "Matrix".to_owned(),
+        "zalo" => "Zalo".to_owned(),
+        "zalouser" => "Zalo Personal".to_owned(),
         other => {
             let mut chars = other.chars();
             let Some(first) = chars.next() else {
@@ -13776,6 +13787,12 @@ fn channel_system_image(id: &str) -> &'static str {
         "discord" => "bubble.left",
         "signal" => "lock.bubble.right",
         "webchat" => "rectangle.and.pencil.and.ellipsis",
+        "bluebubbles" => "bubble.left.and.text.bubble.right",
+        "googlechat" => "message.badge",
+        "msteams" => "person.2",
+        "matrix" => "square.grid.3x3",
+        "zalo" => "message.badge",
+        "zalouser" => "message.badge",
         _ => "bubble.left",
     }
 }
@@ -15602,6 +15619,42 @@ mod tests {
                 );
             }
             _ => panic!("expected send with context handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_send_accepts_wave2_channel_aliases() {
+        let dispatcher = RpcDispatcher::new();
+        let cases = vec![
+            ("google-chat", "googlechat"),
+            ("teams", "msteams"),
+            ("bb", "bluebubbles"),
+            ("zl", "zalo"),
+            ("zlu", "zalouser"),
+        ];
+        for (channel, expected) in cases {
+            let req = RpcRequestFrame {
+                id: format!("req-send-{channel}"),
+                method: "send".to_owned(),
+                params: serde_json::json!({
+                    "to": "target:demo",
+                    "message": "hello alias",
+                    "channel": channel,
+                    "idempotencyKey": format!("send-{channel}")
+                }),
+            };
+            match dispatcher.handle_request(&req).await {
+                RpcDispatchOutcome::Handled(payload) => {
+                    assert_eq!(
+                        payload
+                            .pointer("/channel")
+                            .and_then(serde_json::Value::as_str),
+                        Some(expected),
+                        "{channel}"
+                    );
+                }
+                _ => panic!("expected send handled for alias channel"),
+            }
         }
     }
 
@@ -19228,6 +19281,168 @@ mod tests {
                         .pointer("/channelAccounts/whatsapp/0/mode")
                         .and_then(serde_json::Value::as_str),
                     Some("webhook")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_includes_wave2_channel_catalog_entries() {
+        let dispatcher = RpcDispatcher::new();
+        let status = RpcRequestFrame {
+            id: "req-channels-wave2-catalog".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                let order = payload
+                    .pointer("/channelOrder")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let names = order
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<Vec<_>>();
+                for expected in [
+                    "bluebubbles",
+                    "googlechat",
+                    "msteams",
+                    "matrix",
+                    "zalo",
+                    "zalouser",
+                ] {
+                    assert!(names.contains(&expected), "{expected}");
+                }
+                assert_eq!(
+                    payload
+                        .pointer("/channelLabels/googlechat")
+                        .and_then(serde_json::Value::as_str),
+                    Some("Google Chat")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelLabels/msteams")
+                        .and_then(serde_json::Value::as_str),
+                    Some("Microsoft Teams")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelSystemImages/bluebubbles")
+                        .and_then(serde_json::Value::as_str),
+                    Some("bubble.left.and.text.bubble.right")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/zalouser")
+                        .and_then(serde_json::Value::as_str),
+                    Some("default")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_ingests_wave2_alias_channel_ids_in_runtime_maps() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channelAccounts": {
+                        "google-chat": {
+                            "ops": {
+                                "running": true,
+                                "connected": true,
+                                "mode": "webhook"
+                            }
+                        },
+                        "teams": {
+                            "work": {
+                                "running": true,
+                                "connected": true,
+                                "mode": "polling"
+                            }
+                        },
+                        "bb": {
+                            "default": {
+                                "running": true,
+                                "connected": true
+                            }
+                        },
+                        "zlu": {
+                            "profile1": {
+                                "running": true,
+                                "connected": true
+                            }
+                        }
+                    },
+                    "channelDefaultAccountId": {
+                        "google-chat": "ops",
+                        "teams": "work",
+                        "bb": "default",
+                        "zlu": "profile1"
+                    }
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-wave2-alias-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/googlechat")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/googlechat/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/msteams")
+                        .and_then(serde_json::Value::as_str),
+                    Some("work")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/msteams/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("work")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/bluebubbles")
+                        .and_then(serde_json::Value::as_str),
+                    Some("default")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/zalouser")
+                        .and_then(serde_json::Value::as_str),
+                    Some("profile1")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channels/zalouser/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
                 );
             }
             _ => panic!("expected channels.status handled"),

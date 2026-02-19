@@ -6,8 +6,32 @@ use crate::types::ActionRequest;
 
 pub const DEFAULT_TEXT_CHUNK_LIMIT: usize = 4_000;
 pub const DISCORD_TEXT_CHUNK_LIMIT: usize = 2_000;
+#[cfg(test)]
 pub const WAVE1_CHANNEL_ORDER: &[&str] = &[
     "telegram", "whatsapp", "discord", "slack", "signal", "webchat",
+];
+#[cfg(test)]
+pub const WAVE2_CHANNEL_ORDER: &[&str] = &[
+    "bluebubbles",
+    "googlechat",
+    "msteams",
+    "matrix",
+    "zalouser",
+    "zalo",
+];
+pub const CHANNEL_RUNTIME_ORDER: &[&str] = &[
+    "telegram",
+    "whatsapp",
+    "discord",
+    "slack",
+    "signal",
+    "webchat",
+    "bluebubbles",
+    "googlechat",
+    "msteams",
+    "matrix",
+    "zalouser",
+    "zalo",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,7 +177,12 @@ pub fn normalize_channel_id(raw: Option<&str>) -> Option<String> {
     let normalized = match value.as_str() {
         "tg" | "grammy" => "telegram",
         "wa" | "baileys" => "whatsapp",
+        "bb" => "bluebubbles",
+        "google-chat" | "gchat" => "googlechat",
+        "teams" | "ms-teams" => "msteams",
         "signal-cli" => "signal",
+        "zl" => "zalo",
+        "zlu" | "zalo-personal" | "zalo_personal" => "zalouser",
         "web-chat" | "web_chat" | "webchat-ui" => "webchat",
         _ => value.as_str(),
     };
@@ -348,7 +377,7 @@ pub struct DriverRegistry {
 
 impl DriverRegistry {
     pub fn default_registry() -> Self {
-        let mut drivers: Vec<Box<dyn ChannelDriver>> = WAVE1_CHANNEL_ORDER
+        let mut drivers: Vec<Box<dyn ChannelDriver>> = CHANNEL_RUNTIME_ORDER
             .iter()
             .filter_map(|channel| driver_for_channel(channel))
             .collect();
@@ -378,6 +407,12 @@ fn driver_for_channel(channel: &str) -> Option<Box<dyn ChannelDriver>> {
         "slack" => Some(Box::new(SlackDriver)),
         "signal" => Some(Box::new(SignalDriver)),
         "webchat" => Some(Box::new(WebChatDriver)),
+        "bluebubbles" => Some(Box::new(BlueBubblesDriver)),
+        "googlechat" => Some(Box::new(GoogleChatDriver)),
+        "msteams" => Some(Box::new(MsTeamsDriver)),
+        "matrix" => Some(Box::new(MatrixDriver)),
+        "zalo" => Some(Box::new(ZaloDriver)),
+        "zalouser" => Some(Box::new(ZaloUserDriver)),
         _ => None,
     }
 }
@@ -529,6 +564,136 @@ impl ChannelDriver for WebChatDriver {
     }
 }
 
+struct BlueBubblesDriver;
+
+impl ChannelDriver for BlueBubblesDriver {
+    fn extract(&self, frame: &Value) -> Option<ActionRequest> {
+        extract_with_hints(frame, "bluebubbles", &["bluebubbles", "bb"])
+    }
+
+    fn capabilities(&self) -> ChannelCapabilities {
+        ChannelCapabilities {
+            name: "bluebubbles",
+            supports_edit: true,
+            supports_delete: true,
+            supports_reactions: true,
+            supports_threads: false,
+            supports_polls: false,
+            supports_media: true,
+            default_dm_pairing: true,
+        }
+    }
+}
+
+struct GoogleChatDriver;
+
+impl ChannelDriver for GoogleChatDriver {
+    fn extract(&self, frame: &Value) -> Option<ActionRequest> {
+        extract_with_hints(frame, "googlechat", &["googlechat", "google-chat", "gchat"])
+    }
+
+    fn capabilities(&self) -> ChannelCapabilities {
+        ChannelCapabilities {
+            name: "googlechat",
+            supports_edit: false,
+            supports_delete: false,
+            supports_reactions: true,
+            supports_threads: true,
+            supports_polls: false,
+            supports_media: true,
+            default_dm_pairing: true,
+        }
+    }
+}
+
+struct MsTeamsDriver;
+
+impl ChannelDriver for MsTeamsDriver {
+    fn extract(&self, frame: &Value) -> Option<ActionRequest> {
+        extract_with_hints(frame, "msteams", &["msteams", "ms-teams", "teams"])
+    }
+
+    fn capabilities(&self) -> ChannelCapabilities {
+        ChannelCapabilities {
+            name: "msteams",
+            supports_edit: false,
+            supports_delete: false,
+            supports_reactions: false,
+            supports_threads: true,
+            supports_polls: true,
+            supports_media: true,
+            default_dm_pairing: true,
+        }
+    }
+}
+
+struct MatrixDriver;
+
+impl ChannelDriver for MatrixDriver {
+    fn extract(&self, frame: &Value) -> Option<ActionRequest> {
+        extract_with_hints(frame, "matrix", &["matrix"])
+    }
+
+    fn capabilities(&self) -> ChannelCapabilities {
+        ChannelCapabilities {
+            name: "matrix",
+            supports_edit: false,
+            supports_delete: false,
+            supports_reactions: true,
+            supports_threads: true,
+            supports_polls: true,
+            supports_media: true,
+            default_dm_pairing: true,
+        }
+    }
+}
+
+struct ZaloDriver;
+
+impl ChannelDriver for ZaloDriver {
+    fn extract(&self, frame: &Value) -> Option<ActionRequest> {
+        extract_with_hints(frame, "zalo", &["zalo", "zl"])
+    }
+
+    fn capabilities(&self) -> ChannelCapabilities {
+        ChannelCapabilities {
+            name: "zalo",
+            supports_edit: false,
+            supports_delete: false,
+            supports_reactions: false,
+            supports_threads: false,
+            supports_polls: false,
+            supports_media: true,
+            default_dm_pairing: true,
+        }
+    }
+}
+
+struct ZaloUserDriver;
+
+impl ChannelDriver for ZaloUserDriver {
+    fn extract(&self, frame: &Value) -> Option<ActionRequest> {
+        extract_with_hints(
+            frame,
+            "zalouser",
+            &["zalouser", "zalo-personal", "zalo_personal", "zlu"],
+        )
+    }
+
+    fn capabilities(&self) -> ChannelCapabilities {
+        ChannelCapabilities {
+            name: "zalouser",
+            supports_edit: false,
+            supports_delete: false,
+            supports_reactions: true,
+            supports_threads: false,
+            supports_polls: false,
+            supports_media: true,
+            default_dm_pairing: true,
+        }
+    }
+}
+
 fn normalize(input: &str) -> String {
     input.trim().to_ascii_lowercase()
 }
@@ -574,9 +739,10 @@ mod tests {
 
     use super::{
         chunk_text_with_mode, compute_retry_backoff_delay, compute_retry_backoff_delay_ms,
-        default_chunk_mode, default_text_chunk_limit, normalize_chat_type, resolve_mention_gating,
-        resolve_mention_gating_with_bypass, ChatType, ChunkMode, DriverRegistry, MentionGateParams,
-        MentionGateWithBypassParams, RetryBackoffPolicy, WAVE1_CHANNEL_ORDER,
+        default_chunk_mode, default_text_chunk_limit, normalize_channel_id, normalize_chat_type,
+        resolve_mention_gating, resolve_mention_gating_with_bypass, ChatType, ChunkMode,
+        DriverRegistry, MentionGateParams, MentionGateWithBypassParams, RetryBackoffPolicy,
+        WAVE1_CHANNEL_ORDER, WAVE2_CHANNEL_ORDER,
     };
 
     #[test]
@@ -700,6 +866,9 @@ mod tests {
         for channel in WAVE1_CHANNEL_ORDER {
             assert!(names.contains(channel), "missing wave1 channel: {channel}");
         }
+        for channel in WAVE2_CHANNEL_ORDER {
+            assert!(names.contains(channel), "missing wave2 channel: {channel}");
+        }
         assert!(caps
             .iter()
             .any(|c| c.name == "discord" && c.supports_threads));
@@ -707,6 +876,66 @@ mod tests {
             .iter()
             .any(|c| c.name == "signal" && c.supports_reactions));
         assert!(caps.iter().any(|c| c.name == "webchat" && c.supports_edit));
+        assert!(caps
+            .iter()
+            .any(|c| c.name == "msteams" && c.supports_polls && c.supports_threads));
+        assert!(caps
+            .iter()
+            .any(|c| c.name == "matrix" && c.supports_polls && c.supports_reactions));
+        assert!(caps
+            .iter()
+            .any(|c| c.name == "bluebubbles" && c.supports_edit && c.supports_delete));
+    }
+
+    #[test]
+    fn wave2_drivers_detect_source_aliases() {
+        let registry = DriverRegistry::default_registry();
+        let cases = vec![
+            ("bluebubbles", "bluebubbles.message", "bluebubbles"),
+            ("googlechat", "google-chat.message", "googlechat"),
+            ("msteams", "teams.message", "msteams"),
+            ("matrix", "matrix.message", "matrix"),
+            ("zalo", "zl.message", "zalo"),
+            ("zalouser", "zalo-personal.message", "zalouser"),
+        ];
+        for (id, event, expected_channel) in cases {
+            let frame = json!({
+                "type": "event",
+                "event": event,
+                "payload": {
+                    "id": format!("req-{id}"),
+                    "tool": "exec",
+                    "command": "git status"
+                }
+            });
+            let request = registry.extract(&frame).expect("request");
+            assert_eq!(request.channel.as_deref(), Some(expected_channel), "{id}");
+        }
+    }
+
+    #[test]
+    fn normalize_channel_id_supports_wave2_aliases() {
+        assert_eq!(
+            normalize_channel_id(Some("google-chat")).as_deref(),
+            Some("googlechat")
+        );
+        assert_eq!(
+            normalize_channel_id(Some("gchat")).as_deref(),
+            Some("googlechat")
+        );
+        assert_eq!(
+            normalize_channel_id(Some("teams")).as_deref(),
+            Some("msteams")
+        );
+        assert_eq!(
+            normalize_channel_id(Some("bb")).as_deref(),
+            Some("bluebubbles")
+        );
+        assert_eq!(normalize_channel_id(Some("zl")).as_deref(), Some("zalo"));
+        assert_eq!(
+            normalize_channel_id(Some("zlu")).as_deref(),
+            Some("zalouser")
+        );
     }
 
     #[test]
