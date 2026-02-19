@@ -76,6 +76,7 @@ Optional upstream location override:
 - `tests/parity/tool-runtime-corpus.json` (CP3 transcript/runtime fixture corpus)
 - `parity/generated/cp3/*` (CP3 gate logs/metrics/summary + runtime corpus artifact)
 - `parity/generated/cp4/*` (CP4 channel-runtime gate logs/metrics/summary)
+  - includes wave-1 channel lifecycle/runtime snapshot fixtures (`channels.status` event-ingest parity + logout transition checks)
 
 ## PR Gate
 

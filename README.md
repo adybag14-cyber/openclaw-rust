@@ -17,7 +17,7 @@ What is implemented now:
 - Typed session-key parsing (`main`, `direct`, `group`, `channel`, `cron`, `hook`, `node`).
 - Typed protocol frame foundation (`req`/`resp`/`event` classification).
 - Gateway RPC parity scaffold for `sessions.list`, `sessions.preview`, `sessions.patch`, `sessions.resolve`, `sessions.reset`, `sessions.delete`, `sessions.compact`, `sessions.usage`, `sessions.usage.timeseries`, `sessions.usage.logs`, `sessions.history`, `sessions.send`, and `session.status`.
-- Channel adapter scaffold (`telegram`, `whatsapp`, `discord`, `slack`, `signal`, `webchat`, generic) with wave-1 channel-runtime helpers (chat-type normalization, mention gating, chunking, retry/backoff).
+- Channel adapter scaffold (`telegram`, `whatsapp`, `discord`, `slack`, `signal`, `webchat`, generic) with wave-1 channel-runtime helpers (chat-type normalization, mention gating, chunking, retry/backoff) and event-driven runtime snapshot ingestion for `channels.status`.
 
 This is intentionally phase 1: it keeps feature coverage by integrating with the
 existing Gateway protocol while replacing high-risk runtime and guardrail logic

@@ -19,7 +19,9 @@ $tests = @(
   "channels::tests::retry_backoff_policy_scales_and_caps",
   "scheduler::tests::mention_activation_accepts_group_message_when_detection_unavailable",
   "scheduler::tests::mention_activation_bypasses_for_authorized_control_command",
-  "gateway::tests::dispatcher_channels_methods_report_status_and_validate_logout"
+  "gateway::tests::dispatcher_channels_methods_report_status_and_validate_logout",
+  "gateway::tests::dispatcher_channels_status_reflects_runtime_event_snapshots",
+  "gateway::tests::dispatcher_channels_logout_marks_runtime_offline"
 )
 
 $toolchainArg = if ($Toolchain -and $Toolchain.Trim().Length -gt 0) {

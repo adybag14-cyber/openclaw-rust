@@ -5,8 +5,8 @@ Repo: `adybag14-cyber/openclaw-rust`
 
 ## Current Baseline (Evidence-Based)
 
-- Overall completion estimate toward true end-to-end Rust replacement: **~46%**
-- Remaining gap: **~54%**
+- Overall completion estimate toward true end-to-end Rust replacement: **~48%**
+- Remaining gap: **~52%**
 - Rust feature-audit status counts:
   - `Implemented`: 9
   - `Partial`: 9
@@ -133,7 +133,7 @@ Exit gates:
 - Channel acceptance suite green per migrated channel.
 - Canary chat behavior matches TS reference runs.
 
-Status: **Partial (Wave-1 channel-runtime foundations implemented; transport/webhook parity pending)**
+Status: **Partial (Wave-1 foundations + runtime lifecycle snapshot ingestion implemented; channel acceptance/canary parity pending)**
 
 ## CP5: Nodes, Browser, Canvas, Device Flows
 

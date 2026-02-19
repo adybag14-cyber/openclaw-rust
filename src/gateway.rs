@@ -711,6 +711,7 @@ pub struct RpcDispatcher {
     wizard: WizardRegistry,
     devices: DeviceRegistry,
     channel_capabilities: Vec<ChannelCapabilities>,
+    channel_runtime: ChannelRuntimeRegistry,
     started_at_ms: u64,
 }
 
@@ -917,6 +918,7 @@ impl RpcDispatcher {
             wizard: WizardRegistry::new(),
             devices: DeviceRegistry::new(),
             channel_capabilities,
+            channel_runtime: ChannelRuntimeRegistry::new(),
             started_at_ms: now_ms(),
         }
     }
@@ -1037,27 +1039,35 @@ impl RpcDispatcher {
             return;
         };
         let payload = frame.get("payload").cloned().unwrap_or(Value::Null);
-        match normalize(event).as_str() {
+        let normalized_event = normalize(event);
+        match normalized_event.as_str() {
             "heartbeat" => {
-                self.system.update_last_heartbeat(payload).await;
+                self.system.update_last_heartbeat(payload.clone()).await;
             }
             "presence" => {
-                self.system.replace_presence(payload).await;
+                self.system.replace_presence(payload.clone()).await;
             }
             "device.pair.requested" => {
-                self.devices.ingest_pair_requested(payload).await;
+                self.devices.ingest_pair_requested(payload.clone()).await;
             }
             "device.pair.resolved" => {
-                self.devices.ingest_pair_resolved(payload).await;
+                self.devices.ingest_pair_resolved(payload.clone()).await;
             }
             "node.pair.requested" => {
-                self.nodes.ingest_pair_requested(payload).await;
+                self.nodes.ingest_pair_requested(payload.clone()).await;
             }
             "node.pair.resolved" => {
-                self.nodes.ingest_pair_resolved(payload).await;
+                self.nodes.ingest_pair_resolved(payload.clone()).await;
             }
             _ => {}
         }
+        self.channel_runtime
+            .ingest_event(
+                normalized_event.as_str(),
+                &payload,
+                &self.channel_capabilities,
+            )
+            .await;
     }
 
     async fn handle_connect(&self) -> RpcDispatchOutcome {
@@ -2085,14 +2095,77 @@ impl RpcDispatcher {
                 "label": label,
                 "detailLabel": label
             }));
+            let mut runtime_accounts = self.channel_runtime.accounts_for_channel(&id).await;
+            if runtime_accounts.is_empty() {
+                runtime_accounts.push(("default".to_owned(), ChannelAccountRuntime::default()));
+            }
+            let default_account_id = if runtime_accounts
+                .iter()
+                .any(|(account_id, _)| account_id.eq_ignore_ascii_case("default"))
+            {
+                "default".to_owned()
+            } else {
+                runtime_accounts
+                    .first()
+                    .map(|(account_id, _)| account_id.clone())
+                    .unwrap_or_else(|| "default".to_owned())
+            };
+
+            let mut default_snapshot = ChannelAccountRuntime::default();
+            let mut accounts_payload = Vec::new();
+            for (account_id, snapshot) in runtime_accounts {
+                if account_id.eq_ignore_ascii_case(&default_account_id) {
+                    default_snapshot = snapshot.clone();
+                }
+                let mut account = json!({
+                    "accountId": account_id,
+                    "name": account_id,
+                    "enabled": snapshot.enabled.unwrap_or(true),
+                    "configured": snapshot.configured.unwrap_or(true),
+                    "linked": snapshot.linked.unwrap_or(true),
+                    "running": snapshot.running.unwrap_or(false),
+                    "connected": snapshot.connected.unwrap_or(false),
+                    "mode": snapshot.mode.clone().unwrap_or_else(|| "polling".to_owned())
+                });
+                if let Some(reconnect_attempts) = snapshot.reconnect_attempts {
+                    account["reconnectAttempts"] = json!(reconnect_attempts);
+                }
+                if let Some(last_connected_at) = snapshot.last_connected_at {
+                    account["lastConnectedAt"] = json!(last_connected_at);
+                }
+                if let Some(last_error) = snapshot.last_error.clone() {
+                    account["lastError"] = json!(last_error);
+                }
+                if let Some(last_start_at) = snapshot.last_start_at {
+                    account["lastStartAt"] = json!(last_start_at);
+                }
+                if let Some(last_stop_at) = snapshot.last_stop_at {
+                    account["lastStopAt"] = json!(last_stop_at);
+                }
+                if let Some(last_inbound_at) = snapshot.last_inbound_at {
+                    account["lastInboundAt"] = json!(last_inbound_at);
+                }
+                if let Some(last_outbound_at) = snapshot.last_outbound_at {
+                    account["lastOutboundAt"] = json!(last_outbound_at);
+                }
+                if probe {
+                    account["probe"] = json!({
+                        "ok": true,
+                        "source": "rust-parity",
+                        "timeoutMs": timeout_ms
+                    });
+                }
+                accounts_payload.push(account);
+            }
+
             channels.insert(
                 id.clone(),
                 json!({
-                    "configured": true,
-                    "enabled": true,
-                    "linked": true,
-                    "running": false,
-                    "connected": false,
+                    "configured": default_snapshot.configured.unwrap_or(true),
+                    "enabled": default_snapshot.enabled.unwrap_or(true),
+                    "linked": default_snapshot.linked.unwrap_or(true),
+                    "running": default_snapshot.running.unwrap_or(false),
+                    "connected": default_snapshot.connected.unwrap_or(false),
                     "supports": {
                         "edit": capability.supports_edit,
                         "delete": capability.supports_delete,
@@ -2104,25 +2177,8 @@ impl RpcDispatcher {
                     }
                 }),
             );
-            let mut account = json!({
-                "accountId": "default",
-                "name": "default",
-                "enabled": true,
-                "configured": true,
-                "linked": true,
-                "running": false,
-                "connected": false,
-                "mode": "polling"
-            });
-            if probe {
-                account["probe"] = json!({
-                    "ok": true,
-                    "source": "rust-parity",
-                    "timeoutMs": timeout_ms
-                });
-            }
-            channel_accounts.insert(id.clone(), Value::Array(vec![account]));
-            channel_default_account_id.insert(id, Value::String("default".to_owned()));
+            channel_accounts.insert(id.clone(), Value::Array(accounts_payload));
+            channel_default_account_id.insert(id, Value::String(default_account_id));
         }
 
         RpcDispatchOutcome::Handled(json!({
@@ -2159,6 +2215,9 @@ impl RpcDispatcher {
             .log_line(format!(
                 "channels.logout channel={channel} account={account_id}"
             ))
+            .await;
+        self.channel_runtime
+            .mark_logout(channel.as_str(), account_id.as_str(), now_ms())
             .await;
         RpcDispatchOutcome::Handled(json!({
             "channel": channel,
@@ -3301,6 +3360,13 @@ impl RpcDispatcher {
                 account_id: account_id.clone(),
             })
             .await;
+        self.channel_runtime
+            .mark_outbound(
+                channel.as_str(),
+                account_id.as_deref().unwrap_or("default"),
+                now_ms(),
+            )
+            .await;
 
         let message_id = next_send_message_id();
         let mut payload = json!({
@@ -3433,6 +3499,13 @@ impl RpcDispatcher {
                 to: Some(to),
                 account_id: account_id.clone(),
             })
+            .await;
+        self.channel_runtime
+            .mark_outbound(
+                channel.as_str(),
+                account_id.as_deref().unwrap_or("default"),
+                now_ms(),
+            )
             .await;
 
         let message_id = next_send_message_id();
@@ -4392,6 +4465,7 @@ impl RpcDispatcher {
             return RpcDispatchOutcome::bad_request("message or command is required");
         }
         let channel = normalize_optional_text(params.channel, 128);
+        let account_id = normalize_optional_text(params.account_id, 128);
         if channel
             .as_deref()
             .map(|value| value.eq_ignore_ascii_case("webchat"))
@@ -4413,9 +4487,18 @@ impl RpcDispatcher {
                     .unwrap_or_else(|| "rpc".to_owned()),
                 channel,
                 to: normalize_optional_text(params.to, 256),
-                account_id: normalize_optional_text(params.account_id, 128),
+                account_id: account_id.clone(),
             })
             .await;
+        if let Some(channel) = recorded.channel.as_deref() {
+            self.channel_runtime
+                .mark_outbound(
+                    channel,
+                    account_id.as_deref().unwrap_or("default"),
+                    now_ms(),
+                )
+                .await;
+        }
         let chunk_count = recorded.text.as_deref().map(|text| {
             let limit = default_text_chunk_limit(recorded.channel.as_deref());
             let mode = default_chunk_mode(recorded.channel.as_deref());
@@ -7790,6 +7873,253 @@ fn prune_oldest_send_cache(cached_by_id: &mut HashMap<String, SendCacheEntry>, m
             break;
         };
         let _ = cached_by_id.remove(&oldest_key);
+    }
+}
+
+struct ChannelRuntimeRegistry {
+    state: Mutex<ChannelRuntimeState>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ChannelRuntimeState {
+    by_channel: HashMap<String, HashMap<String, ChannelAccountRuntime>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ChannelAccountRuntime {
+    enabled: Option<bool>,
+    configured: Option<bool>,
+    linked: Option<bool>,
+    running: Option<bool>,
+    connected: Option<bool>,
+    reconnect_attempts: Option<u64>,
+    last_connected_at: Option<u64>,
+    last_error: Option<String>,
+    last_start_at: Option<u64>,
+    last_stop_at: Option<u64>,
+    last_inbound_at: Option<u64>,
+    last_outbound_at: Option<u64>,
+    mode: Option<String>,
+}
+
+impl ChannelRuntimeRegistry {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(ChannelRuntimeState::default()),
+        }
+    }
+
+    async fn accounts_for_channel(&self, channel: &str) -> Vec<(String, ChannelAccountRuntime)> {
+        let normalized_channel = normalize(channel);
+        let guard = self.state.lock().await;
+        let Some(accounts) = guard.by_channel.get(&normalized_channel) else {
+            return Vec::new();
+        };
+        let mut entries = accounts
+            .iter()
+            .map(|(account_id, runtime)| (account_id.clone(), runtime.clone()))
+            .collect::<Vec<_>>();
+        entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+        entries
+    }
+
+    async fn mark_outbound(&self, channel: &str, account_id: &str, ts: u64) {
+        let mut guard = self.state.lock().await;
+        let account = guard.account_mut(channel, account_id);
+        account.last_outbound_at = Some(ts);
+    }
+
+    async fn mark_logout(&self, channel: &str, account_id: &str, ts: u64) {
+        let mut guard = self.state.lock().await;
+        let account = guard.account_mut(channel, account_id);
+        account.connected = Some(false);
+        account.running = Some(false);
+        account.last_stop_at = Some(ts);
+    }
+
+    async fn ingest_event(
+        &self,
+        event: &str,
+        payload: &Value,
+        channel_capabilities: &[ChannelCapabilities],
+    ) {
+        let known_channels = channel_capabilities
+            .iter()
+            .map(|capability| capability.name)
+            .collect::<Vec<_>>();
+        let inferred_channel = infer_channel_from_event(event, &known_channels);
+        let mut guard = self.state.lock().await;
+
+        if event.ends_with(".message") {
+            if let Some(channel) = inferred_channel.as_deref() {
+                let account_id = payload
+                    .as_object()
+                    .and_then(|map| map.get("accountId").or_else(|| map.get("account_id")))
+                    .and_then(Value::as_str)
+                    .unwrap_or("default");
+                let account = guard.account_mut(channel, account_id);
+                account.last_inbound_at = Some(now_ms());
+                account.connected = account.connected.or(Some(true));
+                account.running = account.running.or(Some(true));
+            }
+        }
+
+        if let Some(map) = payload.as_object() {
+            if let Some(channels_value) = map.get("channels") {
+                if let Some(channels_map) = channels_value.as_object() {
+                    for (channel_id, runtime_value) in channels_map {
+                        ingest_runtime_entry(&mut guard, channel_id, runtime_value, None);
+                    }
+                }
+            }
+        }
+
+        if payload.as_object().is_some() {
+            if let Some(channel) = infer_channel_from_payload(payload).or(inferred_channel) {
+                ingest_runtime_entry(&mut guard, channel.as_str(), payload, None);
+            }
+        }
+    }
+}
+
+impl ChannelRuntimeState {
+    fn account_mut(&mut self, channel: &str, account_id: &str) -> &mut ChannelAccountRuntime {
+        let channel_id = normalize(channel);
+        let account_id = normalize_account_id(account_id);
+        self.by_channel
+            .entry(channel_id)
+            .or_default()
+            .entry(account_id)
+            .or_default()
+    }
+}
+
+fn ingest_runtime_entry(
+    state: &mut ChannelRuntimeState,
+    channel: &str,
+    runtime_value: &Value,
+    account_hint: Option<&str>,
+) {
+    let Some(runtime_map) = runtime_value.as_object() else {
+        return;
+    };
+    if let Some(accounts_value) = runtime_map.get("accounts") {
+        if let Some(accounts_array) = accounts_value.as_array() {
+            for item in accounts_array {
+                ingest_runtime_entry(state, channel, item, account_hint);
+            }
+        }
+    }
+
+    let account_id = runtime_map
+        .get("accountId")
+        .or_else(|| runtime_map.get("account_id"))
+        .or_else(|| runtime_map.get("account"))
+        .and_then(Value::as_str)
+        .or(account_hint)
+        .unwrap_or("default");
+    let account = state.account_mut(channel, account_id);
+
+    account.enabled = runtime_map
+        .get("enabled")
+        .and_then(json_value_as_bool)
+        .or(account.enabled);
+    account.configured = runtime_map
+        .get("configured")
+        .and_then(json_value_as_bool)
+        .or(account.configured);
+    account.linked = runtime_map
+        .get("linked")
+        .and_then(json_value_as_bool)
+        .or(account.linked);
+    account.running = runtime_map
+        .get("running")
+        .and_then(json_value_as_bool)
+        .or(account.running);
+    account.connected = runtime_map
+        .get("connected")
+        .and_then(json_value_as_bool)
+        .or(account.connected);
+    account.reconnect_attempts = runtime_map
+        .get("reconnectAttempts")
+        .or_else(|| runtime_map.get("reconnect_attempts"))
+        .and_then(value_as_u64)
+        .or(account.reconnect_attempts);
+    account.last_connected_at = runtime_map
+        .get("lastConnectedAt")
+        .or_else(|| runtime_map.get("last_connected_at"))
+        .and_then(value_as_u64)
+        .or(account.last_connected_at);
+    account.last_start_at = runtime_map
+        .get("lastStartAt")
+        .or_else(|| runtime_map.get("last_start_at"))
+        .and_then(value_as_u64)
+        .or(account.last_start_at);
+    account.last_stop_at = runtime_map
+        .get("lastStopAt")
+        .or_else(|| runtime_map.get("last_stop_at"))
+        .and_then(value_as_u64)
+        .or(account.last_stop_at);
+    account.last_inbound_at = runtime_map
+        .get("lastInboundAt")
+        .or_else(|| runtime_map.get("last_inbound_at"))
+        .and_then(value_as_u64)
+        .or(account.last_inbound_at);
+    account.last_outbound_at = runtime_map
+        .get("lastOutboundAt")
+        .or_else(|| runtime_map.get("last_outbound_at"))
+        .and_then(value_as_u64)
+        .or(account.last_outbound_at);
+    account.last_error = runtime_map
+        .get("lastError")
+        .or_else(|| runtime_map.get("last_error"))
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or(account.last_error.clone());
+    account.mode = runtime_map
+        .get("mode")
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or(account.mode.clone());
+}
+
+fn infer_channel_from_payload(payload: &Value) -> Option<String> {
+    let map = payload.as_object()?;
+    map.get("channel")
+        .or_else(|| map.get("provider"))
+        .or_else(|| map.get("platform"))
+        .and_then(Value::as_str)
+        .map(normalize)
+}
+
+fn infer_channel_from_event(event: &str, known_channels: &[&str]) -> Option<String> {
+    let normalized_event = normalize(event);
+    let prefix = normalized_event.split('.').next().unwrap_or_default();
+    if known_channels
+        .iter()
+        .any(|channel| channel.eq_ignore_ascii_case(prefix))
+    {
+        return Some(prefix.to_owned());
+    }
+    None
+}
+
+fn normalize_account_id(account_id: &str) -> String {
+    let trimmed = account_id.trim();
+    if trimmed.is_empty() {
+        "default".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+fn value_as_u64(value: &Value) -> Option<u64> {
+    match value {
+        Value::Number(number) => number.as_u64(),
+        Value::String(raw) => raw.trim().parse::<u64>().ok(),
+        _ => None,
     }
 }
 
@@ -16283,6 +16613,153 @@ mod tests {
                 );
             }
             _ => panic!("expected channels.logout handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_reflects_runtime_event_snapshots() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "telegram.status",
+                "payload": {
+                    "accountId": "ops",
+                    "running": true,
+                    "connected": true,
+                    "linked": true,
+                    "configured": true,
+                    "enabled": true,
+                    "mode": "webhook",
+                    "reconnectAttempts": 3,
+                    "lastError": "network"
+                }
+            }))
+            .await;
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "telegram.message",
+                "payload": {
+                    "accountId": "ops"
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-runtime-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/telegram")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/mode")
+                        .and_then(serde_json::Value::as_str),
+                    Some("webhook")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/reconnectAttempts")
+                        .and_then(serde_json::Value::as_u64),
+                    Some(3)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/lastError")
+                        .and_then(serde_json::Value::as_str),
+                    Some("network")
+                );
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/lastInboundAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channels/telegram/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_logout_marks_runtime_offline() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "slack.status",
+                "payload": {
+                    "channel": "slack",
+                    "accountId": "default",
+                    "running": true,
+                    "connected": true
+                }
+            }))
+            .await;
+
+        let logout = RpcRequestFrame {
+            id: "req-channels-logout-runtime".to_owned(),
+            method: "channels.logout".to_owned(),
+            params: serde_json::json!({
+                "channel": "slack",
+                "accountId": "default"
+            }),
+        };
+        let out = dispatcher.handle_request(&logout).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        let status = RpcRequestFrame {
+            id: "req-channels-logout-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/slack/0/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(false)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/slack/0/running")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(false)
+                );
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/slack/0/lastStopAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+            }
+            _ => panic!("expected channels.status handled"),
         }
     }
 
