@@ -11423,7 +11423,7 @@ struct CronRunsParams {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct ChannelsStatusParams {
     probe: Option<bool>,
     #[serde(rename = "timeoutMs", alias = "timeout_ms")]
@@ -11431,7 +11431,7 @@ struct ChannelsStatusParams {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct ChannelsLogoutParams {
     channel: Option<String>,
     #[serde(rename = "accountId", alias = "account_id")]
@@ -16780,6 +16780,36 @@ mod tests {
             }
             _ => panic!("expected channels.logout handled"),
         }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_rejects_unknown_params() {
+        let dispatcher = RpcDispatcher::new();
+        let status = RpcRequestFrame {
+            id: "req-channels-status-unknown".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": true,
+                "unexpected": true
+            }),
+        };
+        let out = dispatcher.handle_request(&status).await;
+        assert!(matches!(out, RpcDispatchOutcome::Error { code: 400, .. }));
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_logout_rejects_unknown_params() {
+        let dispatcher = RpcDispatcher::new();
+        let logout = RpcRequestFrame {
+            id: "req-channels-logout-unknown".to_owned(),
+            method: "channels.logout".to_owned(),
+            params: serde_json::json!({
+                "channel": "discord",
+                "extra": "value"
+            }),
+        };
+        let out = dispatcher.handle_request(&logout).await;
+        assert!(matches!(out, RpcDispatchOutcome::Error { code: 400, .. }));
     }
 
     #[tokio::test]

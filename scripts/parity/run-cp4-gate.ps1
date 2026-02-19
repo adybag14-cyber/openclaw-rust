@@ -20,6 +20,8 @@ $tests = @(
   "scheduler::tests::mention_activation_accepts_group_message_when_detection_unavailable",
   "scheduler::tests::mention_activation_bypasses_for_authorized_control_command",
   "gateway::tests::dispatcher_channels_methods_report_status_and_validate_logout",
+  "gateway::tests::dispatcher_channels_status_rejects_unknown_params",
+  "gateway::tests::dispatcher_channels_logout_rejects_unknown_params",
   "gateway::tests::dispatcher_channels_status_reflects_runtime_event_snapshots",
   "gateway::tests::dispatcher_channels_logout_marks_runtime_offline",
   "gateway::tests::dispatcher_channels_status_ingests_channel_accounts_runtime_map",
