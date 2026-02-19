@@ -2103,7 +2103,25 @@ impl RpcDispatcher {
             if runtime_accounts.is_empty() {
                 runtime_accounts.push(("default".to_owned(), ChannelAccountRuntime::default()));
             }
-            let default_account_id = if runtime_accounts
+            let hinted_default_account_id = self.channel_runtime.default_account_for_channel(&id).await;
+            let default_account_id = if let Some(account_id) = hinted_default_account_id {
+                if runtime_accounts
+                    .iter()
+                    .any(|(candidate, _)| candidate.eq_ignore_ascii_case(&account_id))
+                {
+                    account_id
+                } else if runtime_accounts
+                    .iter()
+                    .any(|(account_id, _)| account_id.eq_ignore_ascii_case("default"))
+                {
+                    "default".to_owned()
+                } else {
+                    runtime_accounts
+                        .first()
+                        .map(|(account_id, _)| account_id.clone())
+                        .unwrap_or_else(|| "default".to_owned())
+                }
+            } else if runtime_accounts
                 .iter()
                 .any(|(account_id, _)| account_id.eq_ignore_ascii_case("default"))
             {
@@ -7895,6 +7913,7 @@ struct ChannelRuntimeRegistry {
 #[derive(Debug, Clone, Default)]
 struct ChannelRuntimeState {
     by_channel: HashMap<String, HashMap<String, ChannelAccountRuntime>>,
+    default_account_by_channel: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -7933,6 +7952,15 @@ impl ChannelRuntimeRegistry {
             .collect::<Vec<_>>();
         entries.sort_by(|(left, _), (right, _)| left.cmp(right));
         entries
+    }
+
+    async fn default_account_for_channel(&self, channel: &str) -> Option<String> {
+        let normalized_channel = normalize(channel);
+        let guard = self.state.lock().await;
+        guard
+            .default_account_by_channel
+            .get(&normalized_channel)
+            .cloned()
     }
 
     async fn mark_outbound(&self, channel: &str, account_id: &str, ts: u64) {
@@ -7999,6 +8027,30 @@ impl ChannelRuntimeRegistry {
                     }
                 }
             }
+            if let Some(default_account_value) = map
+                .get("channelDefaultAccountId")
+                .or_else(|| map.get("channel_default_account_id"))
+            {
+                if let Some(default_account_map) = default_account_value.as_object() {
+                    for (channel_id, account_id_value) in default_account_map {
+                        if let Some(account_id) = account_id_value.as_str() {
+                            guard.set_default_account(channel_id, account_id);
+                        }
+                    }
+                }
+            }
+            if let Some(channel) = inferred_payload_channel
+                .as_deref()
+                .or(inferred_channel.as_deref())
+            {
+                if let Some(account_id) = map
+                    .get("defaultAccountId")
+                    .or_else(|| map.get("default_account_id"))
+                    .and_then(Value::as_str)
+                {
+                    guard.set_default_account(channel, account_id);
+                }
+            }
         }
 
         if payload.as_object().is_some() {
@@ -8018,6 +8070,12 @@ impl ChannelRuntimeState {
             .or_default()
             .entry(account_id)
             .or_default()
+    }
+
+    fn set_default_account(&mut self, channel: &str, account_id: &str) {
+        let channel_id = normalize(channel);
+        let account_id = normalize_account_id(account_id);
+        self.default_account_by_channel.insert(channel_id, account_id);
     }
 }
 
@@ -16953,6 +17011,94 @@ mod tests {
                         .pointer("/channelAccounts/discord/0/lastOutboundAt")
                         .and_then(serde_json::Value::as_u64),
                     Some(1234)
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_honors_default_account_hints_from_runtime_payload() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channelAccounts": {
+                        "discord": {
+                            "default": {
+                                "running": true,
+                                "connected": false,
+                                "mode": "polling"
+                            },
+                            "ops": {
+                                "running": true,
+                                "connected": true,
+                                "mode": "webhook"
+                            }
+                        }
+                    },
+                    "channelDefaultAccountId": {
+                        "discord": "ops"
+                    }
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-runtime-default-hint-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/discord")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channels/discord/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channels/discord/running")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                let discord_accounts = payload
+                    .pointer("/channelAccounts/discord")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let ops_account = discord_accounts
+                    .iter()
+                    .find(|entry| {
+                        entry
+                            .pointer("/accountId")
+                            .and_then(serde_json::Value::as_str)
+                            == Some("ops")
+                    })
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                assert_eq!(
+                    ops_account
+                        .pointer("/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    ops_account
+                        .pointer("/mode")
+                        .and_then(serde_json::Value::as_str),
+                    Some("webhook")
                 );
             }
             _ => panic!("expected channels.status handled"),
