@@ -115,7 +115,28 @@ benchmark_summary="- Benchmark latency(us): unavailable"
 benchmark_json_fragment='null'
 if [[ -f "${benchmark_file}" ]]; then
   benchmark_json_fragment="$(cat "${benchmark_file}")"
-  benchmark_summary="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], "r", encoding="utf-8")); lat=data.get("latencyUs", {}); tp=data.get("throughputOpsPerSec", 0.0); rss=data.get("rssKiB"); print(f"- Benchmark latency(us): p50={lat.get(\"p50\")}, p95={lat.get(\"p95\")}, p99={lat.get(\"p99\")}, throughput={tp:.2f} ops/s, rssKiB={rss}")' "${benchmark_file}")"
+  benchmark_summary="$(
+    python3 - "${benchmark_file}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+lat = data.get("latencyUs", {})
+tp = float(data.get("throughputOpsPerSec", 0.0))
+rss = data.get("rssKiB")
+print(
+    "- Benchmark latency(us): "
+    f"p50={lat.get('p50')}, "
+    f"p95={lat.get('p95')}, "
+    f"p99={lat.get('p99')}, "
+    f"throughput={tp:.2f} ops/s, "
+    f"rssKiB={rss}"
+)
+PY
+  )"
 fi
 
 cat > "${summary_file}" <<EOF
