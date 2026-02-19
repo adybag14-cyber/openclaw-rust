@@ -133,7 +133,7 @@ Exit gates:
 - Channel acceptance suite green per migrated channel.
 - Canary chat behavior matches TS reference runs.
 
-Status: **Partial (Wave-1 foundations + runtime lifecycle snapshot ingestion implemented; channel acceptance/canary parity pending)**
+Status: **Partial (Wave-1 foundations + runtime lifecycle snapshot ingestion implemented, including upstream-shaped `channelAccounts` map ingestion and `channels.logout` runtime-aware result semantics; channel acceptance/canary parity pending)**
 
 ## CP5: Nodes, Browser, Canvas, Device Flows
 

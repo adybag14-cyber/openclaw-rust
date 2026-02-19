@@ -2079,6 +2079,7 @@ impl RpcDispatcher {
         let mut channel_order = Vec::new();
         let mut channel_labels = serde_json::Map::new();
         let mut channel_detail_labels = serde_json::Map::new();
+        let mut channel_system_images = serde_json::Map::new();
         let mut channel_meta = Vec::new();
         let mut channels = serde_json::Map::new();
         let mut channel_accounts = serde_json::Map::new();
@@ -2087,13 +2088,16 @@ impl RpcDispatcher {
         for capability in &self.channel_capabilities {
             let id = capability.name.to_owned();
             let label = channel_label(capability.name);
+            let system_image = channel_system_image(capability.name).to_owned();
             channel_order.push(id.clone());
             channel_labels.insert(id.clone(), Value::String(label.clone()));
             channel_detail_labels.insert(id.clone(), Value::String(label.clone()));
+            channel_system_images.insert(id.clone(), Value::String(system_image.clone()));
             channel_meta.push(json!({
                 "id": id,
                 "label": label,
-                "detailLabel": label
+                "detailLabel": label,
+                "systemImage": system_image
             }));
             let mut runtime_accounts = self.channel_runtime.accounts_for_channel(&id).await;
             if runtime_accounts.is_empty() {
@@ -2186,6 +2190,7 @@ impl RpcDispatcher {
             "channelOrder": channel_order,
             "channelLabels": channel_labels,
             "channelDetailLabels": channel_detail_labels,
+            "channelSystemImages": channel_system_images,
             "channelMeta": channel_meta,
             "channels": channels,
             "channelAccounts": channel_accounts,
@@ -2216,15 +2221,16 @@ impl RpcDispatcher {
                 "channels.logout channel={channel} account={account_id}"
             ))
             .await;
-        self.channel_runtime
+        let logged_out = self
+            .channel_runtime
             .mark_logout(channel.as_str(), account_id.as_str(), now_ms())
             .await;
         RpcDispatchOutcome::Handled(json!({
             "channel": channel,
             "accountId": account_id,
-            "cleared": false,
-            "loggedOut": false,
-            "supported": false
+            "cleared": logged_out,
+            "loggedOut": logged_out,
+            "supported": true
         }))
     }
 
@@ -7929,12 +7935,14 @@ impl ChannelRuntimeRegistry {
         account.last_outbound_at = Some(ts);
     }
 
-    async fn mark_logout(&self, channel: &str, account_id: &str, ts: u64) {
+    async fn mark_logout(&self, channel: &str, account_id: &str, ts: u64) -> bool {
         let mut guard = self.state.lock().await;
         let account = guard.account_mut(channel, account_id);
+        let was_active = account.running.unwrap_or(false) || account.connected.unwrap_or(false);
         account.connected = Some(false);
         account.running = Some(false);
         account.last_stop_at = Some(ts);
+        was_active
     }
 
     async fn ingest_event(
@@ -7972,6 +7980,15 @@ impl ChannelRuntimeRegistry {
                     }
                 }
             }
+            if let Some(channel_accounts_value) =
+                map.get("channelAccounts").or_else(|| map.get("channel_accounts"))
+            {
+                if let Some(channel_accounts_map) = channel_accounts_value.as_object() {
+                    for (channel_id, accounts_value) in channel_accounts_map {
+                        ingest_accounts_value(&mut guard, channel_id, accounts_value, None);
+                    }
+                }
+            }
         }
 
         if payload.as_object().is_some() {
@@ -8003,11 +8020,11 @@ fn ingest_runtime_entry(
     let Some(runtime_map) = runtime_value.as_object() else {
         return;
     };
+    let has_inline_runtime_fields = runtime_map_has_inline_runtime_fields(runtime_map);
     if let Some(accounts_value) = runtime_map.get("accounts") {
-        if let Some(accounts_array) = accounts_value.as_array() {
-            for item in accounts_array {
-                ingest_runtime_entry(state, channel, item, account_hint);
-            }
+        ingest_accounts_value(state, channel, accounts_value, account_hint);
+        if !has_inline_runtime_fields {
+            return;
         }
     }
 
@@ -8085,9 +8102,65 @@ fn ingest_runtime_entry(
         .or(account.mode.clone());
 }
 
+fn runtime_map_has_inline_runtime_fields(
+    runtime_map: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    runtime_map.contains_key("accountId")
+        || runtime_map.contains_key("account_id")
+        || runtime_map.contains_key("account")
+        || runtime_map.contains_key("enabled")
+        || runtime_map.contains_key("configured")
+        || runtime_map.contains_key("linked")
+        || runtime_map.contains_key("running")
+        || runtime_map.contains_key("connected")
+        || runtime_map.contains_key("reconnectAttempts")
+        || runtime_map.contains_key("reconnect_attempts")
+        || runtime_map.contains_key("lastConnectedAt")
+        || runtime_map.contains_key("last_connected_at")
+        || runtime_map.contains_key("lastStartAt")
+        || runtime_map.contains_key("last_start_at")
+        || runtime_map.contains_key("lastStopAt")
+        || runtime_map.contains_key("last_stop_at")
+        || runtime_map.contains_key("lastInboundAt")
+        || runtime_map.contains_key("last_inbound_at")
+        || runtime_map.contains_key("lastOutboundAt")
+        || runtime_map.contains_key("last_outbound_at")
+        || runtime_map.contains_key("lastError")
+        || runtime_map.contains_key("last_error")
+        || runtime_map.contains_key("mode")
+}
+
+fn ingest_accounts_value(
+    state: &mut ChannelRuntimeState,
+    channel: &str,
+    accounts_value: &Value,
+    account_hint: Option<&str>,
+) {
+    if let Some(accounts_array) = accounts_value.as_array() {
+        for item in accounts_array {
+            ingest_runtime_entry(state, channel, item, account_hint);
+        }
+        return;
+    }
+    if let Some(accounts_map) = accounts_value.as_object() {
+        let mut ingested = false;
+        for (account_id, runtime_value) in accounts_map {
+            if runtime_value.is_object() {
+                ingest_runtime_entry(state, channel, runtime_value, Some(account_id.as_str()));
+                ingested = true;
+            }
+        }
+        if !ingested {
+            ingest_runtime_entry(state, channel, accounts_value, account_hint);
+        }
+    }
+}
+
 fn infer_channel_from_payload(payload: &Value) -> Option<String> {
     let map = payload.as_object()?;
     map.get("channel")
+        .or_else(|| map.get("channelId"))
+        .or_else(|| map.get("channel_id"))
         .or_else(|| map.get("provider"))
         .or_else(|| map.get("platform"))
         .and_then(Value::as_str)
@@ -8096,12 +8169,13 @@ fn infer_channel_from_payload(payload: &Value) -> Option<String> {
 
 fn infer_channel_from_event(event: &str, known_channels: &[&str]) -> Option<String> {
     let normalized_event = normalize(event);
-    let prefix = normalized_event.split('.').next().unwrap_or_default();
-    if known_channels
-        .iter()
-        .any(|channel| channel.eq_ignore_ascii_case(prefix))
-    {
-        return Some(prefix.to_owned());
+    for segment in normalized_event.split('.') {
+        if known_channels
+            .iter()
+            .any(|channel| channel.eq_ignore_ascii_case(segment))
+        {
+            return Some(segment.to_owned());
+        }
     }
     None
 }
@@ -12268,6 +12342,18 @@ fn channel_label(id: &str) -> String {
             out.push_str(chars.as_str());
             out
         }
+    }
+}
+
+fn channel_system_image(id: &str) -> &'static str {
+    match normalize(id).as_str() {
+        "whatsapp" => "message.badge.waveform",
+        "telegram" => "paperplane",
+        "slack" => "bubble.left.and.bubble.right",
+        "discord" => "bubble.left",
+        "signal" => "lock.bubble.right",
+        "webchat" => "rectangle.and.pencil.and.ellipsis",
+        _ => "bubble.left",
     }
 }
 
@@ -16565,6 +16651,12 @@ mod tests {
                         .and_then(serde_json::Value::as_str),
                     Some("default")
                 );
+                assert_eq!(
+                    payload
+                        .pointer("/channelSystemImages/discord")
+                        .and_then(serde_json::Value::as_str),
+                    Some("bubble.left")
+                );
                 assert!(payload
                     .pointer("/channelAccounts/discord/0/probe/ok")
                     .and_then(serde_json::Value::as_bool)
@@ -16608,6 +16700,12 @@ mod tests {
                 assert_eq!(
                     payload
                         .pointer("/supported")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/loggedOut")
                         .and_then(serde_json::Value::as_bool),
                     Some(false)
                 );
@@ -16727,8 +16825,29 @@ mod tests {
                 "accountId": "default"
             }),
         };
-        let out = dispatcher.handle_request(&logout).await;
-        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+        match dispatcher.handle_request(&logout).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/supported")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/loggedOut")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/cleared")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected channels.logout handled"),
+        }
 
         let status = RpcRequestFrame {
             id: "req-channels-logout-status".to_owned(),
@@ -16757,6 +16876,73 @@ mod tests {
                         .and_then(serde_json::Value::as_u64)
                         .unwrap_or(0)
                         > 0
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_ingests_channel_accounts_runtime_map() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channelAccounts": {
+                        "discord": {
+                            "ops": {
+                                "running": true,
+                                "connected": true,
+                                "mode": "webhook",
+                                "reconnectAttempts": 2,
+                                "lastOutboundAt": 1234
+                            }
+                        }
+                    }
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-runtime-map-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/discord")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/mode")
+                        .and_then(serde_json::Value::as_str),
+                    Some("webhook")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/reconnectAttempts")
+                        .and_then(serde_json::Value::as_u64),
+                    Some(2)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/lastOutboundAt")
+                        .and_then(serde_json::Value::as_u64),
+                    Some(1234)
                 );
             }
             _ => panic!("expected channels.status handled"),
