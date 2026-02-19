@@ -2104,34 +2104,19 @@ impl RpcDispatcher {
                 runtime_accounts.push(("default".to_owned(), ChannelAccountRuntime::default()));
             }
             let hinted_default_account_id = self.channel_runtime.default_account_for_channel(&id).await;
-            let default_account_id = if let Some(account_id) = hinted_default_account_id {
-                if runtime_accounts
-                    .iter()
-                    .any(|(candidate, _)| candidate.eq_ignore_ascii_case(&account_id))
-                {
-                    account_id
-                } else if runtime_accounts
-                    .iter()
-                    .any(|(account_id, _)| account_id.eq_ignore_ascii_case("default"))
-                {
-                    "default".to_owned()
-                } else {
-                    runtime_accounts
-                        .first()
-                        .map(|(account_id, _)| account_id.clone())
-                        .unwrap_or_else(|| "default".to_owned())
+            let default_account_id = resolve_default_account_id(
+                runtime_accounts.as_slice(),
+                hinted_default_account_id.as_deref(),
+            );
+            runtime_accounts.sort_by(|(left_id, _), (right_id, _)| {
+                let left_default = left_id.eq_ignore_ascii_case(&default_account_id);
+                let right_default = right_id.eq_ignore_ascii_case(&default_account_id);
+                match (left_default, right_default) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => left_id.cmp(right_id),
                 }
-            } else if runtime_accounts
-                .iter()
-                .any(|(account_id, _)| account_id.eq_ignore_ascii_case("default"))
-            {
-                "default".to_owned()
-            } else {
-                runtime_accounts
-                    .first()
-                    .map(|(account_id, _)| account_id.clone())
-                    .unwrap_or_else(|| "default".to_owned())
-            };
+            });
 
             let mut default_snapshot = ChannelAccountRuntime::default();
             let mut accounts_payload = Vec::new();
@@ -2141,7 +2126,7 @@ impl RpcDispatcher {
                 }
                 let mut account = json!({
                     "accountId": account_id,
-                    "name": account_id,
+                    "name": snapshot.name.clone().unwrap_or_else(|| account_id.clone()),
                     "enabled": snapshot.enabled.unwrap_or(true),
                     "configured": snapshot.configured.unwrap_or(false),
                     "linked": snapshot.linked.unwrap_or(false),
@@ -7973,6 +7958,7 @@ struct ChannelRuntimeState {
 
 #[derive(Debug, Clone, Default)]
 struct ChannelAccountRuntime {
+    name: Option<String>,
     enabled: Option<bool>,
     configured: Option<bool>,
     linked: Option<bool>,
@@ -8045,7 +8031,18 @@ impl ChannelRuntimeRegistry {
         let Some(accounts) = guard.by_channel.get_mut(&channel_id) else {
             return false;
         };
-        let Some(account) = accounts.get_mut(&account_id) else {
+        let resolved_account_id = if accounts.contains_key(&account_id) {
+            account_id
+        } else if let Some(existing) = accounts
+            .keys()
+            .find(|candidate| candidate.eq_ignore_ascii_case(&account_id))
+            .cloned()
+        {
+            existing
+        } else {
+            return false;
+        };
+        let Some(account) = accounts.get_mut(&resolved_account_id) else {
             return false;
         };
         let was_active = account.running.unwrap_or(false) || account.connected.unwrap_or(false);
@@ -8111,9 +8108,9 @@ impl ChannelRuntimeRegistry {
             {
                 if let Some(default_account_map) = default_account_value.as_object() {
                     for (channel_id, account_id_value) in default_account_map {
-                        if let Some(account_id) = account_id_value.as_str() {
+                        if let Some(account_id) = value_as_account_id(account_id_value) {
                             let canonical = canonicalize_runtime_channel_id(channel_id);
-                            guard.set_default_account(canonical.as_str(), account_id);
+                            guard.set_default_account(canonical.as_str(), account_id.as_str());
                         }
                     }
                 }
@@ -8125,9 +8122,9 @@ impl ChannelRuntimeRegistry {
                 if let Some(account_id) = map
                     .get("defaultAccountId")
                     .or_else(|| map.get("default_account_id"))
-                    .and_then(Value::as_str)
+                    .and_then(value_as_account_id)
                 {
-                    guard.set_default_account(channel, account_id);
+                    guard.set_default_account(channel, account_id.as_str());
                 }
             }
         }
@@ -8171,9 +8168,9 @@ fn ingest_runtime_entry(
     if let Some(default_account_id) = runtime_map
         .get("defaultAccountId")
         .or_else(|| runtime_map.get("default_account_id"))
-        .and_then(Value::as_str)
+        .and_then(value_as_account_id)
     {
-        state.set_default_account(channel, default_account_id);
+        state.set_default_account(channel, default_account_id.as_str());
     }
     if let Some(accounts_value) = runtime_map.get("accounts") {
         ingest_accounts_value(state, channel, accounts_value, account_hint);
@@ -8190,6 +8187,15 @@ fn ingest_runtime_entry(
         .or(account_hint)
         .unwrap_or("default");
     let account = state.account_mut(channel, account_id);
+    account.name = runtime_map
+        .get("name")
+        .or_else(|| runtime_map.get("displayName"))
+        .or_else(|| runtime_map.get("display_name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or(account.name.clone());
 
     account.enabled = runtime_map
         .get("enabled")
@@ -8269,7 +8275,7 @@ fn ingest_runtime_entry(
     account.allow_from = runtime_map
         .get("allowFrom")
         .or_else(|| runtime_map.get("allow_from"))
-        .and_then(value_as_string_vec)
+        .and_then(value_as_string_list)
         .or(account.allow_from.clone());
     account.token_source = runtime_map
         .get("tokenSource")
@@ -8338,6 +8344,9 @@ fn runtime_map_has_inline_runtime_fields(
     runtime_map.contains_key("accountId")
         || runtime_map.contains_key("account_id")
         || runtime_map.contains_key("account")
+        || runtime_map.contains_key("name")
+        || runtime_map.contains_key("displayName")
+        || runtime_map.contains_key("display_name")
         || runtime_map.contains_key("enabled")
         || runtime_map.contains_key("configured")
         || runtime_map.contains_key("linked")
@@ -8457,16 +8466,45 @@ fn value_as_u64(value: &Value) -> Option<u64> {
     }
 }
 
-fn value_as_string_vec(value: &Value) -> Option<Vec<String>> {
-    let values = value.as_array()?;
-    let items = values
-        .iter()
-        .filter_map(|item| item.as_str())
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-    (!items.is_empty()).then_some(items)
+fn value_as_account_id(value: &Value) -> Option<String> {
+    match value {
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            }
+        }
+        Value::Number(number) => number
+            .as_u64()
+            .map(|n| n.to_string())
+            .or_else(|| number.as_i64().map(|n| n.to_string())),
+        _ => None,
+    }
+}
+
+fn value_as_string_list(value: &Value) -> Option<Vec<String>> {
+    if let Some(values) = value.as_array() {
+        let items = values
+            .iter()
+            .filter_map(|item| item.as_str())
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        return (!items.is_empty()).then_some(items);
+    }
+    if let Some(raw) = value.as_str() {
+        let items = raw
+            .split([',', '\n', ';'])
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        return (!items.is_empty()).then_some(items);
+    }
+    None
 }
 
 fn value_as_optional_path_value(value: &Value) -> Option<Value> {
@@ -8482,6 +8520,30 @@ fn value_as_optional_path_value(value: &Value) -> Option<Value> {
         }
         _ => None,
     }
+}
+
+fn resolve_default_account_id(
+    runtime_accounts: &[(String, ChannelAccountRuntime)],
+    hinted_default_account_id: Option<&str>,
+) -> String {
+    if let Some(hint) = hinted_default_account_id {
+        if let Some((existing_account_id, _)) = runtime_accounts
+            .iter()
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(hint))
+        {
+            return existing_account_id.clone();
+        }
+    }
+    if let Some((default_account_id, _)) = runtime_accounts
+        .iter()
+        .find(|(account_id, _)| account_id.eq_ignore_ascii_case("default"))
+    {
+        return default_account_id.clone();
+    }
+    runtime_accounts
+        .first()
+        .map(|(account_id, _)| account_id.clone())
+        .unwrap_or_else(|| "default".to_owned())
 }
 
 struct DeviceRegistry {
@@ -17598,13 +17660,13 @@ mod tests {
                     payload
                         .pointer("/channelAccounts/discord/0/accountId")
                         .and_then(serde_json::Value::as_str),
-                    Some("default")
+                    Some("ops")
                 );
                 assert_eq!(
                     payload
                         .pointer("/channelAccounts/discord/1/accountId")
                         .and_then(serde_json::Value::as_str),
-                    Some("ops")
+                    Some("default")
                 );
             }
             _ => panic!("expected channels.status handled"),
@@ -18150,6 +18212,568 @@ mod tests {
                         .pointer("/channelAccounts/signal/0/application/name")
                         .and_then(serde_json::Value::as_str),
                     Some("signal-cli")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_logout_matches_account_id_case_insensitively() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "slack.status",
+                "payload": {
+                    "channel": "slack",
+                    "accountId": "ops",
+                    "running": true,
+                    "connected": true
+                }
+            }))
+            .await;
+        let logout = RpcRequestFrame {
+            id: "req-channels-logout-case-insensitive".to_owned(),
+            method: "channels.logout".to_owned(),
+            params: serde_json::json!({
+                "channel": "slack",
+                "accountId": "OPS"
+            }),
+        };
+        match dispatcher.handle_request(&logout).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/loggedOut")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/cleared")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected channels.logout handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_logout_blank_account_id_defaults_default() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "telegram.status",
+                "payload": {
+                    "accountId": "default",
+                    "running": true,
+                    "connected": true
+                }
+            }))
+            .await;
+        let logout = RpcRequestFrame {
+            id: "req-channels-logout-blank-account".to_owned(),
+            method: "channels.logout".to_owned(),
+            params: serde_json::json!({
+                "channel": "telegram",
+                "accountId": "   "
+            }),
+        };
+        match dispatcher.handle_request(&logout).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("default")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/loggedOut")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected channels.logout handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_canonicalizes_default_account_id_casing() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channelAccounts": {
+                        "discord": {
+                            "ops": {
+                                "running": true,
+                                "connected": true
+                            }
+                        }
+                    },
+                    "channelDefaultAccountId": {
+                        "discord": "OPS"
+                    }
+                }
+            }))
+            .await;
+        let status = RpcRequestFrame {
+            id: "req-channels-status-canonical-default-case".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/discord")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_orders_default_account_first() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channelAccounts": {
+                        "discord": {
+                            "zeta": {
+                                "running": true,
+                                "connected": true
+                            },
+                            "alpha": {
+                                "running": true,
+                                "connected": false
+                            }
+                        }
+                    },
+                    "channelDefaultAccountId": {
+                        "discord": "zeta"
+                    }
+                }
+            }))
+            .await;
+        let status = RpcRequestFrame {
+            id: "req-channels-status-default-account-order".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("zeta")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/1/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("alpha")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_ingests_runtime_account_name() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channelAccounts": {
+                        "discord": {
+                            "ops": {
+                                "name": "Ops Bot",
+                                "running": true,
+                                "connected": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await;
+        let status = RpcRequestFrame {
+            id: "req-channels-status-runtime-name".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/name")
+                        .and_then(serde_json::Value::as_str),
+                    Some("Ops Bot")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_ingests_runtime_display_name_alias() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channelAccounts": {
+                        "discord": {
+                            "ops": {
+                                "display_name": "Ops Display",
+                                "running": true,
+                                "connected": true
+                            }
+                        }
+                    }
+                }
+            }))
+            .await;
+        let status = RpcRequestFrame {
+            id: "req-channels-status-runtime-display-name".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/name")
+                        .and_then(serde_json::Value::as_str),
+                    Some("Ops Display")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_ingests_snake_case_extended_metadata_fields() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channel_accounts": {
+                        "signal-cli": {
+                            "ops": {
+                                "running": true,
+                                "connected": true,
+                                "dm_policy": "allow",
+                                "allow_from": ["alice", " bob "],
+                                "token_source": "env",
+                                "bot_token_source": "config",
+                                "app_token_source": "vault",
+                                "base_url": "https://signal.example",
+                                "allow_unmentioned_groups": true,
+                                "cli_path": null,
+                                "db_path": "/tmp/signal.db",
+                                "port": "7788"
+                            }
+                        }
+                    },
+                    "channel_default_account_id": {
+                        "signal-cli": "ops"
+                    }
+                }
+            }))
+            .await;
+        let status = RpcRequestFrame {
+            id: "req-channels-status-snake-runtime-metadata".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/dmPolicy")
+                        .and_then(serde_json::Value::as_str),
+                    Some("allow")
+                );
+                assert_eq!(
+                    payload.pointer("/channelAccounts/signal/0/allowFrom"),
+                    Some(&serde_json::json!(["alice", "bob"]))
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/tokenSource")
+                        .and_then(serde_json::Value::as_str),
+                    Some("env")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/botTokenSource")
+                        .and_then(serde_json::Value::as_str),
+                    Some("config")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/appTokenSource")
+                        .and_then(serde_json::Value::as_str),
+                    Some("vault")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/baseUrl")
+                        .and_then(serde_json::Value::as_str),
+                    Some("https://signal.example")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/allowUnmentionedGroups")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert!(payload
+                    .pointer("/channelAccounts/signal/0/cliPath")
+                    .is_some_and(|value| value.is_null()));
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/dbPath")
+                        .and_then(serde_json::Value::as_str),
+                    Some("/tmp/signal.db")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/port")
+                        .and_then(serde_json::Value::as_u64),
+                    Some(7788)
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_parses_allow_from_string_list() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channelAccounts": {
+                        "discord": {
+                            "ops": {
+                                "running": true,
+                                "connected": true,
+                                "allowFrom": "alice, bob\ncarol; dave"
+                            }
+                        }
+                    },
+                    "channelDefaultAccountId": {
+                        "discord": "ops"
+                    }
+                }
+            }))
+            .await;
+        let status = RpcRequestFrame {
+            id: "req-channels-status-allow-from-string".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/channelAccounts/discord/0/allowFrom"),
+                    Some(&serde_json::json!(["alice", "bob", "carol", "dave"]))
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_accepts_numeric_channel_default_account_id_map_values() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channelAccounts": {
+                        "discord": {
+                            "123": {
+                                "running": true,
+                                "connected": true
+                            }
+                        }
+                    },
+                    "channelDefaultAccountId": {
+                        "discord": 123
+                    }
+                }
+            }))
+            .await;
+        let status = RpcRequestFrame {
+            id: "req-channels-status-numeric-default-map".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/discord")
+                        .and_then(serde_json::Value::as_str),
+                    Some("123")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_accepts_numeric_payload_default_account_id() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.runtime",
+                "payload": {
+                    "channel": "discord",
+                    "accountId": "777",
+                    "defaultAccountId": 777,
+                    "running": true,
+                    "connected": true
+                }
+            }))
+            .await;
+        let status = RpcRequestFrame {
+            id: "req-channels-status-numeric-default-payload".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/discord")
+                        .and_then(serde_json::Value::as_str),
+                    Some("777")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_accepts_numeric_nested_default_account_id() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channels": {
+                        "discord": {
+                            "defaultAccountId": 42,
+                            "accounts": {
+                                "42": {
+                                    "running": true,
+                                    "connected": true
+                                }
+                            }
+                        }
+                    }
+                }
+            }))
+            .await;
+        let status = RpcRequestFrame {
+            id: "req-channels-status-numeric-default-nested".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/discord")
+                        .and_then(serde_json::Value::as_str),
+                    Some("42")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_parses_last_probe_at_from_string_number() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channelAccounts": {
+                        "discord": {
+                            "ops": {
+                                "running": true,
+                                "connected": true,
+                                "lastProbeAt": "1234"
+                            }
+                        }
+                    },
+                    "channelDefaultAccountId": {
+                        "discord": "ops"
+                    }
+                }
+            }))
+            .await;
+        let status = RpcRequestFrame {
+            id: "req-channels-status-last-probe-string".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/lastProbeAt")
+                        .and_then(serde_json::Value::as_u64),
+                    Some(1234)
                 );
             }
             _ => panic!("expected channels.status handled"),

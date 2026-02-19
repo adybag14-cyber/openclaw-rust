@@ -43,6 +43,18 @@ tests=(
   "gateway::tests::dispatcher_channels_status_probe_true_sets_account_last_probe_at"
   "gateway::tests::dispatcher_channels_status_ingests_extended_account_metadata_fields"
   "gateway::tests::dispatcher_channels_status_ingests_runtime_probe_audit_and_application_payloads"
+  "gateway::tests::dispatcher_channels_logout_matches_account_id_case_insensitively"
+  "gateway::tests::dispatcher_channels_logout_blank_account_id_defaults_default"
+  "gateway::tests::dispatcher_channels_status_canonicalizes_default_account_id_casing"
+  "gateway::tests::dispatcher_channels_status_orders_default_account_first"
+  "gateway::tests::dispatcher_channels_status_ingests_runtime_account_name"
+  "gateway::tests::dispatcher_channels_status_ingests_runtime_display_name_alias"
+  "gateway::tests::dispatcher_channels_status_ingests_snake_case_extended_metadata_fields"
+  "gateway::tests::dispatcher_channels_status_parses_allow_from_string_list"
+  "gateway::tests::dispatcher_channels_status_accepts_numeric_channel_default_account_id_map_values"
+  "gateway::tests::dispatcher_channels_status_accepts_numeric_payload_default_account_id"
+  "gateway::tests::dispatcher_channels_status_accepts_numeric_nested_default_account_id"
+  "gateway::tests::dispatcher_channels_status_parses_last_probe_at_from_string_number"
 )
 
 echo -e "test\tduration_ms\tstatus" > "${results_file}"
