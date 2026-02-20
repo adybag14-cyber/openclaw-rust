@@ -296,3 +296,27 @@ jobs:
           name: parity-cp8-artifacts
           path: |
             parity/generated/cp8
+
+  docker-parity-cp9:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout rust repo
+        uses: actions/checkout@v4
+
+      - name: Run CP9 docker parity fixtures
+        run: PARITY_ARTIFACT_DIR=parity/generated/cp9 bash ./scripts/parity/run-cp9-gate.sh
+
+      - name: Publish CP9 summary
+        if: always()
+        run: |
+          if [ -f parity/generated/cp9/cp9-gate-summary.md ]; then
+            cat parity/generated/cp9/cp9-gate-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload CP9 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-cp9-artifacts
+          path: |
+            parity/generated/cp9
