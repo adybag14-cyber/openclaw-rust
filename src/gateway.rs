@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{oneshot, Mutex};
@@ -1575,20 +1577,30 @@ impl RpcDispatcher {
         } else {
             ("mp3", ".mp3", false)
         };
+        let text_chars = text.chars().count();
         let audio_path = next_tts_audio_path(extension);
+        let (audio_bytes, duration_ms, sample_rate_hz) =
+            synthesize_tts_audio_blob(&text, output_format);
+        let audio_base64 = BASE64_STANDARD.encode(&audio_bytes);
         self.system
             .log_line(format!(
                 "tts.convert provider={} channel={} chars={}",
                 state.provider,
                 channel.unwrap_or_else(|| "default".to_owned()),
-                text.chars().count()
+                text_chars
             ))
             .await;
         RpcDispatchOutcome::Handled(json!({
             "audioPath": audio_path,
             "provider": state.provider,
             "outputFormat": output_format,
-            "voiceCompatible": voice_compatible
+            "voiceCompatible": voice_compatible,
+            "audioBytes": audio_bytes.len(),
+            "audioBase64": audio_base64,
+            "durationMs": duration_ms,
+            "sampleRateHz": sample_rate_hz,
+            "channels": 1,
+            "textChars": text_chars
         }))
     }
 
@@ -9397,6 +9409,31 @@ fn next_poll_id() -> String {
 fn next_tts_audio_path(extension: &str) -> String {
     let sequence = TTS_AUDIO_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     format!("memory://tts/audio-{}-{sequence}{extension}", now_ms())
+}
+
+fn synthesize_tts_audio_blob(text: &str, output_format: &str) -> (Vec<u8>, u64, u32) {
+    use sha2::{Digest, Sha256};
+
+    let sample_rate_hz = 24_000_u32;
+    let duration_ms = ((text.chars().count() as u64) * 45).clamp(400, 15_000);
+    let frame_count = ((duration_ms * sample_rate_hz as u64) / 1_000).max(128) as usize;
+    let mut bytes = Vec::with_capacity(frame_count.min(4_096) + 16);
+    let header = if output_format.eq_ignore_ascii_case("opus") {
+        b"OPUSSIM\0"
+    } else {
+        b"MP3SIM\0\0"
+    };
+    bytes.extend_from_slice(header);
+
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    hasher.update(output_format.as_bytes());
+    let digest = hasher.finalize();
+    while bytes.len() < frame_count.min(4_096) + header.len() {
+        bytes.extend_from_slice(&digest);
+    }
+    bytes.truncate(frame_count.min(4_096) + header.len());
+    (bytes, duration_ms, sample_rate_hz)
 }
 
 fn is_supported_tts_provider(provider: &str) -> bool {
@@ -21216,6 +21253,24 @@ mod tests {
                         .pointer("/voiceCompatible")
                         .and_then(serde_json::Value::as_bool),
                     Some(true)
+                );
+                assert!(payload
+                    .pointer("/audioBytes")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some_and(|value| value > 0));
+                assert!(payload
+                    .pointer("/audioBase64")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty()));
+                assert!(payload
+                    .pointer("/durationMs")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some_and(|value| value >= 400));
+                assert_eq!(
+                    payload
+                        .pointer("/sampleRateHz")
+                        .and_then(serde_json::Value::as_u64),
+                    Some(24_000)
                 );
             }
             _ => panic!("expected tts.convert handled"),

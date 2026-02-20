@@ -21,6 +21,7 @@ tests=(
   "tool_runtime::tests::tool_runtime_corpus_matches_expected_outcomes"
   "tool_runtime::tests::tool_runtime_policy_and_loop_guard_enforced_on_tool_host"
   "tool_runtime::tests::tool_runtime_background_exec_process_poll_roundtrip"
+  "tool_runtime::tests::tool_runtime_gateway_and_sessions_tools_cover_history_list_and_reset"
 )
 
 echo -e "test\tduration_ms\tstatus" > "${results_file}"

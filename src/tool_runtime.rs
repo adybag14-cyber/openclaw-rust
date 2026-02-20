@@ -119,15 +119,33 @@ struct ToolRuntimeProcessSession {
     execution: ToolRuntimeProcessExecution,
 }
 
+#[derive(Debug, Clone)]
+struct ToolRuntimeSessionEntry {
+    id: String,
+    role: String,
+    message: String,
+    created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ToolRuntimeSessionTimeline {
+    entries: VecDeque<ToolRuntimeSessionEntry>,
+    updated_at_ms: u64,
+}
+
 pub struct ToolRuntimeHost {
     workspace_root: PathBuf,
     sandbox_root: PathBuf,
     policy: ToolPolicyMatcher,
     loop_guard: ToolLoopGuard,
     transcript_limit: usize,
+    session_history_limit: usize,
+    session_bucket_limit: usize,
     transcript: Mutex<VecDeque<ToolTranscriptEntry>>,
     process_counter: Mutex<u64>,
+    session_entry_counter: Mutex<u64>,
     process_sessions: Mutex<HashMap<String, ToolRuntimeProcessSession>>,
+    session_timelines: Mutex<HashMap<String, ToolRuntimeSessionTimeline>>,
 }
 
 impl ToolRuntimeHost {
@@ -167,9 +185,13 @@ impl ToolRuntimeHost {
             policy: policy_matcher,
             loop_guard,
             transcript_limit: 512,
+            session_history_limit: 256,
+            session_bucket_limit: 256,
             transcript: Mutex::new(VecDeque::new()),
             process_counter: Mutex::new(0),
+            session_entry_counter: Mutex::new(0),
             process_sessions: Mutex::new(HashMap::new()),
+            session_timelines: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -306,6 +328,9 @@ impl ToolRuntimeHost {
             "apply_patch" => self.execute_apply_patch(request).await,
             "exec" => self.execute_exec(request).await,
             "process" => self.execute_process(request).await,
+            "gateway" => self.execute_gateway(request).await,
+            "sessions" => self.execute_sessions(request).await,
+            "message" => self.execute_message(request).await,
             _ => Err(ToolRuntimeError::new(
                 ToolRuntimeErrorCode::UnsupportedTool,
                 format!("unsupported tool `{tool_name}`"),
@@ -588,10 +613,252 @@ impl ToolRuntimeHost {
         }
     }
 
+    async fn execute_gateway(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
+        let action = request
+            .args
+            .get("action")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("status")
+            .to_ascii_lowercase();
+
+        const TOOLS: &[&str] = &[
+            "read",
+            "write",
+            "edit",
+            "apply_patch",
+            "exec",
+            "process",
+            "gateway",
+            "sessions",
+            "message",
+        ];
+
+        match action.as_str() {
+            "status" => Ok(json!({
+                "status": "completed",
+                "connected": true,
+                "workspaceRoot": self.workspace_root.display().to_string(),
+                "sandboxRoot": self.sandbox_root.display().to_string(),
+                "capabilities": {
+                    "tools": TOOLS,
+                    "sessionHistoryLimit": self.session_history_limit,
+                    "sessionBucketLimit": self.session_bucket_limit
+                },
+                "ts": now_ms()
+            })),
+            "health" => Ok(json!({
+                "status": "ok",
+                "ok": true,
+                "ts": now_ms()
+            })),
+            "methods" | "tools" => Ok(json!({
+                "status": "completed",
+                "methods": TOOLS,
+                "count": TOOLS.len()
+            })),
+            _ => Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                format!("unsupported gateway action `{action}`"),
+            )),
+        }
+    }
+
+    async fn execute_sessions(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
+        let action = request
+            .args
+            .get("action")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("history")
+            .to_ascii_lowercase();
+        match action.as_str() {
+            "send" | "append" => {
+                let message =
+                    first_string_arg(&request.args, &["message", "content", "text", "prompt"])
+                        .ok_or_else(|| {
+                            ToolRuntimeError::new(
+                                ToolRuntimeErrorCode::InvalidArgs,
+                                "missing required parameter `message`",
+                            )
+                        })?;
+                let session_id = first_string_arg(&request.args, &["sessionId", "session_id"])
+                    .unwrap_or_else(|| request.session_id.clone());
+                let role = normalize_message_role(
+                    first_string_arg(&request.args, &["role", "author", "sender"]).as_deref(),
+                );
+                let (entry, count) = self
+                    .append_session_entry(session_id.clone(), role, message)
+                    .await;
+                Ok(json!({
+                    "status": "completed",
+                    "sessionId": session_id,
+                    "entry": entry,
+                    "count": count
+                }))
+            }
+            "history" => {
+                let session_id = first_string_arg(&request.args, &["sessionId", "session_id"])
+                    .unwrap_or_else(|| request.session_id.clone());
+                let (entries, count) = self.session_history(&session_id).await;
+                Ok(json!({
+                    "status": "completed",
+                    "sessionId": session_id,
+                    "entries": entries,
+                    "count": count
+                }))
+            }
+            "list" => {
+                let sessions = self.session_list().await;
+                Ok(json!({
+                    "status": "completed",
+                    "sessions": sessions,
+                    "count": sessions.len()
+                }))
+            }
+            "reset" | "clear" => {
+                let session_id = first_string_arg(&request.args, &["sessionId", "session_id"])
+                    .unwrap_or_else(|| request.session_id.clone());
+                let removed = self.remove_session_timeline(&session_id).await;
+                Ok(json!({
+                    "status": "completed",
+                    "sessionId": session_id,
+                    "removed": removed
+                }))
+            }
+            _ => Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                format!("unsupported sessions action `{action}`"),
+            )),
+        }
+    }
+
+    async fn execute_message(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
+        let mut translated = request.clone();
+        if translated
+            .args
+            .get("action")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            let mut map = translated.args.as_object().cloned().unwrap_or_default();
+            map.insert("action".to_owned(), Value::String("send".to_owned()));
+            translated.args = Value::Object(map);
+        }
+        self.execute_sessions(&translated).await
+    }
+
     async fn next_process_session_id(&self) -> String {
         let mut counter = self.process_counter.lock().await;
         *counter += 1;
         format!("proc-{:06}", *counter)
+    }
+
+    async fn next_session_entry_id(&self) -> String {
+        let mut counter = self.session_entry_counter.lock().await;
+        *counter += 1;
+        format!("msg-{:08}", *counter)
+    }
+
+    async fn append_session_entry(
+        &self,
+        session_id: String,
+        role: String,
+        message: String,
+    ) -> (Value, usize) {
+        let entry = ToolRuntimeSessionEntry {
+            id: self.next_session_entry_id().await,
+            role,
+            message,
+            created_at_ms: now_ms(),
+        };
+        let mut timelines = self.session_timelines.lock().await;
+        let timeline = timelines.entry(session_id.clone()).or_default();
+        timeline.updated_at_ms = entry.created_at_ms;
+        timeline.entries.push_back(entry.clone());
+        while timeline.entries.len() > self.session_history_limit {
+            timeline.entries.pop_front();
+        }
+        if timelines.len() > self.session_bucket_limit {
+            let evict = timelines
+                .iter()
+                .filter(|(key, _)| key.as_str() != session_id.as_str())
+                .min_by_key(|(_, value)| value.updated_at_ms)
+                .map(|(key, _)| key.clone());
+            if let Some(evict) = evict {
+                let _ = timelines.remove(&evict);
+            }
+        }
+        let count = timelines
+            .get(&session_id)
+            .map(|value| value.entries.len())
+            .unwrap_or(0);
+        (
+            json!({
+                "id": entry.id,
+                "role": entry.role,
+                "message": entry.message,
+                "ts": entry.created_at_ms
+            }),
+            count,
+        )
+    }
+
+    async fn session_history(&self, session_id: &str) -> (Vec<Value>, usize) {
+        let timelines = self.session_timelines.lock().await;
+        let Some(timeline) = timelines.get(session_id) else {
+            return (Vec::new(), 0);
+        };
+        let entries = timeline
+            .entries
+            .iter()
+            .map(|entry| {
+                json!({
+                    "id": entry.id,
+                    "role": entry.role,
+                    "message": entry.message,
+                    "ts": entry.created_at_ms
+                })
+            })
+            .collect::<Vec<_>>();
+        (entries, timeline.entries.len())
+    }
+
+    async fn session_list(&self) -> Vec<Value> {
+        let timelines = self.session_timelines.lock().await;
+        let mut rows = timelines
+            .iter()
+            .map(|(session_id, timeline)| {
+                json!({
+                    "sessionId": session_id,
+                    "count": timeline.entries.len(),
+                    "updatedAt": timeline.updated_at_ms
+                })
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| {
+            let left = a
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let right = b
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            left.cmp(&right)
+        });
+        rows
+    }
+
+    async fn remove_session_timeline(&self, session_id: &str) -> bool {
+        let mut timelines = self.session_timelines.lock().await;
+        timelines.remove(session_id).is_some()
     }
 
     async fn refresh_process_session(&self, session: &mut ToolRuntimeProcessSession) {
@@ -658,7 +925,20 @@ fn normalize_tool_name(value: &str) -> String {
     match normalized.as_str() {
         "bash" => "exec".to_owned(),
         "apply-patch" => "apply_patch".to_owned(),
+        "session" => "sessions".to_owned(),
         _ => normalized,
+    }
+}
+
+fn normalize_message_role(value: Option<&str>) -> String {
+    let normalized = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("user")
+        .to_ascii_lowercase();
+    match normalized.as_str() {
+        "assistant" | "system" | "tool" | "user" => normalized,
+        _ => "user".to_owned(),
     }
 }
 
@@ -1238,7 +1518,7 @@ mod tests {
 
     fn default_policy() -> ToolRuntimePolicyConfig {
         ToolRuntimePolicyConfig {
-            profile: Some("coding".to_owned()),
+            profile: Some("full".to_owned()),
             allow: vec![],
             deny: vec![],
             by_provider: std::collections::HashMap::new(),
@@ -1465,6 +1745,111 @@ mod tests {
             .expect("remove session");
         assert_eq!(
             remove
+                .result
+                .get("removed")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_runtime_gateway_and_sessions_tools_cover_history_list_and_reset() {
+        let host = build_host(default_policy()).await;
+
+        let gateway = host
+            .execute(ToolRuntimeRequest {
+                request_id: "gateway-methods-1".to_owned(),
+                session_id: "tool-session".to_owned(),
+                tool_name: "gateway".to_owned(),
+                args: serde_json::json!({ "action": "methods" }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("gateway methods");
+        assert_eq!(
+            gateway
+                .result
+                .get("count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default(),
+            9
+        );
+
+        let _ = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-send-1".to_owned(),
+                session_id: "thread-a".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({ "text": "hello from message tool" }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message send");
+
+        let history = host
+            .execute(ToolRuntimeRequest {
+                request_id: "sessions-history-1".to_owned(),
+                session_id: "thread-a".to_owned(),
+                tool_name: "sessions".to_owned(),
+                args: serde_json::json!({ "action": "history" }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("sessions history");
+        assert_eq!(
+            history
+                .result
+                .get("count")
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            history
+                .result
+                .pointer("/entries/0/message")
+                .and_then(serde_json::Value::as_str),
+            Some("hello from message tool")
+        );
+
+        let list = host
+            .execute(ToolRuntimeRequest {
+                request_id: "sessions-list-1".to_owned(),
+                session_id: "thread-a".to_owned(),
+                tool_name: "sessions".to_owned(),
+                args: serde_json::json!({ "action": "list" }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("sessions list");
+        assert_eq!(
+            list.result
+                .pointer("/sessions/0/sessionId")
+                .and_then(serde_json::Value::as_str),
+            Some("thread-a")
+        );
+
+        let reset = host
+            .execute(ToolRuntimeRequest {
+                request_id: "sessions-reset-1".to_owned(),
+                session_id: "thread-a".to_owned(),
+                tool_name: "sessions".to_owned(),
+                args: serde_json::json!({ "action": "reset" }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("sessions reset");
+        assert_eq!(
+            reset
                 .result
                 .get("removed")
                 .and_then(serde_json::Value::as_bool),

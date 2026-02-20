@@ -151,6 +151,75 @@
         "ok": true,
         "contains": "cp3-exec"
       }
+    },
+    {
+      "name": "gateway-status",
+      "request": {
+        "request_id": "cp3-gateway-status-1",
+        "session_id": "cp3-gateway",
+        "tool_name": "gateway",
+        "args": {
+          "action": "status"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "capabilities"
+      }
+    },
+    {
+      "name": "sessions-send",
+      "request": {
+        "request_id": "cp3-sessions-send-1",
+        "session_id": "cp3-thread-1",
+        "tool_name": "sessions",
+        "args": {
+          "action": "send",
+          "message": "hello from sessions"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "cp3-thread-1"
+      }
+    },
+    {
+      "name": "sessions-history",
+      "request": {
+        "request_id": "cp3-sessions-history-1",
+        "session_id": "cp3-thread-1",
+        "tool_name": "sessions",
+        "args": {
+          "action": "history"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "hello from sessions"
+      }
+    },
+    {
+      "name": "message-default-send",
+      "request": {
+        "request_id": "cp3-message-send-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "text": "hello from message tool"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "cp3-thread-2"
+      }
     }
   ]
 }

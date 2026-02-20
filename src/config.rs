@@ -96,6 +96,8 @@ pub struct SecurityConfig {
     pub policy_bundle_path: Option<PathBuf>,
     #[serde(default)]
     pub policy_bundle_key: Option<String>,
+    #[serde(default)]
+    pub policy_bundle_keys: HashMap<String, String>,
     pub quarantine_dir: PathBuf,
     pub protect_paths: Vec<PathBuf>,
     pub allowed_command_prefixes: Vec<String>,
@@ -217,6 +219,7 @@ impl Default for Config {
                 virustotal_timeout_ms: 1_400,
                 policy_bundle_path: None,
                 policy_bundle_key: None,
+                policy_bundle_keys: HashMap::new(),
                 quarantine_dir: PathBuf::from(".openclaw-rs/quarantine"),
                 protect_paths: vec![
                     PathBuf::from("./openclaw.mjs"),
@@ -343,6 +346,9 @@ impl Config {
             } else {
                 self.security.policy_bundle_key = Some(trimmed.to_owned());
             }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_POLICY_BUNDLE_KEYS") {
+            self.security.policy_bundle_keys = parse_keyed_csv_map(&v);
         }
         if let Ok(v) = env::var("OPENCLAW_RS_WORKER_CONCURRENCY") {
             if let Ok(n) = v.parse::<usize>() {
@@ -502,6 +508,27 @@ fn split_csv(input: &str) -> Vec<String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn parse_keyed_csv_map(input: &str) -> HashMap<String, String> {
+    input
+        .split(',')
+        .filter_map(|entry| {
+            let trimmed = entry.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let (key, value) = trimmed
+                .split_once('=')
+                .or_else(|| trimmed.split_once(':'))?;
+            let key = key.trim().to_ascii_lowercase();
+            let value = value.trim().to_owned();
+            if key.is_empty() || value.is_empty() {
+                return None;
+            }
+            Some((key, value))
+        })
         .collect()
 }
 

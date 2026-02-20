@@ -52,8 +52,10 @@ impl DefenderEngine {
     pub async fn new(mut cfg: Config) -> Result<Arc<Self>> {
         if let Some(report) = apply_signed_policy_bundle(&mut cfg).await? {
             info!(
-                "loaded signed policy bundle id={} version={} path={} fields={}",
+                "loaded signed policy bundle id={} key_id={} source={} version={} path={} fields={}",
                 report.bundle_id.as_deref().unwrap_or("unnamed"),
+                report.key_id.as_deref().unwrap_or("none"),
+                report.verification_source,
                 report.version,
                 report.path.display(),
                 report.overridden_fields.join(",")
@@ -456,6 +458,7 @@ mod tests {
                 virustotal_timeout_ms: 400,
                 policy_bundle_path: None,
                 policy_bundle_key: None,
+                policy_bundle_keys: std::collections::HashMap::new(),
                 quarantine_dir,
                 protect_paths: vec![protected],
                 allowed_command_prefixes: vec!["git ".to_owned()],

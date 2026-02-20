@@ -233,4 +233,4 @@ Use this checklist for active tracking:
 
 1. Close the remaining `Partial` subsystem depth in `OPENCLAW_FEATURE_AUDIT.md` (durable gateway replacement semantics, tool runtime breadth, node/device host runtime coverage, and voice I/O runtime depth).
 2. Expand differential replay coverage so each remaining partial subsystem has corpus-backed side-effect assertions (not only payload-shape parity).
-3. Extend dockerized validation from parity-smoke into a broader multi-service/multi-event matrix with failure-injection scenarios and artifact trend tracking.
+3. Extend dockerized validation from current parity-smoke + multi-event decision matrix into failure-injection scenarios (disconnect/retry/reconnect chaos) with artifact trend tracking.

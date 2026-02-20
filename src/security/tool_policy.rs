@@ -7,6 +7,7 @@ const GROUP_WEB: &[&str] = &["web_search", "web_fetch"];
 const GROUP_FS: &[&str] = &["read", "write", "edit", "apply_patch"];
 const GROUP_RUNTIME: &[&str] = &["exec", "process"];
 const GROUP_SESSIONS: &[&str] = &[
+    "sessions",
     "sessions_list",
     "sessions_history",
     "sessions_send",
@@ -204,6 +205,7 @@ fn normalize_tool_name(value: &str) -> String {
     match normalized.as_str() {
         "bash" => "exec".to_owned(),
         "apply-patch" => "apply_patch".to_owned(),
+        "session" => "sessions".to_owned(),
         _ => normalized,
     }
 }
@@ -279,6 +281,7 @@ mod tests {
 
         assert!(matcher.allows("exec", None, None));
         assert!(matcher.allows("read", None, None));
+        assert!(matcher.allows("sessions", None, None));
         assert!(!matcher.allows("gateway", None, None));
     }
 
