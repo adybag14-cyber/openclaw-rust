@@ -332,3 +332,13 @@ bash ./scripts/run-docker-compose-parity.sh
 ```powershell
 .\scripts\run-docker-compose-parity.ps1
 ```
+
+Restart/reconnect chaos variant (restarts `rust-agent` during multi-event replay):
+
+```bash
+bash ./scripts/run-docker-compose-parity-chaos.sh
+```
+
+```powershell
+.\scripts\run-docker-compose-parity-chaos.ps1
+```

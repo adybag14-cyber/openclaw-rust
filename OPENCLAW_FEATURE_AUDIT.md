@@ -130,6 +130,7 @@ CP9 increment (2026-02-20):
 
 - Added repeatable CP9 Docker parity gate runners (`scripts/parity/run-cp9-gate.sh`, `scripts/parity/run-cp9-gate.ps1`) that execute daemon health, Dockerfile smoke, and compose parity checks with duration/metrics artifacts.
 - Added CI parity gate job (`docker-parity-cp9`) to run CP9 on Ubuntu runners and publish CP9 artifacts (`parity/generated/cp9/*`) + markdown summary into the workflow summary.
+- Expanded CP9 with restart/reconnect chaos validation (`deploy/docker-compose.parity-chaos.yml`, `scripts/run-docker-compose-parity-chaos.{sh,ps1}`) and gate enforcement (`docker-compose-chaos-restart`) so containerized parity now validates decision continuity across in-run Rust agent restarts.
 
 CP10 increment (2026-02-20):
 
@@ -182,7 +183,7 @@ CP12 increment (2026-02-20):
 - `Quarantine records`: Upstream OpenClaw feature surface is persisting blocked action payloads for forensics. Rust status is `Implemented`. Notes: Append-only JSON files in configured quarantine directory.
 - `Backpressure + memory controls`: Upstream OpenClaw feature surface is bounded worker concurrency, queue cap, eval timeout, and memory metrics. Rust status is `Implemented`. Notes: Semaphore + queue bounds + timeout + Linux RSS sampler.
 - `Test coverage (Rust)`: Upstream OpenClaw feature surface is unit/integration validation for core safety/runtime behavior. Rust status is `Partial`. Notes: Core security/bridge/channel adapters/replay harness are covered, including bridge-level mention-activation + steer-queue semantics, standalone gateway HTTP control surface fixtures, and tool-runtime browser/canvas/nodes runtime-family fixtures; broader real-transport end-to-end channel matrix remains pending.
-- `Dockerized validation`: Upstream OpenClaw feature surface is containerized CI-style runtime test matrix. Rust status is `Partial`. Notes: Added Docker parity smoke harness (`deploy/Dockerfile.parity`, run scripts) for default + `sqlite-state`, plus compose-based Gateway parity stack (`deploy/docker-compose.parity.yml`) with mock gateway + producer + assertor around the Rust runtime; CP9 gate runners + CI artifact publishing now enforce these checks continuously, including multi-event allow/review/block matrix scenarios with duplicate-decision guards, while broader real-channel/container matrix remains pending.
+- `Dockerized validation`: Upstream OpenClaw feature surface is containerized CI-style runtime test matrix. Rust status is `Implemented`. Notes: Added Docker parity smoke harness (`deploy/Dockerfile.parity`, run scripts) for default + `sqlite-state`, plus compose-based Gateway parity stacks (`deploy/docker-compose.parity.yml`, `deploy/docker-compose.parity-chaos.yml`) with mock gateway + producer + assertor around the Rust runtime; CP9 gate runners + CI artifact publishing now enforce daemon/smoke/compose + restart/reconnect chaos checks continuously, including multi-event allow/review/block matrix scenarios with duplicate-decision guards.
 
 ## Custom Defender Goal Coverage
 

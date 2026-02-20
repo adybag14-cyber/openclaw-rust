@@ -56,6 +56,9 @@ if run_check "docker-daemon" docker info; then
   if [[ "${overall_status}" == "pass" ]]; then
     run_check "docker-compose-parity" bash ./scripts/run-docker-compose-parity.sh || true
   fi
+  if [[ "${overall_status}" == "pass" ]]; then
+    run_check "docker-compose-chaos-restart" bash ./scripts/run-docker-compose-parity-chaos.sh || true
+  fi
 fi
 
 failed=$((checks_run - passed))

@@ -23,8 +23,8 @@
     "audit": {
       "counts": {
         "total": 22,
-        "implemented": 16,
-        "partial": 6,
+        "implemented": 17,
+        "partial": 5,
         "deferred": 0,
         "notStarted": 0,
         "unknown": 0
@@ -51,15 +51,15 @@
         "Quarantine records": "Implemented",
         "Backpressure + memory controls": "Implemented",
         "Test coverage (Rust)": "Partial",
-        "Dockerized validation": "Partial"
+        "Dockerized validation": "Implemented"
       }
     }
   },
   "baselinePresent": true,
   "delta": {
     "audit": {
-      "implemented": 7,
-      "partial": -3,
+      "implemented": 8,
+      "partial": -4,
       "deferred": -3,
       "notStarted": 0
     },
@@ -79,6 +79,11 @@
       {
         "subsystem": "CLI + control surface",
         "baseline": null,
+        "current": "Implemented"
+      },
+      {
+        "subsystem": "Dockerized validation",
+        "baseline": "Partial",
         "current": "Implemented"
       },
       {

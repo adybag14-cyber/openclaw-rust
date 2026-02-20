@@ -105,6 +105,15 @@ if (Invoke-Cp9Check -Name "docker-daemon" -Command @("docker", "info")) {
       "scripts/run-docker-compose-parity.ps1"
     ) | Out-Null
   }
+  if ($overallStatus -eq "pass") {
+    Invoke-Cp9Check -Name "docker-compose-chaos-restart" -Command @(
+      "powershell",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "scripts/run-docker-compose-parity-chaos.ps1"
+    ) | Out-Null
+  }
 }
 
 $resultLines = @("check`tduration_ms`tstatus")
