@@ -6,6 +6,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+  $PSNativeCommandUseErrorActionPreference = $false
+}
 
 $tests = @(
   "security::tool_policy::tests::profile_coding_expands_group_runtime_and_fs",
@@ -48,10 +51,16 @@ foreach ($testName in $tests) {
   $startMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   "[parity] running CP3 fixture: $testName" | Tee-Object -FilePath $logFile -Append | Out-Null
 
-  if ($toolchainArg) {
-    & $CargoCommand $toolchainArg test $testName -- --nocapture 2>&1 | Tee-Object -FilePath $logFile -Append | Out-Null
-  } else {
-    & $CargoCommand test $testName -- --nocapture 2>&1 | Tee-Object -FilePath $logFile -Append | Out-Null
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    if ($toolchainArg) {
+      & $CargoCommand $toolchainArg test $testName -- --nocapture *>&1 | Tee-Object -FilePath $logFile -Append | Out-Null
+    } else {
+      & $CargoCommand test $testName -- --nocapture *>&1 | Tee-Object -FilePath $logFile -Append | Out-Null
+    }
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
   }
 
   $durationMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $startMs
@@ -107,3 +116,4 @@ $summary = @(
 Set-Content -Path $summaryFile -Value $summary -Encoding utf8
 
 "[parity] CP3 gate passed" | Tee-Object -FilePath $logFile -Append | Out-Null
+

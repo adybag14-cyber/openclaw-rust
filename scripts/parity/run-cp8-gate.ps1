@@ -6,6 +6,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+  $PSNativeCommandUseErrorActionPreference = $false
+}
 
 $tests = @(
   "bridge::tests::replay_harness_with_real_defender",
@@ -65,10 +68,16 @@ foreach ($testName in $tests) {
     Remove-Item Env:OPENCLAW_CP8_BENCH_OUT -ErrorAction SilentlyContinue
   }
 
-  if ($toolchainArg) {
-    & $CargoCommand $toolchainArg test $testName -- --nocapture 2>&1 | Tee-Object -FilePath $logFile -Append | Out-Null
-  } else {
-    & $CargoCommand test $testName -- --nocapture 2>&1 | Tee-Object -FilePath $logFile -Append | Out-Null
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    if ($toolchainArg) {
+      & $CargoCommand $toolchainArg test $testName -- --nocapture *>&1 | Tee-Object -FilePath $logFile -Append | Out-Null
+    } else {
+      & $CargoCommand test $testName -- --nocapture *>&1 | Tee-Object -FilePath $logFile -Append | Out-Null
+    }
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
   }
 
   $durationMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $startMs
@@ -176,3 +185,4 @@ $summary = @(
 Set-Content -Path $summaryFile -Value $summary -Encoding utf8
 
 "[parity] CP8 gate passed" | Tee-Object -FilePath $logFile -Append | Out-Null
+

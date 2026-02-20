@@ -974,6 +974,16 @@ impl RpcDispatcher {
             })
     }
 
+    async fn sync_session_runtime_from_config(&self) -> Result<(), String> {
+        let runtime = self.config.session_runtime_config().await;
+        self.sessions
+            .apply_runtime_config(runtime)
+            .await
+            .map_err(|err| match err {
+                SessionRegistryError::Invalid(message) => message,
+            })
+    }
+
     pub async fn handle_request(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
         match normalize(&req.method).as_str() {
             "connect" => self.handle_connect().await,
@@ -1162,6 +1172,11 @@ impl RpcDispatcher {
     }
 
     pub async fn record_decision(&self, request: &ActionRequest, decision: &Decision) {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+        }
         self.sessions.record_decision(request, decision).await;
     }
 
@@ -1206,6 +1221,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_health(&self) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let now = now_ms();
         let summary = self.sessions.summary().await;
         RpcDispatchOutcome::Handled(json!({
@@ -1219,6 +1240,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_status(&self) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let now = now_ms();
         let summary = self.sessions.summary().await;
         RpcDispatchOutcome::Handled(json!({
@@ -1237,6 +1264,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_usage_status(&self) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let totals = self.sessions.usage_totals().await;
         RpcDispatchOutcome::Handled(json!({
             "enabled": true,
@@ -1247,6 +1280,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_usage_cost(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<UsageCostParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -3778,6 +3817,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_chat_history(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<ChatHistoryParams>(&req.params) {
             Ok(value) => value,
             Err(err) => {
@@ -3840,6 +3885,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_send(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<GatewaySendParams>(&req.params) {
             Ok(value) => value,
             Err(err) => {
@@ -3970,6 +4021,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_poll(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<GatewayPollParams>(&req.params) {
             Ok(value) => value,
             Err(err) => {
@@ -4116,6 +4173,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_chat_send(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<ChatSendParams>(&req.params) {
             Ok(value) => value,
             Err(err) => {
@@ -4241,6 +4304,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_chat_inject(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<ChatInjectParams>(&req.params) {
             Ok(value) => value,
             Err(err) => {
@@ -4429,6 +4498,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_sessions_list(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<SessionsListParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -4469,6 +4544,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_sessions_preview(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<SessionsPreviewParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -4510,6 +4591,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_sessions_patch(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<SessionsPatchParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -4665,6 +4752,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_sessions_resolve(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<SessionsResolveParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -4729,6 +4822,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_sessions_reset(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<SessionsResetParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -4760,6 +4859,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_sessions_delete(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<SessionsDeleteParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -4790,6 +4895,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_sessions_compact(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<SessionsCompactParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -4833,6 +4944,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_sessions_usage(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<SessionsUsageParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -4964,6 +5081,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_sessions_usage_timeseries(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<SessionsUsageTimeseriesParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -4988,6 +5111,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_sessions_usage_logs(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<SessionsUsageLogsParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -5008,6 +5137,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_sessions_history(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<SessionsHistoryParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -5050,6 +5185,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_sessions_send(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<SessionsSendParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -5123,6 +5264,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_session_status(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            self.system
+                .log_line(format!("session.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
         let params = match decode_params::<SessionStatusParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -5889,7 +6036,7 @@ impl ModelRegistry {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum AuthProfileSource {
     Auto,
@@ -6762,6 +6909,11 @@ struct SendRuntimeConfig {
     store_path: Option<String>,
     ttl_ms: Option<u64>,
     max_entries: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SessionRuntimeConfig {
+    store_path: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -11480,6 +11632,11 @@ impl ConfigRegistry {
         let guard = self.state.lock().await;
         send_runtime_config_from_config(&guard.config)
     }
+
+    async fn session_runtime_config(&self) -> SessionRuntimeConfig {
+        let guard = self.state.lock().await;
+        session_runtime_config_from_config(&guard.config)
+    }
 }
 
 fn parse_config_raw(raw: String, method: &str) -> Result<Value, String> {
@@ -11618,6 +11775,18 @@ fn send_runtime_config_from_config(config: &Value) -> SendRuntimeConfig {
         ttl_ms,
         max_entries,
     }
+}
+
+fn session_runtime_config_from_config(config: &Value) -> SessionRuntimeConfig {
+    let session = config.get("session").and_then(Value::as_object);
+    let store_path = session.and_then(|obj| {
+        read_config_string(
+            obj,
+            &["storePath", "store_path", "statePath", "state_path"],
+            2048,
+        )
+    });
+    SessionRuntimeConfig { store_path }
 }
 
 fn read_config_string(
@@ -11854,6 +12023,96 @@ fn persist_send_store_disk_state(state: &SendState) -> Result<(), SendRegistryEr
     Ok(())
 }
 
+fn session_store_path_is_memory(path: &str) -> bool {
+    path.trim().to_ascii_lowercase().starts_with("memory://")
+}
+
+fn load_session_store_disk_state(
+    path: &str,
+) -> Result<SessionStoreDiskState, SessionRegistryError> {
+    if session_store_path_is_memory(path) {
+        return Ok(SessionStoreDiskState::default());
+    }
+    let store_path = PathBuf::from(path);
+    if !store_path.exists() {
+        return Ok(SessionStoreDiskState::default());
+    }
+    let raw = std::fs::read_to_string(&store_path).map_err(|err| {
+        SessionRegistryError::Invalid(format!(
+            "failed reading session store {}: {err}",
+            store_path.display()
+        ))
+    })?;
+    serde_json::from_str::<SessionStoreDiskState>(&raw).map_err(|err| {
+        SessionRegistryError::Invalid(format!(
+            "failed parsing session store {}: {err}",
+            store_path.display()
+        ))
+    })
+}
+
+fn persist_session_store_disk_state(
+    path: &str,
+    entries: &[SessionEntry],
+) -> Result<(), SessionRegistryError> {
+    if session_store_path_is_memory(path) {
+        return Ok(());
+    }
+    let mut values = entries.to_vec();
+    values.sort_by(|a, b| {
+        b.updated_at_ms
+            .cmp(&a.updated_at_ms)
+            .then_with(|| a.key.cmp(&b.key))
+    });
+    let snapshot = SessionStoreDiskState {
+        version: 1,
+        entries: values,
+    };
+    let payload = serde_json::to_string_pretty(&snapshot).map_err(|err| {
+        SessionRegistryError::Invalid(format!("failed serializing session store: {err}"))
+    })?;
+    let store_path = PathBuf::from(path);
+    if let Some(parent) = store_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|err| {
+                SessionRegistryError::Invalid(format!(
+                    "failed creating session store parent directory {}: {err}",
+                    parent.display()
+                ))
+            })?;
+        }
+    }
+
+    let mut temp_path = store_path.clone();
+    let temp_extension = format!(
+        "{}.tmp.{}",
+        store_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("json"),
+        now_ms()
+    );
+    temp_path.set_extension(temp_extension);
+
+    std::fs::write(&temp_path, payload).map_err(|err| {
+        SessionRegistryError::Invalid(format!(
+            "failed writing session store temp file {}: {err}",
+            temp_path.display()
+        ))
+    })?;
+
+    if store_path.exists() {
+        let _ = std::fs::remove_file(&store_path);
+    }
+    std::fs::rename(&temp_path, &store_path).map_err(|err| {
+        SessionRegistryError::Invalid(format!(
+            "failed moving session store temp file into place {}: {err}",
+            store_path.display()
+        ))
+    })?;
+    Ok(())
+}
+
 fn apply_merge_patch(target: Value, patch: Value) -> Value {
     let Some(patch_obj) = patch.as_object() else {
         return patch;
@@ -11875,6 +12134,33 @@ fn apply_merge_patch(target: Value, patch: Value) -> Value {
 
 struct SessionRegistry {
     entries: Mutex<HashMap<String, SessionEntry>>,
+    runtime: Mutex<SessionRuntimeState>,
+}
+
+#[derive(Debug, Clone)]
+enum SessionRegistryError {
+    Invalid(String),
+}
+
+#[derive(Debug, Clone)]
+struct SessionRuntimeState {
+    store_path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct SessionStoreDiskState {
+    version: u32,
+    entries: Vec<SessionEntry>,
+}
+
+impl Default for SessionStoreDiskState {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            entries: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -11933,7 +12219,42 @@ impl SessionRegistry {
     fn new() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
+            runtime: Mutex::new(SessionRuntimeState {
+                store_path: SESSION_STORE_PATH.to_owned(),
+            }),
         }
+    }
+
+    async fn apply_runtime_config(
+        &self,
+        runtime: SessionRuntimeConfig,
+    ) -> Result<(), SessionRegistryError> {
+        let Some(path) = runtime.store_path else {
+            return Ok(());
+        };
+        let mut runtime_guard = self.runtime.lock().await;
+        if runtime_guard.store_path.eq_ignore_ascii_case(&path) {
+            return Ok(());
+        }
+        let loaded = load_session_store_disk_state(&path)?;
+        let mut entries_guard = self.entries.lock().await;
+        runtime_guard.store_path = path.clone();
+        *entries_guard = loaded
+            .entries
+            .into_iter()
+            .map(|entry| (entry.key.clone(), entry))
+            .collect::<HashMap<_, _>>();
+        let snapshot = entries_guard.values().cloned().collect::<Vec<_>>();
+        persist_session_store_disk_state(&runtime_guard.store_path, &snapshot)?;
+        Ok(())
+    }
+
+    async fn persist_entries_snapshot(&self, entries: Vec<SessionEntry>) {
+        let store_path = {
+            let guard = self.runtime.lock().await;
+            guard.store_path.clone()
+        };
+        let _ = persist_session_store_disk_state(&store_path, &entries);
     }
 
     async fn record_decision(&self, request: &ActionRequest, decision: &Decision) {
@@ -11973,6 +12294,9 @@ impl SessionRegistry {
             source: normalize_optional_text(Some(request.source.clone()), 128),
             channel: request.channel.clone().or_else(|| entry.channel.clone()),
         });
+        let snapshot = guard.values().cloned().collect::<Vec<_>>();
+        drop(guard);
+        self.persist_entries_snapshot(snapshot).await;
     }
 
     async fn record_send(&self, send: SessionSend) -> (SessionView, SessionHistoryRecord) {
@@ -12016,7 +12340,11 @@ impl SessionRegistry {
         entry.push_history(event.clone());
 
         let record = SessionHistoryRecord::from_event(&entry.key, event);
-        (entry.to_view(false, false), record)
+        let session = entry.to_view(false, false);
+        let snapshot = guard.values().cloned().collect::<Vec<_>>();
+        drop(guard);
+        self.persist_entries_snapshot(snapshot).await;
+        (session, record)
     }
 
     async fn patch(&self, patch: SessionPatch) -> Result<SessionView, String> {
@@ -12097,7 +12425,11 @@ impl SessionRegistry {
                 clear_auth_profile_override(entry);
             }
         }
-        Ok(entry.to_view(false, false))
+        let view = entry.to_view(false, false);
+        let snapshot = guard.values().cloned().collect::<Vec<_>>();
+        drop(guard);
+        self.persist_entries_snapshot(snapshot).await;
+        Ok(view)
     }
 
     async fn get(&self, session_key: &str) -> Option<SessionView> {
@@ -12140,7 +12472,11 @@ impl SessionRegistry {
             }
         }
         entry.updated_at_ms = now_ms();
-        Some(entry.to_view(false, false))
+        let view = entry.to_view(false, false);
+        let snapshot = guard.values().cloned().collect::<Vec<_>>();
+        drop(guard);
+        self.persist_entries_snapshot(snapshot).await;
+        Some(view)
     }
 
     async fn resolve_key(&self, candidate: &str) -> Option<String> {
@@ -12459,15 +12795,23 @@ impl SessionRegistry {
         entry.last_risk_score = 0;
         entry.session_id = next_session_id();
         entry.history.clear();
-        SessionReset {
+        let reset = SessionReset {
             session: entry.to_view(false, false),
             reason,
-        }
+        };
+        let snapshot = guard.values().cloned().collect::<Vec<_>>();
+        drop(guard);
+        self.persist_entries_snapshot(snapshot).await;
+        reset
     }
 
     async fn delete(&self, session_key: &str) -> bool {
         let mut guard = self.entries.lock().await;
-        guard.remove(session_key).is_some()
+        let deleted = guard.remove(session_key).is_some();
+        let snapshot = guard.values().cloned().collect::<Vec<_>>();
+        drop(guard);
+        self.persist_entries_snapshot(snapshot).await;
+        deleted
     }
 
     async fn compact(&self, session_key: &str, max_lines: usize) -> SessionCompactResult {
@@ -12496,12 +12840,16 @@ impl SessionRegistry {
         }
         entry.updated_at_ms = now_ms();
         entry.compaction_count = entry.compaction_count.saturating_add(1);
-        SessionCompactResult {
+        let result = SessionCompactResult {
             compacted: true,
             kept: entry.history.len(),
             removed: before.saturating_sub(entry.history.len()),
             reason: None,
-        }
+        };
+        let snapshot = guard.values().cloned().collect::<Vec<_>>();
+        drop(guard);
+        self.persist_entries_snapshot(snapshot).await;
+        result
     }
 
     async fn usage(
@@ -12693,7 +13041,7 @@ impl SessionRegistry {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct SessionEntry {
     key: String,
     session_id: String,
@@ -12914,14 +13262,14 @@ struct SessionSend {
     account_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum SessionHistoryKind {
     Decision,
     Send,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct SessionHistoryEvent {
     at_ms: u64,
     kind: SessionHistoryKind,
@@ -13059,14 +13407,14 @@ struct UsageTotals {
     blocked_count: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SendPolicyOverride {
     Allow,
     Deny,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ResponseUsageMode {
     Off,
@@ -16432,6 +16780,119 @@ mod tests {
             }
             _ => panic!("expected handled history"),
         }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_session_store_path_persists_and_recovers_sessions_across_dispatchers() {
+        let root = std::env::temp_dir().join(format!("openclaw-rs-session-store-{}", now_ms()));
+        fs::create_dir_all(&root).expect("create temp session root");
+        let store_path = root.join("sessions").join("registry.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+        let session_key = "agent:main:discord:group:persisted";
+
+        let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "session": {
+                    "storePath": store_path_text
+                }
+            }),
+        )
+        .await;
+
+        let send = RpcRequestFrame {
+            id: "req-session-persist-send".to_owned(),
+            method: "sessions.send".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": session_key,
+                "message": "persisted hello",
+                "source": "rpc",
+                "channel": "discord"
+            }),
+        };
+        let out = dispatcher.handle_request(&send).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        let patch = RpcRequestFrame {
+            id: "req-session-persist-patch".to_owned(),
+            method: "sessions.patch".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": session_key,
+                "label": "persisted-session"
+            }),
+        };
+        let out = dispatcher.handle_request(&patch).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        assert!(
+            store_path.exists(),
+            "session store should be created on disk"
+        );
+        let disk_snapshot = fs::read_to_string(&store_path).expect("read session store");
+        let disk_json =
+            serde_json::from_str::<Value>(&disk_snapshot).expect("parse session store JSON");
+        let disk_entries = disk_json
+            .pointer("/entries")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(disk_entries.iter().any(|entry| {
+            entry
+                .pointer("/key")
+                .and_then(Value::as_str)
+                .map(|value| value == session_key)
+                .unwrap_or(false)
+        }));
+
+        let restarted = RpcDispatcher::new();
+        patch_config(
+            &restarted,
+            json!({
+                "session": {
+                    "storePath": store_path.to_string_lossy().to_string()
+                }
+            }),
+        )
+        .await;
+
+        let resolve = RpcRequestFrame {
+            id: "req-session-persist-resolve".to_owned(),
+            method: "sessions.resolve".to_owned(),
+            params: serde_json::json!({
+                "label": "persisted-session"
+            }),
+        };
+        match restarted.handle_request(&resolve).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/key").and_then(Value::as_str),
+                    Some(session_key)
+                );
+            }
+            _ => panic!("expected sessions.resolve handled"),
+        }
+
+        let history = RpcRequestFrame {
+            id: "req-session-persist-history".to_owned(),
+            method: "sessions.history".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": session_key,
+                "limit": 1
+            }),
+        };
+        match restarted.handle_request(&history).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(payload.pointer("/count").and_then(Value::as_u64), Some(1));
+                assert_eq!(
+                    payload.pointer("/history/0/text").and_then(Value::as_str),
+                    Some("persisted hello")
+                );
+            }
+            _ => panic!("expected sessions.history handled"),
+        }
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[tokio::test]

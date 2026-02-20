@@ -5,6 +5,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+  $PSNativeCommandUseErrorActionPreference = $false
+}
 
 function Invoke-CargoTest {
   param([string]$Filter)
@@ -28,3 +31,4 @@ Invoke-CargoTest -Filter "protocol_corpus_snapshot_matches_expectations"
 Invoke-CargoTest -Filter "dispatcher_payload_corpus_matches_upstream_fixtures"
 
 Write-Output "[parity] replay corpus suite passed"
+

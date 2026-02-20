@@ -6,6 +6,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+  $PSNativeCommandUseErrorActionPreference = $false
+}
 
 $defaultTests = @(
   "bridge::tests::steer_mode_keeps_latest_pending_at_bridge_level",
@@ -64,18 +67,24 @@ function Invoke-Cp2Fixture {
   $startMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   "[parity] running CP2 $Suite fixture: $TestName" | Tee-Object -FilePath $logFile -Append | Out-Null
 
-  if ($toolchainArg) {
-    if ($SqliteFeature) {
-      & $CargoCommand $toolchainArg test --features sqlite-state $TestName -- --nocapture 2>&1 | Tee-Object -FilePath $logFile -Append | Out-Null
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    if ($toolchainArg) {
+      if ($SqliteFeature) {
+        & $CargoCommand $toolchainArg test --features sqlite-state $TestName -- --nocapture *>&1 | Tee-Object -FilePath $logFile -Append | Out-Null
+      } else {
+        & $CargoCommand $toolchainArg test $TestName -- --nocapture *>&1 | Tee-Object -FilePath $logFile -Append | Out-Null
+      }
     } else {
-      & $CargoCommand $toolchainArg test $TestName -- --nocapture 2>&1 | Tee-Object -FilePath $logFile -Append | Out-Null
+      if ($SqliteFeature) {
+        & $CargoCommand test --features sqlite-state $TestName -- --nocapture *>&1 | Tee-Object -FilePath $logFile -Append | Out-Null
+      } else {
+        & $CargoCommand test $TestName -- --nocapture *>&1 | Tee-Object -FilePath $logFile -Append | Out-Null
+      }
     }
-  } else {
-    if ($SqliteFeature) {
-      & $CargoCommand test --features sqlite-state $TestName -- --nocapture 2>&1 | Tee-Object -FilePath $logFile -Append | Out-Null
-    } else {
-      & $CargoCommand test $TestName -- --nocapture 2>&1 | Tee-Object -FilePath $logFile -Append | Out-Null
-    }
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
   }
 
   $durationMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $startMs
@@ -153,3 +162,4 @@ $summary = @(
 Set-Content -Path $summaryFile -Value $summary -Encoding utf8
 
 "[parity] CP2 gate passed" | Tee-Object -FilePath $logFile -Append | Out-Null
+

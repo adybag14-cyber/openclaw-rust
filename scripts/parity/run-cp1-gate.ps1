@@ -5,6 +5,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+  $PSNativeCommandUseErrorActionPreference = $false
+}
 
 $tests = @(
   "gateway_server::tests::standalone_gateway_serves_control_plane_rpcs_without_upstream_runtime",
@@ -31,3 +34,4 @@ foreach ($testName in $tests) {
 }
 
 Write-Output "[parity] CP1 gate passed"
+

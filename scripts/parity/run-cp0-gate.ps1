@@ -5,6 +5,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+  $PSNativeCommandUseErrorActionPreference = $false
+}
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
@@ -18,3 +21,4 @@ if ($WriteBaseline) {
 
 Write-Output "[parity] CP0 gate passed"
 Write-Output "[parity] scoreboard: parity/generated/parity-scoreboard.md"
+
