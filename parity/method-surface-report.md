@@ -4,35 +4,52 @@ Generated (UTC): deterministic
 
 ## Summary
 
-- Rust method count: 1
+- Rust method count: 103
 - Surfaces compared: 2
 
 ## Surface: base
 
-- Upstream method count: 1
-- Rust method count: 1
-- Shared methods: 0
-- Coverage vs upstream: 0%
+- Upstream method count: 89
+- Rust method count: 103
+- Shared methods: 89
+- Coverage vs upstream: 100%
 
 ### Missing In Rust
 
-- `agent agent.identity.get agent.wait agents.create agents.delete agents.files.get agents.files.list agents.files.set agents.list agents.update browser.request channels.logout channels.status chat.abort chat.history chat.send config.apply config.get config.patch config.schema config.set cron.add cron.list cron.remove cron.run cron.runs cron.status cron.update device.pair.approve device.pair.list device.pair.reject device.pair.remove device.token.revoke device.token.rotate exec.approval.request exec.approval.resolve exec.approval.waitDecision exec.approvals.get exec.approvals.node.get exec.approvals.node.set exec.approvals.set health last-heartbeat logs.tail models.list node.describe node.event node.invoke node.invoke.result node.list node.pair.approve node.pair.list node.pair.reject node.pair.request node.pair.verify node.rename send sessions.compact sessions.delete sessions.list sessions.patch sessions.preview sessions.reset set-heartbeats skills.bins skills.install skills.status skills.update status system-event system-presence talk.config talk.mode tts.convert tts.disable tts.enable tts.providers tts.setProvider tts.status update.run usage.cost usage.status voicewake.get voicewake.set wake wizard.cancel wizard.next wizard.start wizard.status`
+- _None_
 
 ### Rust-only Methods
 
-- `agent agent.identity.get agent.wait agents.create agents.delete agents.files.get agents.files.list agents.files.set agents.list agents.update browser.open browser.request canvas.present channels.logout channels.status chat.abort chat.history chat.inject chat.send config.apply config.get config.patch config.schema config.set connect cron.add cron.list cron.remove cron.run cron.runs cron.status cron.update device.pair.approve device.pair.list device.pair.reject device.pair.remove device.token.revoke device.token.rotate exec.approval.request exec.approval.resolve exec.approval.waitDecision exec.approvals.get exec.approvals.node.get exec.approvals.node.set exec.approvals.set health last-heartbeat logs.tail models.list node.describe node.event node.invoke node.invoke.result node.list node.pair.approve node.pair.list node.pair.reject node.pair.request node.pair.verify node.rename poll send session.status sessions.compact sessions.delete sessions.history sessions.list sessions.patch sessions.preview sessions.reset sessions.resolve sessions.send sessions.usage sessions.usage.logs sessions.usage.timeseries set-heartbeats skills.bins skills.install skills.status skills.update status system-event system-presence talk.config talk.mode tts.convert tts.disable tts.enable tts.providers tts.setProvider tts.status update.run usage.cost usage.status voicewake.get voicewake.set wake web.login.start web.login.wait wizard.cancel wizard.next wizard.start wizard.status`
+- `browser.open`
+- `canvas.present`
+- `chat.inject`
+- `connect`
+- `poll`
+- `session.status`
+- `sessions.history`
+- `sessions.resolve`
+- `sessions.send`
+- `sessions.usage`
+- `sessions.usage.logs`
+- `sessions.usage.timeseries`
+- `web.login.start`
+- `web.login.wait`
 
 ## Surface: handlers
 
-- Upstream method count: 1
-- Rust method count: 1
-- Shared methods: 0
-- Coverage vs upstream: 0%
+- Upstream method count: 98
+- Rust method count: 103
+- Shared methods: 98
+- Coverage vs upstream: 100%
 
 ### Missing In Rust
 
-- `agent agent.identity.get agent.wait agents.create agents.delete agents.files.get agents.files.list agents.files.set agents.list agents.update browser.request channels.logout channels.status chat.abort chat.history chat.inject chat.send config.apply config.get config.patch config.schema config.set connect cron.add cron.list cron.remove cron.run cron.runs cron.status cron.update device.pair.approve device.pair.list device.pair.reject device.pair.remove device.token.revoke device.token.rotate exec.approval.request exec.approval.resolve exec.approval.waitDecision exec.approvals.get exec.approvals.node.get exec.approvals.node.set exec.approvals.set health last-heartbeat logs.tail models.list node.describe node.event node.invoke node.invoke.result node.list node.pair.approve node.pair.list node.pair.reject node.pair.request node.pair.verify node.rename poll send sessions.compact sessions.delete sessions.list sessions.patch sessions.preview sessions.reset sessions.resolve sessions.usage sessions.usage.logs sessions.usage.timeseries set-heartbeats skills.bins skills.install skills.status skills.update status system-event system-presence talk.config talk.mode tts.convert tts.disable tts.enable tts.providers tts.setProvider tts.status update.run usage.cost usage.status voicewake.get voicewake.set wake web.login.start web.login.wait wizard.cancel wizard.next wizard.start wizard.status`
+- _None_
 
 ### Rust-only Methods
 
-- `agent agent.identity.get agent.wait agents.create agents.delete agents.files.get agents.files.list agents.files.set agents.list agents.update browser.open browser.request canvas.present channels.logout channels.status chat.abort chat.history chat.inject chat.send config.apply config.get config.patch config.schema config.set connect cron.add cron.list cron.remove cron.run cron.runs cron.status cron.update device.pair.approve device.pair.list device.pair.reject device.pair.remove device.token.revoke device.token.rotate exec.approval.request exec.approval.resolve exec.approval.waitDecision exec.approvals.get exec.approvals.node.get exec.approvals.node.set exec.approvals.set health last-heartbeat logs.tail models.list node.describe node.event node.invoke node.invoke.result node.list node.pair.approve node.pair.list node.pair.reject node.pair.request node.pair.verify node.rename poll send session.status sessions.compact sessions.delete sessions.history sessions.list sessions.patch sessions.preview sessions.reset sessions.resolve sessions.send sessions.usage sessions.usage.logs sessions.usage.timeseries set-heartbeats skills.bins skills.install skills.status skills.update status system-event system-presence talk.config talk.mode tts.convert tts.disable tts.enable tts.providers tts.setProvider tts.status update.run usage.cost usage.status voicewake.get voicewake.set wake web.login.start web.login.wait wizard.cancel wizard.next wizard.start wizard.status`
+- `browser.open`
+- `canvas.present`
+- `session.status`
+- `sessions.history`
+- `sessions.send`

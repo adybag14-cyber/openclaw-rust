@@ -30,7 +30,7 @@ if ($Surface -eq "handlers" -or $Surface -eq "both") {
   & (Join-Path $scriptDir "extract-upstream-methods.ps1") -UpstreamRepoPath $UpstreamRepoPath -Mode "handlers" -OutFile $upstreamHandlersOut | Out-Null
 }
 
-$rustMethods = @(Get-Content -LiteralPath $rustOut -Raw | ConvertFrom-Json)
+[string[]]$rustMethods = Get-Content -LiteralPath $rustOut -Raw | ConvertFrom-Json
 
 function Compare-Surfaces {
   param(
@@ -81,11 +81,11 @@ function Compare-Surfaces {
 
 $surfaces = [ordered]@{}
 if (Test-Path -LiteralPath $upstreamBaseOut) {
-  $upstreamBase = @(Get-Content -LiteralPath $upstreamBaseOut -Raw | ConvertFrom-Json)
+  [string[]]$upstreamBase = Get-Content -LiteralPath $upstreamBaseOut -Raw | ConvertFrom-Json
   $surfaces["base"] = Compare-Surfaces -UpstreamMethods $upstreamBase -RustMethods $rustMethods
 }
 if (Test-Path -LiteralPath $upstreamHandlersOut) {
-  $upstreamHandlers = @(Get-Content -LiteralPath $upstreamHandlersOut -Raw | ConvertFrom-Json)
+  [string[]]$upstreamHandlers = Get-Content -LiteralPath $upstreamHandlersOut -Raw | ConvertFrom-Json
   $surfaces["handlers"] = Compare-Surfaces -UpstreamMethods $upstreamHandlers -RustMethods $rustMethods
 }
 
