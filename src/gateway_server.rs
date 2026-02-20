@@ -82,6 +82,7 @@ const READ_METHODS: &[&str] = &[
     "node.describe",
     "chat.history",
     "config.get",
+    "config.schema",
     "talk.config",
 ];
 const WRITE_METHODS: &[&str] = &[
@@ -99,6 +100,17 @@ const WRITE_METHODS: &[&str] = &[
     "chat.send",
     "chat.abort",
     "browser.request",
+    "browser.open",
+    "canvas.present",
+    "web.login.start",
+    "web.login.wait",
+    "wizard.start",
+    "wizard.next",
+    "wizard.cancel",
+    "wizard.status",
+    "config.set",
+    "config.patch",
+    "config.apply",
 ];
 
 const EVENT_SCOPE_APPROVALS: &[&str] = &["exec.approval.requested", "exec.approval.resolved"];
@@ -911,7 +923,7 @@ mod tests {
     use crate::security::ActionEvaluator;
     use crate::types::{ActionRequest, Decision, DecisionAction};
 
-    use super::{GatewayBroadcaster, GatewayServer};
+    use super::{authorize_gateway_method, GatewayBroadcaster, GatewayServer};
 
     struct AllowEvaluator;
 
@@ -998,6 +1010,25 @@ mod tests {
             Some("hello-ok")
         );
         Ok(ws)
+    }
+
+    #[test]
+    fn authorize_gateway_method_allows_write_scope_for_control_ui_orchestration_methods() {
+        let scopes = vec!["operator.write".to_owned()];
+        for method in [
+            "browser.open",
+            "canvas.present",
+            "web.login.start",
+            "wizard.start",
+            "config.patch",
+            "config.apply",
+        ] {
+            assert_eq!(
+                authorize_gateway_method(method, "operator", &scopes),
+                None,
+                "method {method} should be writable by operator.write scope"
+            );
+        }
     }
 
     #[tokio::test]

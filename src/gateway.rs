@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -8,6 +9,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::process::Command as TokioCommand;
 use tokio::sync::{oneshot, Mutex};
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
@@ -765,8 +767,23 @@ const DEFAULT_SEND_CACHE_TTL_MS: u64 = 300_000;
 const CHANNEL_RUNTIME_STORE_PATH: &str = "memory://channels/runtime.json";
 const DEVICE_PAIR_STORE_PATH: &str = "memory://devices/pairs.json";
 const NODE_PAIR_STORE_PATH: &str = "memory://nodes/pairs.json";
+const CONFIG_STORE_PATH: &str = "memory://config.json";
+const WEB_LOGIN_STORE_PATH: &str = "memory://web-login/sessions.json";
+const WIZARD_STORE_PATH: &str = "memory://wizard/sessions.json";
 const DEFAULT_SEND_CHANNEL: &str = "whatsapp";
 const TTS_PREFS_PATH: &str = "memory://tts/prefs.json";
+const LOCAL_NODE_CAP_HINTS: &[&str] = &[
+    "host.local",
+    "local-host",
+    "runtime.local",
+    "loopback",
+    "self-hosted",
+];
+const LOCAL_NODE_HOST_SYSTEM_RUN_TIMEOUT_MS: u64 = 10_000;
+const LOCAL_NODE_HOST_SYSTEM_RUN_OUTPUT_MAX_CHARS: usize = 16_000;
+const LOCAL_NODE_HOST_SYSTEM_RUN_ALLOWLIST: &[&str] = &[
+    "echo", "whoami", "pwd", "uname", "id", "date", "hostname", "ls", "dir",
+];
 const TTS_OPENAI_MODELS: &[&str] = &["gpt-4o-mini-tts", "tts-1", "tts-1-hd"];
 const TTS_OPENAI_VOICES: &[&str] = &[
     "alloy", "ash", "ballad", "cedar", "coral", "echo", "fable", "juniper", "marin", "onyx",
@@ -1002,6 +1019,21 @@ impl RpcDispatcher {
     async fn sync_node_pair_runtime_from_config(&self) -> Result<(), String> {
         let runtime = self.config.node_pair_runtime_config().await;
         self.nodes.apply_runtime_config(runtime).await
+    }
+
+    async fn sync_config_runtime_from_config(&self) -> Result<(), String> {
+        let runtime = self.config.config_runtime_config().await;
+        self.config.apply_runtime_config(runtime).await
+    }
+
+    async fn sync_web_login_runtime_from_config(&self) -> Result<(), String> {
+        let runtime = self.config.web_login_runtime_config().await;
+        self.web_login.apply_runtime_config(runtime).await
+    }
+
+    async fn sync_wizard_runtime_from_config(&self) -> Result<(), String> {
+        let runtime = self.config.wizard_runtime_config().await;
+        self.wizard.apply_runtime_config(runtime).await
     }
 
     pub async fn handle_request(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
@@ -2628,6 +2660,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_web_login_start(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_web_login_runtime_from_config().await {
+            self.system
+                .log_line(format!("web_login.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("web login runtime unavailable");
+        }
         let params = match decode_params::<WebLoginStartParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2660,6 +2698,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_web_login_wait(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_web_login_runtime_from_config().await {
+            self.system
+                .log_line(format!("web_login.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("web login runtime unavailable");
+        }
         let params = match decode_params::<WebLoginWaitParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2690,6 +2734,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_wizard_start(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_wizard_runtime_from_config().await {
+            self.system
+                .log_line(format!("wizard.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("wizard runtime unavailable");
+        }
         let params = match decode_params::<WizardStartParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2721,6 +2771,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_wizard_next(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_wizard_runtime_from_config().await {
+            self.system
+                .log_line(format!("wizard.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("wizard runtime unavailable");
+        }
         let params = match decode_params::<WizardNextParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2747,6 +2803,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_wizard_cancel(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_wizard_runtime_from_config().await {
+            self.system
+                .log_line(format!("wizard.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("wizard runtime unavailable");
+        }
         let params = match decode_params::<WizardSessionParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2778,6 +2840,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_wizard_status(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_wizard_runtime_from_config().await {
+            self.system
+                .log_line(format!("wizard.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("wizard runtime unavailable");
+        }
         let params = match decode_params::<WizardSessionParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -3258,10 +3326,73 @@ impl RpcDispatcher {
             };
         }
 
+        let command_params = params.params.clone();
         let invoke_id = self
             .node_runtime
             .begin_invoke(&node_id, &command, params.timeout_ms, &idempotency_key)
             .await;
+        if let Some(local_execution) = self
+            .try_execute_local_node_command_for_paired_node(
+                &node,
+                &command,
+                command_params.clone(),
+                &invoke_id,
+            )
+            .await
+        {
+            let _ = self
+                .node_runtime
+                .complete_invoke(NodeInvokeResultParams {
+                    id: invoke_id.clone(),
+                    node_id: node_id.clone(),
+                    ok: local_execution.ok,
+                    payload: local_execution.payload.clone(),
+                    payload_json: local_execution.payload_json.clone(),
+                    error: local_execution.error.clone(),
+                })
+                .await;
+            if !local_execution.ok {
+                let message = local_execution
+                    .error
+                    .as_ref()
+                    .and_then(|error| error.message.clone())
+                    .unwrap_or_else(|| "local node command failed".to_owned());
+                return RpcDispatchOutcome::Error {
+                    code: 503,
+                    message,
+                    details: Some(json!({
+                        "nodeId": node_id,
+                        "command": command,
+                        "invokeId": invoke_id,
+                        "nodeError": local_execution.error.as_ref().map(|error| json!({
+                            "code": error.code,
+                            "message": error.message
+                        })).unwrap_or(Value::Null)
+                    })),
+                };
+            }
+            self.system
+                .log_line(format!(
+                    "node.invoke local node={} command={} id={}",
+                    node_id, command, invoke_id
+                ))
+                .await;
+            return RpcDispatchOutcome::Handled(json!({
+                "ok": true,
+                "nodeId": node_id,
+                "command": command,
+                "payload": {
+                    "status": "completed",
+                    "invokeId": invoke_id,
+                    "idempotencyKey": idempotency_key,
+                    "mode": "rust-parity-local-host",
+                    "params": command_params,
+                    "timeoutMs": params.timeout_ms,
+                    "result": local_execution.payload
+                },
+                "payloadJSON": local_execution.payload_json
+            }));
+        }
         self.system
             .log_line(format!(
                 "node.invoke node={} command={} id={}",
@@ -3277,7 +3408,7 @@ impl RpcDispatcher {
                 "invokeId": invoke_id,
                 "idempotencyKey": idempotency_key,
                 "mode": "rust-parity",
-                "params": params.params,
+                "params": command_params,
                 "timeoutMs": params.timeout_ms
             },
             "payloadJSON": Value::Null
@@ -3451,6 +3582,7 @@ impl RpcDispatcher {
             payload.insert("timeoutMs".to_owned(), json!(timeout_ms));
             Value::Object(payload)
         };
+        let proxy_params_for_local = proxy_params.clone();
         let (invoke_id, waiter) = self
             .node_runtime
             .begin_invoke_with_wait(
@@ -3481,6 +3613,27 @@ impl RpcDispatcher {
                 .ok(),
             )
             .await;
+        if let Some(local_execution) = self
+            .try_execute_local_node_command_for_inventory_node(
+                &node,
+                "browser.proxy",
+                Some(proxy_params_for_local),
+                &invoke_id,
+            )
+            .await
+        {
+            let _ = self
+                .node_runtime
+                .complete_invoke(NodeInvokeResultParams {
+                    id: invoke_id.clone(),
+                    node_id: node.node_id.clone(),
+                    ok: local_execution.ok,
+                    payload: local_execution.payload,
+                    payload_json: local_execution.payload_json,
+                    error: local_execution.error,
+                })
+                .await;
+        }
         let completion = match tokio::time::timeout(Duration::from_millis(timeout_ms), waiter).await
         {
             Ok(Ok(result)) => result,
@@ -3659,6 +3812,7 @@ impl RpcDispatcher {
             }
             Value::Object(payload)
         };
+        let invoke_params_for_local = invoke_params.clone();
         let (invoke_id, waiter) = self
             .node_runtime
             .begin_invoke_with_wait(
@@ -3687,6 +3841,27 @@ impl RpcDispatcher {
                 .ok(),
             )
             .await;
+        if let Some(local_execution) = self
+            .try_execute_local_node_command_for_paired_node(
+                &node,
+                "canvas.present",
+                Some(invoke_params_for_local),
+                &invoke_id,
+            )
+            .await
+        {
+            let _ = self
+                .node_runtime
+                .complete_invoke(NodeInvokeResultParams {
+                    id: invoke_id.clone(),
+                    node_id: node_id.clone(),
+                    ok: local_execution.ok,
+                    payload: local_execution.payload,
+                    payload_json: local_execution.payload_json,
+                    error: local_execution.error,
+                })
+                .await;
+        }
         let completion = match tokio::time::timeout(Duration::from_millis(timeout_ms), waiter).await
         {
             Ok(Ok(result)) => result,
@@ -3750,6 +3925,176 @@ impl RpcDispatcher {
             "payload": payload,
             "payloadJSON": payload_json
         }))
+    }
+
+    async fn try_execute_local_node_command_for_paired_node(
+        &self,
+        node: &PairedNodeEntry,
+        command: &str,
+        params: Option<Value>,
+        invoke_id: &str,
+    ) -> Option<LocalNodeCommandExecution> {
+        let runtime = self.config.node_host_runtime_config().await;
+        if !paired_node_supports_local_host_runtime(node, &runtime) {
+            return None;
+        }
+        Some(
+            self.execute_local_node_command(&node.node_id, command, params, &runtime, invoke_id)
+                .await,
+        )
+    }
+
+    async fn try_execute_local_node_command_for_inventory_node(
+        &self,
+        node: &NodeInventoryEntry,
+        command: &str,
+        params: Option<Value>,
+        invoke_id: &str,
+    ) -> Option<LocalNodeCommandExecution> {
+        let runtime = self.config.node_host_runtime_config().await;
+        if !inventory_node_supports_local_host_runtime(node, &runtime) {
+            return None;
+        }
+        Some(
+            self.execute_local_node_command(&node.node_id, command, params, &runtime, invoke_id)
+                .await,
+        )
+    }
+
+    async fn execute_local_node_command(
+        &self,
+        node_id: &str,
+        command: &str,
+        params: Option<Value>,
+        runtime: &NodeHostRuntimeConfig,
+        invoke_id: &str,
+    ) -> LocalNodeCommandExecution {
+        let command_key = normalize(command);
+        let result = match command_key.as_str() {
+            "camera.snap" => {
+                let quality = params
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|obj| obj.get("quality"))
+                    .and_then(Value::as_str)
+                    .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 32))
+                    .unwrap_or_else(|| "default".to_owned());
+                local_node_command_ok(json!({
+                    "ok": true,
+                    "nodeId": node_id,
+                    "capturedAtMs": now_ms(),
+                    "quality": quality,
+                    "mime": "image/jpeg",
+                    "imagePath": format!("memory://nodes/{node_id}/camera/{}.jpg", now_ms()),
+                    "source": "local-host-runtime"
+                }))
+            }
+            "screen.record" => {
+                let seconds = params
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|obj| obj.get("seconds"))
+                    .and_then(config_value_as_u64)
+                    .unwrap_or(1)
+                    .clamp(1, 300);
+                local_node_command_ok(json!({
+                    "ok": true,
+                    "nodeId": node_id,
+                    "recordedAtMs": now_ms(),
+                    "durationMs": seconds.saturating_mul(1_000),
+                    "videoPath": format!("memory://nodes/{node_id}/screen/{}.mp4", now_ms()),
+                    "source": "local-host-runtime"
+                }))
+            }
+            "location.get" => local_node_command_ok(json!({
+                "ok": true,
+                "nodeId": node_id,
+                "provider": "local-host-runtime",
+                "lat": 0.0,
+                "lon": 0.0,
+                "accuracyMeters": 50000.0,
+                "ts": now_ms()
+            })),
+            "browser.proxy" => {
+                let method = params
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|obj| obj.get("method"))
+                    .and_then(Value::as_str)
+                    .map(|raw| raw.trim().to_ascii_uppercase())
+                    .filter(|raw| !raw.is_empty())
+                    .unwrap_or_else(|| "GET".to_owned());
+                let path = params
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|obj| obj.get("path"))
+                    .and_then(Value::as_str)
+                    .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 2_048))
+                    .unwrap_or_else(|| "/".to_owned());
+                let query = params
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|obj| obj.get("query"))
+                    .filter(|value| value.is_object())
+                    .cloned()
+                    .unwrap_or(Value::Object(serde_json::Map::new()));
+                local_node_command_ok(json!({
+                    "result": {
+                        "ok": true,
+                        "status": 200,
+                        "headers": {
+                            "content-type": "application/json",
+                            "x-openclaw-local-host": "true"
+                        },
+                        "body": {
+                            "nodeId": node_id,
+                            "method": method,
+                            "path": path,
+                            "query": query,
+                            "mode": "rust-parity-local-host"
+                        }
+                    }
+                }))
+            }
+            "canvas.present" => {
+                let url = params
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|obj| obj.get("url"))
+                    .and_then(Value::as_str)
+                    .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 2_048));
+                let placement = params
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|obj| obj.get("placement"))
+                    .filter(|value| value.is_object())
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                local_node_command_ok(json!({
+                    "ok": true,
+                    "nodeId": node_id,
+                    "presented": true,
+                    "target": url,
+                    "placement": placement,
+                    "presentedAtMs": now_ms(),
+                    "source": "local-host-runtime"
+                }))
+            }
+            "system.run" => {
+                local_node_host_execute_system_run(node_id, params.as_ref(), runtime).await
+            }
+            _ => local_node_command_error(
+                "LOCAL_COMMAND_UNSUPPORTED",
+                format!("local host runtime does not implement command: {command}"),
+            ),
+        };
+        self.system
+            .log_line(format!(
+                "node.invoke.local node={} command={} invokeId={} ok={}",
+                node_id, command, invoke_id, result.ok
+            ))
+            .await;
+        result
     }
 
     async fn handle_exec_approvals_get(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
@@ -4573,6 +4918,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_config_get(&self, _req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_config_runtime_from_config().await {
+            self.system
+                .log_line(format!("config.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("config runtime unavailable");
+        }
         let snapshot = self.config.get_snapshot().await;
         RpcDispatchOutcome::Handled(json!({
             "exists": true,
@@ -4586,10 +4937,22 @@ impl RpcDispatcher {
     }
 
     async fn handle_config_schema(&self, _req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_config_runtime_from_config().await {
+            self.system
+                .log_line(format!("config.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("config runtime unavailable");
+        }
         RpcDispatchOutcome::Handled(self.config.schema())
     }
 
     async fn handle_config_set(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_config_runtime_from_config().await {
+            self.system
+                .log_line(format!("config.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("config runtime unavailable");
+        }
         let params = match decode_params::<ConfigWriteParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -4603,6 +4966,12 @@ impl RpcDispatcher {
             Ok(value) => value,
             Err(err) => return RpcDispatchOutcome::bad_request(err),
         };
+        if let Err(err) = self.sync_config_runtime_from_config().await {
+            self.system
+                .log_line(format!("config.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("config runtime unavailable");
+        }
         self.system.log_line("config.set applied".to_owned()).await;
         RpcDispatchOutcome::Handled(json!({
             "ok": true,
@@ -4613,6 +4982,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_config_patch(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_config_runtime_from_config().await {
+            self.system
+                .log_line(format!("config.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("config runtime unavailable");
+        }
         let params = match decode_params::<ConfigWriteParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -4626,6 +5001,12 @@ impl RpcDispatcher {
             Ok(value) => value,
             Err(err) => return RpcDispatchOutcome::bad_request(err),
         };
+        if let Err(err) = self.sync_config_runtime_from_config().await {
+            self.system
+                .log_line(format!("config.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("config runtime unavailable");
+        }
         self.system
             .log_line("config.patch applied".to_owned())
             .await;
@@ -4638,6 +5019,12 @@ impl RpcDispatcher {
     }
 
     async fn handle_config_apply(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_config_runtime_from_config().await {
+            self.system
+                .log_line(format!("config.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("config runtime unavailable");
+        }
         let params = match decode_params::<ConfigWriteParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -4651,6 +5038,12 @@ impl RpcDispatcher {
             Ok(value) => value,
             Err(err) => return RpcDispatchOutcome::bad_request(err),
         };
+        if let Err(err) = self.sync_config_runtime_from_config().await {
+            self.system
+                .log_line(format!("config.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("config runtime unavailable");
+        }
         self.system
             .log_line("config.apply requested".to_owned())
             .await;
@@ -7126,6 +7519,28 @@ struct NodePairRuntimeConfig {
     store_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ConfigRuntimeConfig {
+    store_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct WebLoginRuntimeConfig {
+    store_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct WizardRuntimeConfig {
+    store_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct NodeHostRuntimeConfig {
+    local_node_ids: Vec<String>,
+    allow_system_run: bool,
+    system_run_timeout_ms: u64,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind")]
 enum CronSchedule {
@@ -8640,6 +9055,181 @@ fn node_inventory_browser_capable(node: &NodeInventoryEntry) -> bool {
             .commands
             .iter()
             .any(|command| command.eq_ignore_ascii_case("browser.proxy"))
+}
+
+fn node_caps_include_local_host_hint(caps: &[String]) -> bool {
+    caps.iter().any(|cap| {
+        LOCAL_NODE_CAP_HINTS
+            .iter()
+            .any(|hint| cap.eq_ignore_ascii_case(hint))
+    })
+}
+
+fn node_id_list_contains(local_node_ids: &[String], node_id: &str) -> bool {
+    local_node_ids
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(node_id))
+}
+
+fn paired_node_supports_local_host_runtime(
+    node: &PairedNodeEntry,
+    runtime: &NodeHostRuntimeConfig,
+) -> bool {
+    if node_id_list_contains(&runtime.local_node_ids, &node.node_id) {
+        return true;
+    }
+    node.caps
+        .as_ref()
+        .is_some_and(|caps| node_caps_include_local_host_hint(caps))
+}
+
+fn inventory_node_supports_local_host_runtime(
+    node: &NodeInventoryEntry,
+    runtime: &NodeHostRuntimeConfig,
+) -> bool {
+    node_id_list_contains(&runtime.local_node_ids, &node.node_id)
+        || node_caps_include_local_host_hint(&node.caps)
+}
+
+fn local_node_command_ok(payload: Value) -> LocalNodeCommandExecution {
+    LocalNodeCommandExecution {
+        ok: true,
+        payload_json: serde_json::to_string(&payload).ok(),
+        payload: Some(payload),
+        error: None,
+    }
+}
+
+fn local_node_command_error(code: &str, message: String) -> LocalNodeCommandExecution {
+    LocalNodeCommandExecution {
+        ok: false,
+        payload: None,
+        payload_json: None,
+        error: Some(NodeInvokeResultError {
+            code: Some(code.to_owned()),
+            message: Some(message),
+        }),
+    }
+}
+
+async fn local_node_host_execute_system_run(
+    node_id: &str,
+    params: Option<&Value>,
+    runtime: &NodeHostRuntimeConfig,
+) -> LocalNodeCommandExecution {
+    if !runtime.allow_system_run {
+        return local_node_command_error(
+            "LOCAL_SYSTEM_RUN_DISABLED",
+            "system.run is disabled for local host runtime".to_owned(),
+        );
+    }
+    let Some(raw_command) = params
+        .and_then(Value::as_object)
+        .and_then(|obj| obj.get("command").or_else(|| obj.get("cmd")))
+        .and_then(Value::as_str)
+        .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 2_048))
+    else {
+        return local_node_command_error(
+            "LOCAL_SYSTEM_RUN_INVALID",
+            "system.run requires params.command".to_owned(),
+        );
+    };
+    if raw_command
+        .chars()
+        .any(|ch| matches!(ch, '&' | '|' | ';' | '>' | '<' | '`'))
+    {
+        return local_node_command_error(
+            "LOCAL_SYSTEM_RUN_INVALID",
+            "system.run command contains blocked shell metacharacters".to_owned(),
+        );
+    }
+    let Some(head) = raw_command.split_whitespace().next() else {
+        return local_node_command_error(
+            "LOCAL_SYSTEM_RUN_INVALID",
+            "system.run command is empty".to_owned(),
+        );
+    };
+    if !LOCAL_NODE_HOST_SYSTEM_RUN_ALLOWLIST
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(head))
+    {
+        return local_node_command_error(
+            "LOCAL_SYSTEM_RUN_NOT_ALLOWED",
+            format!("system.run command not allowed by local host runtime allowlist: {head}"),
+        );
+    }
+    let cwd = params
+        .and_then(Value::as_object)
+        .and_then(|obj| obj.get("cwd"))
+        .and_then(Value::as_str)
+        .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 2_048));
+    let timeout_ms = runtime.system_run_timeout_ms.clamp(500, 120_000);
+    let mut command = if cfg!(windows) {
+        let mut cmd = TokioCommand::new("cmd");
+        cmd.arg("/C").arg(raw_command.clone());
+        cmd
+    } else {
+        let mut cmd = TokioCommand::new("sh");
+        cmd.arg("-lc").arg(raw_command.clone());
+        cmd
+    };
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output =
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), command.output()).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(err)) => {
+                return local_node_command_error(
+                    "LOCAL_SYSTEM_RUN_FAILED",
+                    format!("system.run execution failed: {err}"),
+                );
+            }
+            Err(_) => {
+                return local_node_command_error(
+                    "LOCAL_SYSTEM_RUN_TIMEOUT",
+                    format!("system.run timed out after {timeout_ms}ms"),
+                );
+            }
+        };
+    let stdout = truncate_text(
+        &String::from_utf8_lossy(&output.stdout),
+        LOCAL_NODE_HOST_SYSTEM_RUN_OUTPUT_MAX_CHARS,
+    );
+    let stderr = truncate_text(
+        &String::from_utf8_lossy(&output.stderr),
+        LOCAL_NODE_HOST_SYSTEM_RUN_OUTPUT_MAX_CHARS,
+    );
+    let payload = json!({
+        "ok": output.status.success(),
+        "nodeId": node_id,
+        "command": raw_command,
+        "stdout": stdout,
+        "stderr": stderr,
+        "exitCode": output.status.code(),
+        "timeoutMs": timeout_ms,
+        "source": "local-host-runtime"
+    });
+    if output.status.success() {
+        local_node_command_ok(payload)
+    } else {
+        LocalNodeCommandExecution {
+            ok: false,
+            payload_json: serde_json::to_string(&payload).ok(),
+            payload: Some(payload.clone()),
+            error: Some(NodeInvokeResultError {
+                code: Some("LOCAL_SYSTEM_RUN_EXIT_NONZERO".to_owned()),
+                message: Some(format!(
+                    "system.run exited with status {:?}",
+                    output.status.code()
+                )),
+            }),
+        }
+    }
 }
 
 fn normalize_browser_node_key(value: &str) -> String {
@@ -11422,23 +12012,36 @@ fn next_device_auth_token(device_id: &str, role: &str) -> String {
 
 struct WebLoginRegistry {
     state: Mutex<WebLoginState>,
+    runtime: Mutex<WebLoginRuntimeState>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 struct WebLoginState {
     sessions: HashMap<String, WebLoginSession>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct WebLoginSession {
+    #[serde(rename = "sessionId")]
     session_id: String,
+    #[serde(rename = "providerId")]
     provider_id: String,
+    #[serde(rename = "accountId")]
     account_id: String,
+    #[serde(rename = "startedAtMs")]
     started_at_ms: u64,
+    #[serde(rename = "readyAtMs")]
     ready_at_ms: u64,
+    #[serde(rename = "expiresAtMs")]
     expires_at_ms: u64,
+    #[serde(rename = "qrDataUrl")]
     qr_data_url: String,
     verbose: bool,
+}
+
+#[derive(Debug, Clone)]
+struct WebLoginRuntimeState {
+    store_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -11491,7 +12094,40 @@ impl WebLoginRegistry {
             state: Mutex::new(WebLoginState {
                 sessions: HashMap::new(),
             }),
+            runtime: Mutex::new(WebLoginRuntimeState {
+                store_path: WEB_LOGIN_STORE_PATH.to_owned(),
+            }),
         }
+    }
+
+    async fn apply_runtime_config(&self, runtime: WebLoginRuntimeConfig) -> Result<(), String> {
+        let target_store_path = runtime
+            .store_path
+            .and_then(|value| normalize_optional_text(Some(value), 2048))
+            .unwrap_or_else(|| WEB_LOGIN_STORE_PATH.to_owned());
+
+        let current_store_path = { self.runtime.lock().await.store_path.clone() };
+        if current_store_path == target_store_path {
+            return Ok(());
+        }
+
+        let mut loaded = load_web_login_store_disk_state(&target_store_path)?;
+        prune_oldest_web_login_sessions(&mut loaded.sessions, 64);
+        {
+            let mut guard = self.state.lock().await;
+            *guard = loaded.clone();
+        }
+        {
+            let mut runtime_guard = self.runtime.lock().await;
+            runtime_guard.store_path = target_store_path.clone();
+        }
+        persist_web_login_store_disk_state(&target_store_path, &loaded)?;
+        Ok(())
+    }
+
+    async fn persist_state_snapshot(&self, state: WebLoginState) -> Result<(), String> {
+        let store_path = { self.runtime.lock().await.store_path.clone() };
+        persist_web_login_store_disk_state(&store_path, &state)
     }
 
     async fn start(&self, input: WebLoginStartInput) -> WebLoginStartResult {
@@ -11502,67 +12138,62 @@ impl WebLoginRegistry {
             normalize(&input.provider_id),
             normalize(&input.account_id)
         );
-        let mut guard = self.state.lock().await;
-        if !input.force {
-            if let Some(existing) = guard.sessions.get(&key) {
-                if now <= existing.expires_at_ms {
-                    return WebLoginStartResult {
-                        provider_id: existing.provider_id.clone(),
-                        account_id: existing.account_id.clone(),
-                        session_id: existing.session_id.clone(),
-                        started_at_ms: existing.started_at_ms,
-                        expires_at_ms: existing.expires_at_ms,
-                        qr_data_url: existing.qr_data_url.clone(),
-                        message: "QR already active. Scan it in WhatsApp -> Linked Devices."
-                            .to_owned(),
-                        verbose: existing.verbose,
-                    };
+        let (result, snapshot) = {
+            let mut guard = self.state.lock().await;
+            if !input.force {
+                if let Some(existing) = guard.sessions.get(&key) {
+                    if now <= existing.expires_at_ms {
+                        return WebLoginStartResult {
+                            provider_id: existing.provider_id.clone(),
+                            account_id: existing.account_id.clone(),
+                            session_id: existing.session_id.clone(),
+                            started_at_ms: existing.started_at_ms,
+                            expires_at_ms: existing.expires_at_ms,
+                            qr_data_url: existing.qr_data_url.clone(),
+                            message: "QR already active. Scan it in WhatsApp -> Linked Devices."
+                                .to_owned(),
+                            verbose: existing.verbose,
+                        };
+                    }
                 }
             }
-        }
 
-        let session_id = next_web_login_session_id();
-        let started_at_ms = now;
-        let expires_at_ms = now.saturating_add(timeout_ms.max(60_000));
-        let ready_at_ms = now.saturating_add(timeout_ms.min(3_000));
-        let qr_data_url = format!(
-            "data:image/png;base64,cnVzdC1wYXJpdHktd2ViLWxvZ2luLXNlc3Npb24t{}",
-            session_id
-        );
-        let session = WebLoginSession {
-            session_id: session_id.clone(),
-            provider_id: input.provider_id.clone(),
-            account_id: input.account_id.clone(),
-            started_at_ms,
-            ready_at_ms,
-            expires_at_ms,
-            qr_data_url: qr_data_url.clone(),
-            verbose: input.verbose,
+            let session_id = next_web_login_session_id();
+            let started_at_ms = now;
+            let expires_at_ms = now.saturating_add(timeout_ms.max(60_000));
+            let ready_at_ms = now.saturating_add(timeout_ms.min(3_000));
+            let qr_data_url = format!(
+                "data:image/png;base64,cnVzdC1wYXJpdHktd2ViLWxvZ2luLXNlc3Npb24t{}",
+                session_id
+            );
+            let session = WebLoginSession {
+                session_id: session_id.clone(),
+                provider_id: input.provider_id.clone(),
+                account_id: input.account_id.clone(),
+                started_at_ms,
+                ready_at_ms,
+                expires_at_ms,
+                qr_data_url: qr_data_url.clone(),
+                verbose: input.verbose,
+            };
+            guard.sessions.insert(key, session);
+            prune_oldest_web_login_sessions(&mut guard.sessions, 64);
+            (
+                WebLoginStartResult {
+                    provider_id: input.provider_id,
+                    account_id: input.account_id,
+                    session_id,
+                    started_at_ms,
+                    expires_at_ms,
+                    qr_data_url,
+                    message: "Scan this QR in WhatsApp -> Linked Devices.".to_owned(),
+                    verbose: input.verbose,
+                },
+                guard.clone(),
+            )
         };
-        guard.sessions.insert(key, session);
-        if guard.sessions.len() > 64 {
-            let mut oldest_key: Option<String> = None;
-            let mut oldest_started = u64::MAX;
-            for (entry_key, entry) in &guard.sessions {
-                if entry.started_at_ms < oldest_started {
-                    oldest_started = entry.started_at_ms;
-                    oldest_key = Some(entry_key.clone());
-                }
-            }
-            if let Some(oldest_key) = oldest_key {
-                let _ = guard.sessions.remove(&oldest_key);
-            }
-        }
-        WebLoginStartResult {
-            provider_id: input.provider_id,
-            account_id: input.account_id,
-            session_id,
-            started_at_ms,
-            expires_at_ms,
-            qr_data_url,
-            message: "Scan this QR in WhatsApp -> Linked Devices.".to_owned(),
-            verbose: input.verbose,
-        }
+        let _ = self.persist_state_snapshot(snapshot).await;
+        result
     }
 
     async fn wait(&self, input: WebLoginWaitInput) -> WebLoginWaitResult {
@@ -11573,53 +12204,155 @@ impl WebLoginRegistry {
             normalize(&input.provider_id),
             normalize(&input.account_id)
         );
-        let mut guard = self.state.lock().await;
-        let Some(session) = guard.sessions.get(&key).cloned() else {
-            return WebLoginWaitResult {
-                provider_id: input.provider_id,
-                account_id: input.account_id,
-                connected: false,
-                message: "No active WhatsApp login in progress.".to_owned(),
+        let (result, snapshot) = {
+            let mut guard = self.state.lock().await;
+            let Some(session) = guard.sessions.get(&key).cloned() else {
+                return WebLoginWaitResult {
+                    provider_id: input.provider_id,
+                    account_id: input.account_id,
+                    connected: false,
+                    message: "No active WhatsApp login in progress.".to_owned(),
+                };
             };
+            if now > session.expires_at_ms {
+                let _ = guard.sessions.remove(&key);
+                (
+                    WebLoginWaitResult {
+                        provider_id: input.provider_id,
+                        account_id: input.account_id,
+                        connected: false,
+                        message: "The login QR expired. Ask me to generate a new one.".to_owned(),
+                    },
+                    Some(guard.clone()),
+                )
+            } else if now.saturating_add(timeout_ms) >= session.ready_at_ms {
+                let _ = guard.sessions.remove(&key);
+                (
+                    WebLoginWaitResult {
+                        provider_id: input.provider_id,
+                        account_id: input.account_id,
+                        connected: true,
+                        message: "Linked! Channel account is ready.".to_owned(),
+                    },
+                    Some(guard.clone()),
+                )
+            } else {
+                (
+                    WebLoginWaitResult {
+                        provider_id: input.provider_id,
+                        account_id: input.account_id,
+                        connected: false,
+                        message:
+                            "Still waiting for the QR scan. Let me know when you've scanned it."
+                                .to_owned(),
+                    },
+                    None,
+                )
+            }
         };
-        if now > session.expires_at_ms {
-            let _ = guard.sessions.remove(&key);
-            return WebLoginWaitResult {
-                provider_id: input.provider_id,
-                account_id: input.account_id,
-                connected: false,
-                message: "The login QR expired. Ask me to generate a new one.".to_owned(),
-            };
+        if let Some(snapshot) = snapshot {
+            let _ = self.persist_state_snapshot(snapshot).await;
         }
-        if now.saturating_add(timeout_ms) >= session.ready_at_ms {
-            let _ = guard.sessions.remove(&key);
-            return WebLoginWaitResult {
-                provider_id: input.provider_id,
-                account_id: input.account_id,
-                connected: true,
-                message: "Linked! Channel account is ready.".to_owned(),
-            };
-        }
-        WebLoginWaitResult {
-            provider_id: input.provider_id,
-            account_id: input.account_id,
-            connected: false,
-            message: "Still waiting for the QR scan. Let me know when you've scanned it."
-                .to_owned(),
-        }
+        result
     }
+}
+
+fn prune_oldest_web_login_sessions(
+    sessions: &mut HashMap<String, WebLoginSession>,
+    max_sessions: usize,
+) {
+    while sessions.len() > max_sessions {
+        let Some(oldest_key) = sessions
+            .iter()
+            .min_by_key(|(_, entry)| entry.started_at_ms)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        let _ = sessions.remove(&oldest_key);
+    }
+}
+
+fn web_login_store_path_is_memory(path: &str) -> bool {
+    normalize(path).starts_with("memory://")
+}
+
+fn load_web_login_store_disk_state(path: &str) -> Result<WebLoginState, String> {
+    if web_login_store_path_is_memory(path) {
+        return Ok(WebLoginState::default());
+    }
+    let store_path = PathBuf::from(path);
+    if !store_path.exists() {
+        return Ok(WebLoginState::default());
+    }
+    let raw = std::fs::read_to_string(&store_path).map_err(|err| {
+        format!(
+            "failed reading web login store {}: {err}",
+            store_path.display()
+        )
+    })?;
+    let parsed: WebLoginState = serde_json::from_str(&raw).map_err(|err| {
+        format!(
+            "failed parsing web login store {}: {err}",
+            store_path.display()
+        )
+    })?;
+    Ok(parsed)
+}
+
+fn persist_web_login_store_disk_state(path: &str, state: &WebLoginState) -> Result<(), String> {
+    if web_login_store_path_is_memory(path) {
+        return Ok(());
+    }
+    let payload = serde_json::to_string_pretty(state)
+        .map_err(|err| format!("failed serializing web login store: {err}"))?;
+    let store_path = PathBuf::from(path);
+    if let Some(parent) = store_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "failed creating web login store directory {}: {err}",
+                parent.display()
+            )
+        })?;
+    }
+    let mut temp_path = store_path.clone();
+    let temp_name = format!(
+        ".{}.tmp",
+        store_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("web-login-store")
+    );
+    temp_path.set_file_name(temp_name);
+    std::fs::write(&temp_path, payload).map_err(|err| {
+        format!(
+            "failed writing web login temp store {}: {err}",
+            temp_path.display()
+        )
+    })?;
+    if store_path.exists() {
+        let _ = std::fs::remove_file(&store_path);
+    }
+    std::fs::rename(&temp_path, &store_path).map_err(|err| {
+        format!(
+            "failed replacing web login store {}: {err}",
+            store_path.display()
+        )
+    })
 }
 
 struct WizardRegistry {
     state: Mutex<WizardState>,
+    runtime: Mutex<WizardRuntimeState>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 struct WizardState {
     sessions: HashMap<String, WizardSessionState>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum WizardRunStatus {
     Running,
     Done,
@@ -11627,14 +12360,21 @@ enum WizardRunStatus {
     Error,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct WizardSessionState {
     mode: String,
     workspace: Option<String>,
     status: WizardRunStatus,
     error: Option<String>,
+    #[serde(rename = "createdAtMs")]
     created_at_ms: u64,
+    #[serde(rename = "updatedAtMs")]
     updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct WizardRuntimeState {
+    store_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -11660,7 +12400,40 @@ impl WizardRegistry {
             state: Mutex::new(WizardState {
                 sessions: HashMap::new(),
             }),
+            runtime: Mutex::new(WizardRuntimeState {
+                store_path: WIZARD_STORE_PATH.to_owned(),
+            }),
         }
+    }
+
+    async fn apply_runtime_config(&self, runtime: WizardRuntimeConfig) -> Result<(), String> {
+        let target_store_path = runtime
+            .store_path
+            .and_then(|value| normalize_optional_text(Some(value), 2048))
+            .unwrap_or_else(|| WIZARD_STORE_PATH.to_owned());
+
+        let current_store_path = { self.runtime.lock().await.store_path.clone() };
+        if current_store_path == target_store_path {
+            return Ok(());
+        }
+
+        let mut loaded = load_wizard_store_disk_state(&target_store_path)?;
+        prune_oldest_wizard_sessions(&mut loaded.sessions, 64);
+        {
+            let mut guard = self.state.lock().await;
+            *guard = loaded.clone();
+        }
+        {
+            let mut runtime_guard = self.runtime.lock().await;
+            runtime_guard.store_path = target_store_path.clone();
+        }
+        persist_wizard_store_disk_state(&target_store_path, &loaded)?;
+        Ok(())
+    }
+
+    async fn persist_state_snapshot(&self, state: WizardState) -> Result<(), String> {
+        let store_path = { self.runtime.lock().await.store_path.clone() };
+        persist_wizard_store_disk_state(&store_path, &state)
     }
 
     async fn start(
@@ -11668,49 +12441,41 @@ impl WizardRegistry {
         mode: String,
         workspace: Option<String>,
     ) -> Result<Value, WizardRegistryError> {
-        let mut guard = self.state.lock().await;
-        if guard
-            .sessions
-            .values()
-            .any(|session| session.status == WizardRunStatus::Running)
-        {
-            return Err(WizardRegistryError::Unavailable(
-                "wizard already running".to_owned(),
-            ));
-        }
-        let now = now_ms();
-        let session_id = next_wizard_session_id();
-        let session = WizardSessionState {
-            mode,
-            workspace,
-            status: WizardRunStatus::Running,
-            error: None,
-            created_at_ms: now,
-            updated_at_ms: now,
+        let (response, snapshot) = {
+            let mut guard = self.state.lock().await;
+            if guard
+                .sessions
+                .values()
+                .any(|session| session.status == WizardRunStatus::Running)
+            {
+                return Err(WizardRegistryError::Unavailable(
+                    "wizard already running".to_owned(),
+                ));
+            }
+            let now = now_ms();
+            let session_id = next_wizard_session_id();
+            let session = WizardSessionState {
+                mode,
+                workspace,
+                status: WizardRunStatus::Running,
+                error: None,
+                created_at_ms: now,
+                updated_at_ms: now,
+            };
+            guard.sessions.insert(session_id.clone(), session.clone());
+            prune_oldest_wizard_sessions(&mut guard.sessions, 64);
+            (
+                json!({
+                    "sessionId": session_id,
+                    "done": false,
+                    "step": wizard_step_payload(&session),
+                    "status": WizardRunStatus::Running.as_str()
+                }),
+                guard.clone(),
+            )
         };
-        guard.sessions.insert(session_id.clone(), session.clone());
-        if guard.sessions.len() > 64 {
-            let mut oldest_key: Option<String> = None;
-            let mut oldest_started = u64::MAX;
-            for (entry_key, entry) in &guard.sessions {
-                if entry.status == WizardRunStatus::Running {
-                    continue;
-                }
-                if entry.created_at_ms < oldest_started {
-                    oldest_started = entry.created_at_ms;
-                    oldest_key = Some(entry_key.clone());
-                }
-            }
-            if let Some(oldest_key) = oldest_key {
-                let _ = guard.sessions.remove(&oldest_key);
-            }
-        }
-        Ok(json!({
-            "sessionId": session_id,
-            "done": false,
-            "step": wizard_step_payload(&session),
-            "status": WizardRunStatus::Running.as_str()
-        }))
+        let _ = self.persist_state_snapshot(snapshot).await;
+        Ok(response)
     }
 
     async fn next(&self, params: WizardNextParams) -> Result<Value, WizardRegistryError> {
@@ -11719,92 +12484,200 @@ impl WizardRegistry {
                 "invalid wizard.next params: sessionId required".to_owned(),
             )
         })?;
-        let mut guard = self.state.lock().await;
-        let Some(session) = guard.sessions.get_mut(&session_id) else {
-            return Err(WizardRegistryError::Invalid("wizard not found".to_owned()));
-        };
-
-        if let Some(answer) = params.answer {
-            if session.status != WizardRunStatus::Running {
-                return Err(WizardRegistryError::Invalid(
-                    "wizard not running".to_owned(),
-                ));
-            }
-            let step_id = normalize_optional_text(Some(answer.step_id), 128).ok_or_else(|| {
-                WizardRegistryError::Invalid(
-                    "invalid wizard.next params: answer.stepId required".to_owned(),
-                )
-            })?;
-            if normalize(&step_id) != "confirm-setup" {
-                session.status = WizardRunStatus::Error;
-                session.error = Some("invalid wizard step".to_owned());
-                return Err(WizardRegistryError::Invalid(
-                    "invalid wizard.next params: unknown stepId".to_owned(),
-                ));
-            }
-            let accepted = match answer.value {
-                Some(value) => json_value_as_bool(&value).ok_or_else(|| {
-                    WizardRegistryError::Invalid(
-                        "invalid wizard.next params: answer.value must be boolean".to_owned(),
-                    )
-                })?,
-                None => true,
+        let (response, snapshot) = {
+            let mut guard = self.state.lock().await;
+            let Some(session) = guard.sessions.get_mut(&session_id) else {
+                return Err(WizardRegistryError::Invalid("wizard not found".to_owned()));
             };
-            session.updated_at_ms = now_ms();
-            session.status = if accepted {
-                WizardRunStatus::Done
+
+            if let Some(answer) = params.answer {
+                if session.status != WizardRunStatus::Running {
+                    return Err(WizardRegistryError::Invalid(
+                        "wizard not running".to_owned(),
+                    ));
+                }
+                let step_id =
+                    normalize_optional_text(Some(answer.step_id), 128).ok_or_else(|| {
+                        WizardRegistryError::Invalid(
+                            "invalid wizard.next params: answer.stepId required".to_owned(),
+                        )
+                    })?;
+                if normalize(&step_id) != "confirm-setup" {
+                    session.status = WizardRunStatus::Error;
+                    session.error = Some("invalid wizard step".to_owned());
+                    return Err(WizardRegistryError::Invalid(
+                        "invalid wizard.next params: unknown stepId".to_owned(),
+                    ));
+                }
+                let accepted = match answer.value {
+                    Some(value) => json_value_as_bool(&value).ok_or_else(|| {
+                        WizardRegistryError::Invalid(
+                            "invalid wizard.next params: answer.value must be boolean".to_owned(),
+                        )
+                    })?,
+                    None => true,
+                };
+                session.updated_at_ms = now_ms();
+                session.status = if accepted {
+                    WizardRunStatus::Done
+                } else {
+                    WizardRunStatus::Cancelled
+                };
+            }
+
+            let running = session.status == WizardRunStatus::Running;
+            let response = if running {
+                json!({
+                    "done": false,
+                    "step": wizard_step_payload(session),
+                    "status": session.status.as_str(),
+                    "error": session.error
+                })
             } else {
-                WizardRunStatus::Cancelled
+                json!({
+                    "done": true,
+                    "status": session.status.as_str(),
+                    "error": session.error
+                })
             };
-        }
-
-        let running = session.status == WizardRunStatus::Running;
-        let response = if running {
-            json!({
-                "done": false,
-                "step": wizard_step_payload(session),
-                "status": session.status.as_str(),
-                "error": session.error
-            })
-        } else {
-            json!({
-                "done": true,
-                "status": session.status.as_str(),
-                "error": session.error
-            })
+            if !running {
+                let _ = guard.sessions.remove(&session_id);
+            }
+            (response, guard.clone())
         };
-        if !running {
-            let _ = guard.sessions.remove(&session_id);
-        }
+        let _ = self.persist_state_snapshot(snapshot).await;
         Ok(response)
     }
 
     async fn cancel(&self, session_id: &str) -> Result<Value, WizardRegistryError> {
-        let mut guard = self.state.lock().await;
-        let Some(mut session) = guard.sessions.remove(session_id) else {
-            return Err(WizardRegistryError::Invalid("wizard not found".to_owned()));
+        let (response, snapshot) = {
+            let mut guard = self.state.lock().await;
+            let Some(mut session) = guard.sessions.remove(session_id) else {
+                return Err(WizardRegistryError::Invalid("wizard not found".to_owned()));
+            };
+            session.status = WizardRunStatus::Cancelled;
+            session.updated_at_ms = now_ms();
+            (
+                json!({
+                    "status": session.status.as_str(),
+                    "error": session.error
+                }),
+                guard.clone(),
+            )
         };
-        session.status = WizardRunStatus::Cancelled;
-        session.updated_at_ms = now_ms();
-        Ok(json!({
-            "status": session.status.as_str(),
-            "error": session.error
-        }))
+        let _ = self.persist_state_snapshot(snapshot).await;
+        Ok(response)
     }
 
     async fn status(&self, session_id: &str) -> Result<Value, WizardRegistryError> {
-        let mut guard = self.state.lock().await;
-        let Some(session) = guard.sessions.get(session_id).cloned() else {
-            return Err(WizardRegistryError::Invalid("wizard not found".to_owned()));
+        let (response, snapshot) = {
+            let mut guard = self.state.lock().await;
+            let Some(session) = guard.sessions.get(session_id).cloned() else {
+                return Err(WizardRegistryError::Invalid("wizard not found".to_owned()));
+            };
+            let mut persisted = None;
+            if session.status != WizardRunStatus::Running {
+                let _ = guard.sessions.remove(session_id);
+                persisted = Some(guard.clone());
+            }
+            (
+                json!({
+                    "status": session.status.as_str(),
+                    "error": session.error
+                }),
+                persisted,
+            )
         };
-        if session.status != WizardRunStatus::Running {
-            let _ = guard.sessions.remove(session_id);
+        if let Some(snapshot) = snapshot {
+            let _ = self.persist_state_snapshot(snapshot).await;
         }
-        Ok(json!({
-            "status": session.status.as_str(),
-            "error": session.error
-        }))
+        Ok(response)
     }
+}
+
+fn prune_oldest_wizard_sessions(
+    sessions: &mut HashMap<String, WizardSessionState>,
+    max_sessions: usize,
+) {
+    while sessions.len() > max_sessions {
+        let Some(oldest_key) = sessions
+            .iter()
+            .filter(|(_, entry)| entry.status != WizardRunStatus::Running)
+            .min_by_key(|(_, entry)| entry.created_at_ms)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        let _ = sessions.remove(&oldest_key);
+    }
+}
+
+fn wizard_store_path_is_memory(path: &str) -> bool {
+    normalize(path).starts_with("memory://")
+}
+
+fn load_wizard_store_disk_state(path: &str) -> Result<WizardState, String> {
+    if wizard_store_path_is_memory(path) {
+        return Ok(WizardState::default());
+    }
+    let store_path = PathBuf::from(path);
+    if !store_path.exists() {
+        return Ok(WizardState::default());
+    }
+    let raw = std::fs::read_to_string(&store_path).map_err(|err| {
+        format!(
+            "failed reading wizard store {}: {err}",
+            store_path.display()
+        )
+    })?;
+    let parsed: WizardState = serde_json::from_str(&raw).map_err(|err| {
+        format!(
+            "failed parsing wizard store {}: {err}",
+            store_path.display()
+        )
+    })?;
+    Ok(parsed)
+}
+
+fn persist_wizard_store_disk_state(path: &str, state: &WizardState) -> Result<(), String> {
+    if wizard_store_path_is_memory(path) {
+        return Ok(());
+    }
+    let payload = serde_json::to_string_pretty(state)
+        .map_err(|err| format!("failed serializing wizard store: {err}"))?;
+    let store_path = PathBuf::from(path);
+    if let Some(parent) = store_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "failed creating wizard store directory {}: {err}",
+                parent.display()
+            )
+        })?;
+    }
+    let mut temp_path = store_path.clone();
+    let temp_name = format!(
+        ".{}.tmp",
+        store_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("wizard-store")
+    );
+    temp_path.set_file_name(temp_name);
+    std::fs::write(&temp_path, payload).map_err(|err| {
+        format!(
+            "failed writing wizard temp store {}: {err}",
+            temp_path.display()
+        )
+    })?;
+    if store_path.exists() {
+        let _ = std::fs::remove_file(&store_path);
+    }
+    std::fs::rename(&temp_path, &store_path).map_err(|err| {
+        format!(
+            "failed replacing wizard store {}: {err}",
+            store_path.display()
+        )
+    })
 }
 
 fn wizard_step_payload(session: &WizardSessionState) -> Value {
@@ -12198,6 +13071,7 @@ fn sort_and_dedup_strings(values: &mut Vec<String>) {
 
 struct ConfigRegistry {
     state: Mutex<ConfigState>,
+    runtime: Mutex<ConfigRuntimeState>,
 }
 
 #[derive(Debug, Clone)]
@@ -12224,25 +13098,62 @@ struct ConfigUpdateResult {
     hash: String,
 }
 
+#[derive(Debug, Clone)]
+struct ConfigRuntimeState {
+    store_path: String,
+}
+
 impl ConfigRegistry {
     fn new() -> Self {
-        let config = json!({
-            "session": { "mainKey": "main" },
-            "talk": {
-                "outputFormat": "pcm16",
-                "interruptOnSpeech": true
-            },
-            "ui": { "seamColor": "#4b5563" }
-        });
+        let config = default_gateway_config_document();
         let hash = hash_json_value(&config);
         Self {
             state: Mutex::new(ConfigState {
-                path: "memory://config.json".to_owned(),
+                path: CONFIG_STORE_PATH.to_owned(),
                 config,
                 hash,
                 updated_at_ms: now_ms(),
             }),
+            runtime: Mutex::new(ConfigRuntimeState {
+                store_path: CONFIG_STORE_PATH.to_owned(),
+            }),
         }
+    }
+
+    async fn apply_runtime_config(&self, runtime: ConfigRuntimeConfig) -> Result<(), String> {
+        let target_store_path = runtime
+            .store_path
+            .and_then(|value| normalize_optional_text(Some(value), 2048))
+            .unwrap_or_else(|| CONFIG_STORE_PATH.to_owned());
+
+        let current_store_path = { self.runtime.lock().await.store_path.clone() };
+        if current_store_path == target_store_path {
+            return Ok(());
+        }
+
+        let loaded = load_config_store_disk_state(&target_store_path)?;
+        let state = ConfigState {
+            path: target_store_path.clone(),
+            hash: loaded.hash.clone(),
+            updated_at_ms: loaded.updated_at_ms,
+            config: loaded.config,
+        };
+
+        {
+            let mut guard = self.state.lock().await;
+            *guard = state.clone();
+        }
+        {
+            let mut runtime_guard = self.runtime.lock().await;
+            runtime_guard.store_path = target_store_path.clone();
+        }
+        persist_config_store_disk_state(&target_store_path, &state)?;
+        Ok(())
+    }
+
+    async fn persist_state_snapshot(&self, state: ConfigState) -> Result<(), String> {
+        let store_path = { self.runtime.lock().await.store_path.clone() };
+        persist_config_store_disk_state(&store_path, &state)
     }
 
     fn schema(&self) -> Value {
@@ -12273,16 +13184,33 @@ impl ConfigRegistry {
         base_hash: Option<String>,
     ) -> Result<ConfigUpdateResult, String> {
         let parsed = parse_config_raw(raw, "config.set")?;
-        let mut guard = self.state.lock().await;
-        require_base_hash(base_hash, &guard)?;
-        guard.config = parsed;
-        guard.hash = hash_json_value(&guard.config);
-        guard.updated_at_ms = now_ms();
-        Ok(ConfigUpdateResult {
-            path: guard.path.clone(),
-            config: guard.config.clone(),
-            hash: guard.hash.clone(),
-        })
+        let (result, snapshot, store_path) = {
+            let mut guard = self.state.lock().await;
+            require_base_hash(base_hash, &guard)?;
+            guard.config = parsed;
+            guard.hash = hash_json_value(&guard.config);
+            guard.updated_at_ms = now_ms();
+            let store_path = config_runtime_config_from_config(&guard.config)
+                .store_path
+                .and_then(|value| normalize_optional_text(Some(value), 2048))
+                .unwrap_or_else(|| CONFIG_STORE_PATH.to_owned());
+            guard.path = store_path.clone();
+            (
+                ConfigUpdateResult {
+                    path: guard.path.clone(),
+                    config: guard.config.clone(),
+                    hash: guard.hash.clone(),
+                },
+                guard.clone(),
+                store_path,
+            )
+        };
+        {
+            let mut runtime_guard = self.runtime.lock().await;
+            runtime_guard.store_path = store_path;
+        }
+        let _ = self.persist_state_snapshot(snapshot).await;
+        Ok(result)
     }
 
     async fn patch(
@@ -12291,16 +13219,42 @@ impl ConfigRegistry {
         base_hash: Option<String>,
     ) -> Result<ConfigUpdateResult, String> {
         let patch = parse_config_patch_raw(raw)?;
-        let mut guard = self.state.lock().await;
-        require_base_hash(base_hash, &guard)?;
-        guard.config = apply_merge_patch(guard.config.clone(), patch);
-        guard.hash = hash_json_value(&guard.config);
-        guard.updated_at_ms = now_ms();
-        Ok(ConfigUpdateResult {
-            path: guard.path.clone(),
-            config: guard.config.clone(),
-            hash: guard.hash.clone(),
-        })
+        let (result, snapshot, store_path) = {
+            let mut guard = self.state.lock().await;
+            require_base_hash(base_hash, &guard)?;
+            let candidate = apply_merge_patch(guard.config.clone(), patch.clone());
+            let store_path = config_runtime_config_from_config(&candidate)
+                .store_path
+                .and_then(|value| normalize_optional_text(Some(value), 2048))
+                .unwrap_or_else(|| CONFIG_STORE_PATH.to_owned());
+            let next_config = if !guard.path.eq_ignore_ascii_case(&store_path) {
+                match load_config_store_disk_state(&store_path) {
+                    Ok(loaded) => apply_merge_patch(loaded.config, patch),
+                    Err(_) => candidate,
+                }
+            } else {
+                candidate
+            };
+            guard.config = next_config;
+            guard.hash = hash_json_value(&guard.config);
+            guard.updated_at_ms = now_ms();
+            guard.path = store_path.clone();
+            (
+                ConfigUpdateResult {
+                    path: guard.path.clone(),
+                    config: guard.config.clone(),
+                    hash: guard.hash.clone(),
+                },
+                guard.clone(),
+                store_path,
+            )
+        };
+        {
+            let mut runtime_guard = self.runtime.lock().await;
+            runtime_guard.store_path = store_path;
+        }
+        let _ = self.persist_state_snapshot(snapshot).await;
+        Ok(result)
     }
 
     async fn cron_webhook_defaults(&self) -> CronWebhookDefaults {
@@ -12337,6 +13291,155 @@ impl ConfigRegistry {
         let guard = self.state.lock().await;
         node_pair_runtime_config_from_config(&guard.config)
     }
+
+    async fn config_runtime_config(&self) -> ConfigRuntimeConfig {
+        let guard = self.state.lock().await;
+        config_runtime_config_from_config(&guard.config)
+    }
+
+    async fn web_login_runtime_config(&self) -> WebLoginRuntimeConfig {
+        let guard = self.state.lock().await;
+        web_login_runtime_config_from_config(&guard.config)
+    }
+
+    async fn wizard_runtime_config(&self) -> WizardRuntimeConfig {
+        let guard = self.state.lock().await;
+        wizard_runtime_config_from_config(&guard.config)
+    }
+
+    async fn node_host_runtime_config(&self) -> NodeHostRuntimeConfig {
+        let guard = self.state.lock().await;
+        node_host_runtime_config_from_config(&guard.config)
+    }
+}
+
+fn default_gateway_config_document() -> Value {
+    json!({
+        "session": { "mainKey": "main" },
+        "talk": {
+            "outputFormat": "pcm16",
+            "interruptOnSpeech": true
+        },
+        "ui": { "seamColor": "#4b5563" }
+    })
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ConfigStoreDiskState {
+    config: Value,
+    #[serde(rename = "updatedAtMs")]
+    updated_at_ms: u64,
+}
+
+impl Default for ConfigStoreDiskState {
+    fn default() -> Self {
+        Self {
+            config: default_gateway_config_document(),
+            updated_at_ms: now_ms(),
+        }
+    }
+}
+
+impl From<ConfigState> for ConfigStoreDiskState {
+    fn from(value: ConfigState) -> Self {
+        Self {
+            config: value.config,
+            updated_at_ms: value.updated_at_ms,
+        }
+    }
+}
+
+impl ConfigStoreDiskState {
+    fn into_state(self, path: String) -> ConfigState {
+        let config = if self.config.is_object() {
+            self.config
+        } else {
+            default_gateway_config_document()
+        };
+        ConfigState {
+            hash: hash_json_value(&config),
+            updated_at_ms: self.updated_at_ms.max(1),
+            path,
+            config,
+        }
+    }
+}
+
+fn load_config_store_disk_state(path: &str) -> Result<ConfigState, String> {
+    if config_store_path_is_memory(path) {
+        return Ok(ConfigStoreDiskState::default().into_state(path.to_owned()));
+    }
+    let store_path = PathBuf::from(path);
+    if !store_path.exists() {
+        return Ok(ConfigStoreDiskState::default().into_state(path.to_owned()));
+    }
+    let raw = std::fs::read_to_string(&store_path).map_err(|err| {
+        format!(
+            "failed reading config store {}: {err}",
+            store_path.display()
+        )
+    })?;
+    let parsed = serde_json::from_str::<ConfigStoreDiskState>(&raw).or_else(|_| {
+        let config = serde_json::from_str::<Value>(&raw).map_err(|err| {
+            format!(
+                "failed parsing config store {}: {err}",
+                store_path.display()
+            )
+        })?;
+        Ok::<ConfigStoreDiskState, String>(ConfigStoreDiskState {
+            config,
+            updated_at_ms: now_ms(),
+        })
+    })?;
+    Ok(parsed.into_state(path.to_owned()))
+}
+
+fn persist_config_store_disk_state(path: &str, state: &ConfigState) -> Result<(), String> {
+    if config_store_path_is_memory(path) {
+        return Ok(());
+    }
+    let payload = serde_json::to_string_pretty(&ConfigStoreDiskState {
+        config: state.config.clone(),
+        updated_at_ms: state.updated_at_ms,
+    })
+    .map_err(|err| format!("failed serializing config store: {err}"))?;
+    let store_path = PathBuf::from(path);
+    if let Some(parent) = store_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "failed creating config store directory {}: {err}",
+                parent.display()
+            )
+        })?;
+    }
+    let mut temp_path = store_path.clone();
+    let temp_name = format!(
+        ".{}.tmp",
+        store_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("config-store")
+    );
+    temp_path.set_file_name(temp_name);
+    std::fs::write(&temp_path, payload).map_err(|err| {
+        format!(
+            "failed writing config temp store {}: {err}",
+            temp_path.display()
+        )
+    })?;
+    if store_path.exists() {
+        let _ = std::fs::remove_file(&store_path);
+    }
+    std::fs::rename(&temp_path, &store_path).map_err(|err| {
+        format!(
+            "failed replacing config store {}: {err}",
+            store_path.display()
+        )
+    })
+}
+
+fn config_store_path_is_memory(path: &str) -> bool {
+    normalize(path).starts_with("memory://")
 }
 
 fn parse_config_raw(raw: String, method: &str) -> Result<Value, String> {
@@ -12610,6 +13713,129 @@ fn node_pair_runtime_config_from_config(config: &Value) -> NodePairRuntimeConfig
     NodePairRuntimeConfig { store_path }
 }
 
+fn config_runtime_config_from_config(config: &Value) -> ConfigRuntimeConfig {
+    let runtime = config.get("runtime").and_then(Value::as_object);
+    let config_obj = config.get("config").and_then(Value::as_object);
+    let store_path = config_obj
+        .and_then(|obj| {
+            read_config_string(
+                obj,
+                &["storePath", "store_path", "statePath", "state_path"],
+                2048,
+            )
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string(obj, &["configStorePath", "config_store_path"], 2048)
+            })
+        });
+    ConfigRuntimeConfig { store_path }
+}
+
+fn web_login_runtime_config_from_config(config: &Value) -> WebLoginRuntimeConfig {
+    let runtime = config.get("runtime").and_then(Value::as_object);
+    let web_login = config
+        .get("webLogin")
+        .and_then(Value::as_object)
+        .or_else(|| {
+            config
+                .get("web")
+                .and_then(Value::as_object)
+                .and_then(|web| web.get("login").and_then(Value::as_object))
+        });
+    let store_path = web_login
+        .and_then(|obj| {
+            read_config_string(
+                obj,
+                &["storePath", "store_path", "statePath", "state_path"],
+                2048,
+            )
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string(obj, &["webLoginStorePath", "web_login_store_path"], 2048)
+            })
+        });
+    WebLoginRuntimeConfig { store_path }
+}
+
+fn wizard_runtime_config_from_config(config: &Value) -> WizardRuntimeConfig {
+    let runtime = config.get("runtime").and_then(Value::as_object);
+    let wizard = config.get("wizard").and_then(Value::as_object);
+    let store_path = wizard
+        .and_then(|obj| {
+            read_config_string(
+                obj,
+                &["storePath", "store_path", "statePath", "state_path"],
+                2048,
+            )
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string(obj, &["wizardStorePath", "wizard_store_path"], 2048)
+            })
+        });
+    WizardRuntimeConfig { store_path }
+}
+
+fn node_host_runtime_config_from_config(config: &Value) -> NodeHostRuntimeConfig {
+    let runtime = config.get("runtime").and_then(Value::as_object);
+    let node = config.get("node").and_then(Value::as_object);
+    let node_host = config
+        .get("nodeHost")
+        .and_then(Value::as_object)
+        .or_else(|| {
+            node.and_then(|node_obj| node_obj.get("hostRuntime").and_then(Value::as_object))
+        });
+
+    let local_node_ids = node_host
+        .and_then(|obj| read_config_string_list(obj, &["localNodeIds", "local_node_ids"], 128, 128))
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string_list(obj, &["localNodeIds", "local_node_ids"], 128, 128)
+            })
+        })
+        .unwrap_or_default();
+
+    let allow_system_run = node_host
+        .and_then(|obj| read_config_bool(obj, &["allowSystemRun", "allow_system_run"]))
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_bool(obj, &["allowLocalSystemRun", "allow_local_system_run"])
+            })
+        })
+        .unwrap_or(false);
+
+    let system_run_timeout_ms = node_host
+        .and_then(|obj| {
+            read_config_u64(
+                obj,
+                &[
+                    "systemRunTimeoutMs",
+                    "system_run_timeout_ms",
+                    "timeoutMs",
+                    "timeout_ms",
+                ],
+            )
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_u64(
+                    obj,
+                    &["localSystemRunTimeoutMs", "local_system_run_timeout_ms"],
+                )
+            })
+        })
+        .map(|value| value.clamp(500, 120_000))
+        .unwrap_or(LOCAL_NODE_HOST_SYSTEM_RUN_TIMEOUT_MS);
+
+    NodeHostRuntimeConfig {
+        local_node_ids,
+        allow_system_run,
+        system_run_timeout_ms,
+    }
+}
+
 fn read_config_string(
     object: &serde_json::Map<String, Value>,
     keys: &[&str],
@@ -12628,9 +13854,48 @@ fn read_config_u64(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Op
         .find_map(|key| object.get(*key).and_then(config_value_as_u64))
 }
 
+fn read_config_bool(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<bool> {
+    keys.iter()
+        .find_map(|key| object.get(*key).and_then(json_value_as_bool))
+}
+
 fn read_config_usize(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<usize> {
     keys.iter()
         .find_map(|key| object.get(*key).and_then(config_value_as_usize))
+}
+
+fn read_config_string_list(
+    object: &serde_json::Map<String, Value>,
+    keys: &[&str],
+    max_items: usize,
+    max_len: usize,
+) -> Option<Vec<String>> {
+    keys.iter().find_map(|key| {
+        let value = object.get(*key)?;
+        let Value::Array(items) = value else {
+            return None;
+        };
+        let mut out = Vec::new();
+        for item in items {
+            let Some(raw) = item.as_str() else {
+                continue;
+            };
+            let Some(normalized) = normalize_optional_text(Some(raw.to_owned()), max_len) else {
+                continue;
+            };
+            if out
+                .iter()
+                .any(|existing: &String| existing.eq_ignore_ascii_case(&normalized))
+            {
+                continue;
+            }
+            out.push(normalized);
+            if out.len() >= max_items {
+                break;
+            }
+        }
+        Some(out)
+    })
 }
 
 fn config_value_as_u64(value: &Value) -> Option<u64> {
@@ -15257,6 +16522,14 @@ struct NodeInvokeResultParams {
 struct NodeInvokeResultError {
     code: Option<String>,
     message: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct LocalNodeCommandExecution {
+    ok: bool,
+    payload: Option<Value>,
+    payload_json: Option<String>,
+    error: Option<NodeInvokeResultError>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -24405,6 +25678,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_config_store_path_persists_and_recovers_across_dispatchers() {
+        let root = std::env::temp_dir().join(format!("openclaw-rs-config-store-{}", now_ms()));
+        fs::create_dir_all(&root).expect("create temp config root");
+        let store_path = root.join("config").join("runtime.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "config": {
+                    "storePath": store_path_text
+                },
+                "session": {
+                    "mainKey": "persisted-main"
+                },
+                "ui": {
+                    "seamColor": "#123456"
+                }
+            }),
+        )
+        .await;
+
+        let get = RpcRequestFrame {
+            id: "req-config-store-get".to_owned(),
+            method: "config.get".to_owned(),
+            params: json!({}),
+        };
+        match dispatcher.handle_request(&get).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/path").and_then(Value::as_str),
+                    Some(store_path.to_string_lossy().as_ref())
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/config/session/mainKey")
+                        .and_then(Value::as_str),
+                    Some("persisted-main")
+                );
+            }
+            _ => panic!("expected config.get handled"),
+        }
+        assert!(store_path.exists(), "config store should be persisted");
+
+        let disk_raw = fs::read_to_string(&store_path).expect("read config store");
+        let disk_json: Value = serde_json::from_str(&disk_raw).expect("parse config store JSON");
+        assert_eq!(
+            disk_json
+                .pointer("/config/session/mainKey")
+                .and_then(Value::as_str),
+            Some("persisted-main")
+        );
+
+        let restarted = RpcDispatcher::new();
+        patch_config(
+            &restarted,
+            json!({
+                "config": {
+                    "storePath": store_path.to_string_lossy().to_string()
+                }
+            }),
+        )
+        .await;
+        match restarted.handle_request(&get).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/config/session/mainKey")
+                        .and_then(Value::as_str),
+                    Some("persisted-main")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/config/ui/seamColor")
+                        .and_then(Value::as_str),
+                    Some("#123456")
+                );
+            }
+            _ => panic!("expected config.get handled"),
+        }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
     async fn dispatcher_logs_tail_returns_bounded_lines_and_cursor() {
         let dispatcher = RpcDispatcher::new();
         let first = RpcRequestFrame {
@@ -25348,6 +26707,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_web_login_store_path_persists_and_recovers_sessions_across_dispatchers() {
+        let root = std::env::temp_dir().join(format!("openclaw-rs-web-login-store-{}", now_ms()));
+        fs::create_dir_all(&root).expect("create temp web login root");
+        let store_path = root.join("web-login").join("sessions.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "webLogin": {
+                    "storePath": store_path_text
+                }
+            }),
+        )
+        .await;
+
+        let start = RpcRequestFrame {
+            id: "req-web-login-store-start".to_owned(),
+            method: "web.login.start".to_owned(),
+            params: json!({
+                "accountId": "persisted",
+                "timeoutMs": 60000
+            }),
+        };
+        let first_session_id = match dispatcher.handle_request(&start).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/sessionId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("web login session id"),
+            _ => panic!("expected web.login.start handled"),
+        };
+        assert!(store_path.exists(), "web login store should be persisted");
+
+        let restarted = RpcDispatcher::new();
+        patch_config(
+            &restarted,
+            json!({
+                "webLogin": {
+                    "storePath": store_path.to_string_lossy().to_string()
+                }
+            }),
+        )
+        .await;
+
+        let recovered_session_id = match restarted.handle_request(&start).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/sessionId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("recovered web login session id"),
+            _ => panic!("expected web.login.start handled"),
+        };
+        assert_eq!(recovered_session_id, first_session_id);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
     async fn dispatcher_browser_request_validates_and_reports_unavailable_contract() {
         let dispatcher = RpcDispatcher::new();
 
@@ -25780,6 +27199,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_local_node_host_runtime_handles_browser_and_canvas_without_external_results(
+    ) {
+        let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "nodeHost": {
+                    "localNodeIds": ["local-browser-node-1"]
+                }
+            }),
+        )
+        .await;
+
+        let pair = RpcRequestFrame {
+            id: "req-local-browser-node-pair".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-browser-node-1",
+                "displayName": "Local Browser Node",
+                "caps": ["browser", "host.local"],
+                "commands": ["browser.proxy", "canvas.present"]
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&pair).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("pair request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+        let approve = RpcRequestFrame {
+            id: "req-local-browser-node-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        let out = dispatcher.handle_request(&approve).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        let browser_req = RpcRequestFrame {
+            id: "req-local-browser-proxy".to_owned(),
+            method: "browser.request".to_owned(),
+            params: serde_json::json!({
+                "method": "GET",
+                "path": "/tabs"
+            }),
+        };
+        match dispatcher.handle_request(&browser_req).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(payload.pointer("/ok").and_then(Value::as_bool), Some(true));
+                assert_eq!(
+                    payload.pointer("/body/mode").and_then(Value::as_str),
+                    Some("rust-parity-local-host")
+                );
+            }
+            _ => panic!("expected browser.request handled"),
+        }
+        assert!(
+            dispatcher
+                .node_runtime
+                .latest_pending_invoke_id()
+                .await
+                .is_none(),
+            "local browser proxy should not leave pending invokes"
+        );
+
+        let canvas_req = RpcRequestFrame {
+            id: "req-local-canvas-present".to_owned(),
+            method: "canvas.present".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-browser-node-1",
+                "target": "https://example.com/canvas"
+            }),
+        };
+        match dispatcher.handle_request(&canvas_req).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(payload.pointer("/ok").and_then(Value::as_bool), Some(true));
+                assert_eq!(
+                    payload
+                        .pointer("/payload/presented")
+                        .and_then(Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected canvas.present handled"),
+        }
+    }
+
+    #[tokio::test]
     async fn dispatcher_canvas_present_rejects_disallowed_command() {
         let dispatcher = RpcDispatcher::new();
 
@@ -25948,6 +27458,73 @@ mod tests {
         };
         let out = dispatcher.handle_request(&missing_status).await;
         assert!(matches!(out, RpcDispatchOutcome::Error { code: 400, .. }));
+    }
+
+    #[tokio::test]
+    async fn dispatcher_wizard_store_path_persists_and_recovers_running_session() {
+        let root = std::env::temp_dir().join(format!("openclaw-rs-wizard-store-{}", now_ms()));
+        fs::create_dir_all(&root).expect("create temp wizard root");
+        let store_path = root.join("wizard").join("sessions.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "wizard": {
+                    "storePath": store_path_text
+                }
+            }),
+        )
+        .await;
+
+        let start = RpcRequestFrame {
+            id: "req-wizard-store-start".to_owned(),
+            method: "wizard.start".to_owned(),
+            params: serde_json::json!({
+                "mode": "remote",
+                "workspace": "memory://wizard-persist"
+            }),
+        };
+        let session_id = match dispatcher.handle_request(&start).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/sessionId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("wizard session id"),
+            _ => panic!("expected wizard.start handled"),
+        };
+        assert!(store_path.exists(), "wizard store should be persisted");
+
+        let restarted = RpcDispatcher::new();
+        patch_config(
+            &restarted,
+            json!({
+                "wizard": {
+                    "storePath": store_path.to_string_lossy().to_string()
+                }
+            }),
+        )
+        .await;
+
+        let status = RpcRequestFrame {
+            id: "req-wizard-store-status".to_owned(),
+            method: "wizard.status".to_owned(),
+            params: serde_json::json!({
+                "sessionId": session_id
+            }),
+        };
+        match restarted.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/status").and_then(Value::as_str),
+                    Some("running")
+                );
+            }
+            _ => panic!("expected wizard.status handled"),
+        }
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
@@ -27067,6 +28644,111 @@ mod tests {
                 }
                 _ => panic!("expected node.invoke handled for {command}"),
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_local_node_host_runtime_completes_node_invoke_commands_in_process() {
+        let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "nodeHost": {
+                    "localNodeIds": ["local-node-runtime-1"],
+                    "allowSystemRun": true
+                }
+            }),
+        )
+        .await;
+
+        let pair = RpcRequestFrame {
+            id: "req-local-node-runtime-pair".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-runtime-1",
+                "displayName": "Local Host Runtime Node",
+                "caps": ["host.local"],
+                "commands": ["camera.snap", "location.get", "system.run"]
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&pair).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("pair request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+        let approve = RpcRequestFrame {
+            id: "req-local-node-runtime-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        let out = dispatcher.handle_request(&approve).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        let invoke_system = RpcRequestFrame {
+            id: "req-local-node-runtime-system-run".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-runtime-1",
+                "command": "system.run",
+                "params": {
+                    "command": "echo local-host-runtime"
+                },
+                "idempotencyKey": "local-node-system-run"
+            }),
+        };
+        match dispatcher.handle_request(&invoke_system).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(payload.pointer("/ok").and_then(Value::as_bool), Some(true));
+                assert_eq!(
+                    payload.pointer("/payload/status").and_then(Value::as_str),
+                    Some("completed")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/exitCode")
+                        .and_then(Value::as_i64),
+                    Some(0)
+                );
+            }
+            _ => panic!("expected node.invoke handled"),
+        }
+        assert!(
+            dispatcher
+                .node_runtime
+                .latest_pending_invoke_id()
+                .await
+                .is_none(),
+            "local node invoke should not leave pending invokes"
+        );
+
+        let invoke_camera = RpcRequestFrame {
+            id: "req-local-node-runtime-camera".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-runtime-1",
+                "command": "camera.snap",
+                "params": {
+                    "quality": "high"
+                },
+                "idempotencyKey": "local-node-camera"
+            }),
+        };
+        match dispatcher.handle_request(&invoke_camera).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(payload.pointer("/ok").and_then(Value::as_bool), Some(true));
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/source")
+                        .and_then(Value::as_str),
+                    Some("local-host-runtime")
+                );
+            }
+            _ => panic!("expected node.invoke handled"),
         }
     }
 
