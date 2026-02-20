@@ -1,25 +1,25 @@
 {
   "gate": "cp8",
-  "passed": 12,
-  "totalFixtures": 12,
-  "totalDurationMs": 9232,
-  "avgFixtureDurationMs": 769,
-  "reliabilityFixtureCount": 7,
+  "passed": 13,
+  "totalFixtures": 13,
+  "totalDurationMs": 11903,
+  "avgFixtureDurationMs": 916,
+  "reliabilityFixtureCount": 8,
   "securityFixtureCount": 4,
   "benchmarkFixtureCount": 1,
   "benchmarkMetrics": {
-    "elapsedMs": 13,
+    "elapsedMs": 23,
     "fixture": "gateway::tests::dispatcher_status_benchmark_emits_latency_profile",
     "iterations": 512,
     "latencyUs": {
-      "max": 379,
-      "min": 16,
-      "p50": 16,
-      "p95": 41,
-      "p99": 70
+      "max": 388,
+      "min": 27,
+      "p50": 30,
+      "p95": 59,
+      "p99": 102
     },
     "rssKiB": null,
-    "throughputOpsPerSec": 37240.15536127315
+    "throughputOpsPerSec": 22041.129091276962
   },
   "cutoverRunbookPath": "parity/CP8_CUTOVER_RUNBOOK.md",
   "cutoverRunbookValidated": true,

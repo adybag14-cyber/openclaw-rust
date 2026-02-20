@@ -760,6 +760,7 @@ const CHAT_RUN_COMPLETE_DELAY_MS: u64 = 25;
 const MAX_SEND_CACHE_ENTRIES: usize = 4_096;
 const SEND_CACHE_STORE_PATH: &str = "memory://idempotency/send-cache.json";
 const DEFAULT_SEND_CACHE_TTL_MS: u64 = 300_000;
+const DEVICE_PAIR_STORE_PATH: &str = "memory://devices/pairs.json";
 const NODE_PAIR_STORE_PATH: &str = "memory://nodes/pairs.json";
 const DEFAULT_SEND_CHANNEL: &str = "whatsapp";
 const TTS_PREFS_PATH: &str = "memory://tts/prefs.json";
@@ -985,6 +986,11 @@ impl RpcDispatcher {
             })
     }
 
+    async fn sync_device_pair_runtime_from_config(&self) -> Result<(), String> {
+        let runtime = self.config.device_pair_runtime_config().await;
+        self.devices.apply_runtime_config(runtime).await
+    }
+
     async fn sync_node_pair_runtime_from_config(&self) -> Result<(), String> {
         let runtime = self.config.node_pair_runtime_config().await;
         self.nodes.apply_runtime_config(runtime).await
@@ -1200,9 +1206,21 @@ impl RpcDispatcher {
                 self.system.replace_presence(payload.clone()).await;
             }
             "device.pair.requested" => {
+                if let Err(err) = self.sync_device_pair_runtime_from_config().await {
+                    self.system
+                        .log_line(format!("device_pair.runtime sync failed: {err}"))
+                        .await;
+                    return;
+                }
                 self.devices.ingest_pair_requested(payload.clone()).await;
             }
             "device.pair.resolved" => {
+                if let Err(err) = self.sync_device_pair_runtime_from_config().await {
+                    self.system
+                        .log_line(format!("device_pair.runtime sync failed: {err}"))
+                        .await;
+                    return;
+                }
                 self.devices.ingest_pair_resolved(payload.clone()).await;
             }
             "node.pair.requested" => {
@@ -2756,6 +2774,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_device_pair_list(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_device_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "device pair runtime unavailable: {err}"
+            ));
+        }
         if let Err(err) = decode_params::<DevicePairListParams>(&req.params) {
             return RpcDispatchOutcome::bad_request(format!(
                 "invalid device.pair.list params: {err}"
@@ -2766,6 +2789,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_device_pair_approve(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_device_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "device pair runtime unavailable: {err}"
+            ));
+        }
         let params = match decode_params::<DevicePairApproveParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2793,6 +2821,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_device_pair_reject(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_device_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "device pair runtime unavailable: {err}"
+            ));
+        }
         let params = match decode_params::<DevicePairRejectParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2813,6 +2846,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_device_pair_remove(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_device_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "device pair runtime unavailable: {err}"
+            ));
+        }
         let params = match decode_params::<DevicePairRemoveParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2839,6 +2877,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_device_token_rotate(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_device_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "device pair runtime unavailable: {err}"
+            ));
+        }
         let params = match decode_params::<DeviceTokenRotateParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2882,6 +2925,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_device_token_revoke(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_device_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "device pair runtime unavailable: {err}"
+            ));
+        }
         let params = match decode_params::<DeviceTokenRevokeParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -7000,6 +7048,11 @@ struct SessionRuntimeConfig {
 }
 
 #[derive(Debug, Clone, Default)]
+struct DevicePairRuntimeConfig {
+    store_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
 struct NodePairRuntimeConfig {
     store_path: Option<String>,
 }
@@ -10377,12 +10430,35 @@ fn resolve_default_account_id(
 
 struct DeviceRegistry {
     state: Mutex<DevicePairState>,
+    runtime: Mutex<DevicePairRuntimeState>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct DevicePairState {
     pending_by_id: HashMap<String, DevicePairPendingRequest>,
     paired_by_device_id: HashMap<String, PairedDeviceEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct DevicePairRuntimeState {
+    store_path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct DevicePairStoreDiskState {
+    version: u32,
+    pending: Vec<DevicePairPendingRequest>,
+    paired: Vec<PairedDeviceEntry>,
+}
+
+impl Default for DevicePairStoreDiskState {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            pending: Vec::new(),
+            paired: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -10443,7 +10519,7 @@ struct DevicePairPendingRequest {
     ts: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct PairedDeviceEntry {
     device_id: String,
     public_key: String,
@@ -10490,7 +10566,7 @@ struct PairedDeviceView {
     approved_at_ms: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct DeviceAuthTokenEntry {
     token: String,
     role: String,
@@ -10553,7 +10629,148 @@ impl DeviceRegistry {
     fn new() -> Self {
         Self {
             state: Mutex::new(DevicePairState::default()),
+            runtime: Mutex::new(DevicePairRuntimeState {
+                store_path: DEVICE_PAIR_STORE_PATH.to_owned(),
+            }),
         }
+    }
+
+    async fn apply_runtime_config(&self, runtime: DevicePairRuntimeConfig) -> Result<(), String> {
+        let target_store_path = runtime
+            .store_path
+            .and_then(|value| normalize_optional_text(Some(value), 2048))
+            .unwrap_or_else(|| DEVICE_PAIR_STORE_PATH.to_owned());
+
+        let current_store_path = { self.runtime.lock().await.store_path.clone() };
+        if current_store_path == target_store_path {
+            return Ok(());
+        }
+
+        let loaded = load_device_pair_store_disk_state(&target_store_path)?;
+        let mut next_state = DevicePairState::default();
+
+        for pending in loaded.pending {
+            let Some(request_id) = normalize_optional_text(Some(pending.request_id.clone()), 128)
+            else {
+                continue;
+            };
+            let Some(device_id) = normalize_optional_text(Some(pending.device_id.clone()), 128)
+            else {
+                continue;
+            };
+            let Some(public_key) = normalize_optional_text(Some(pending.public_key.clone()), 1024)
+            else {
+                continue;
+            };
+
+            let role = normalize_optional_text(pending.role.clone(), 64);
+            let mut roles = normalize_string_list(pending.roles.clone(), 32, 64);
+            if let Some(role_value) = &role {
+                if !roles
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(role_value))
+                {
+                    roles.push(role_value.clone());
+                }
+            }
+            let scopes = normalize_device_auth_scopes(pending.scopes.clone());
+            let mut normalized = pending;
+            normalized.request_id = request_id.clone();
+            normalized.device_id = device_id;
+            normalized.public_key = public_key;
+            normalized.display_name = normalize_optional_text(normalized.display_name, 128);
+            normalized.platform = normalize_optional_text(normalized.platform, 128);
+            normalized.client_id = normalize_optional_text(normalized.client_id, 128);
+            normalized.client_mode = normalize_optional_text(normalized.client_mode, 128);
+            normalized.role = role;
+            normalized.roles = (!roles.is_empty()).then_some(roles);
+            normalized.scopes = (!scopes.is_empty()).then_some(scopes);
+            normalized.remote_ip = normalize_optional_text(normalized.remote_ip, 128);
+            next_state.pending_by_id.insert(request_id, normalized);
+        }
+
+        for paired in loaded.paired {
+            let Some(device_id) = normalize_optional_text(Some(paired.device_id.clone()), 128)
+            else {
+                continue;
+            };
+            let Some(public_key) = normalize_optional_text(Some(paired.public_key.clone()), 1024)
+            else {
+                continue;
+            };
+
+            let role = normalize_optional_text(paired.role.clone(), 64);
+            let mut roles = normalize_string_list(paired.roles.clone(), 32, 64);
+            if let Some(role_value) = &role {
+                if !roles
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(role_value))
+                {
+                    roles.push(role_value.clone());
+                }
+            }
+            let scopes = normalize_device_auth_scopes(paired.scopes.clone());
+
+            let mut tokens = HashMap::new();
+            for token in paired.tokens.values() {
+                let Some(token_role) = normalize_optional_text(Some(token.role.clone()), 64) else {
+                    continue;
+                };
+                let Some(token_value) = normalize_optional_text(Some(token.token.clone()), 1024)
+                else {
+                    continue;
+                };
+                let normalized_scopes = normalize_device_auth_scopes(Some(token.scopes.clone()));
+                tokens.insert(
+                    token_role.clone(),
+                    DeviceAuthTokenEntry {
+                        token: token_value,
+                        role: token_role,
+                        scopes: normalized_scopes,
+                        created_at_ms: token.created_at_ms,
+                        rotated_at_ms: token.rotated_at_ms,
+                        revoked_at_ms: token.revoked_at_ms,
+                        last_used_at_ms: token.last_used_at_ms,
+                    },
+                );
+            }
+
+            let normalized = PairedDeviceEntry {
+                device_id: device_id.clone(),
+                public_key,
+                display_name: normalize_optional_text(paired.display_name, 128),
+                platform: normalize_optional_text(paired.platform, 128),
+                client_id: normalize_optional_text(paired.client_id, 128),
+                client_mode: normalize_optional_text(paired.client_mode, 128),
+                role,
+                roles: (!roles.is_empty()).then_some(roles),
+                scopes: (!scopes.is_empty()).then_some(scopes),
+                remote_ip: normalize_optional_text(paired.remote_ip, 128),
+                tokens,
+                created_at_ms: paired.created_at_ms,
+                approved_at_ms: paired.approved_at_ms,
+            };
+            next_state.paired_by_device_id.insert(device_id, normalized);
+        }
+
+        prune_oldest_pending(&mut next_state.pending_by_id, 512);
+        prune_oldest_paired_devices(&mut next_state.paired_by_device_id, 2_048);
+
+        {
+            let mut guard = self.state.lock().await;
+            *guard = next_state.clone();
+        }
+        {
+            let mut runtime_guard = self.runtime.lock().await;
+            runtime_guard.store_path = target_store_path.clone();
+        }
+        persist_device_pair_store_disk_state(&target_store_path, &next_state)?;
+        Ok(())
+    }
+
+    async fn persist_state_snapshot(&self, state: DevicePairState) -> Result<(), String> {
+        let store_path = { self.runtime.lock().await.store_path.clone() };
+        persist_device_pair_store_disk_state(&store_path, &state)
     }
 
     async fn list(&self) -> DevicePairListResult {
@@ -10628,6 +10845,9 @@ impl DeviceRegistry {
             .retain(|key, pending| key == &request_id || pending.device_id != device_id);
         guard.pending_by_id.insert(request_id, request);
         prune_oldest_pending(&mut guard.pending_by_id, 512);
+        let snapshot = guard.clone();
+        drop(guard);
+        let _ = self.persist_state_snapshot(snapshot).await;
     }
 
     async fn ingest_pair_resolved(&self, payload: Value) {
@@ -10639,6 +10859,9 @@ impl DeviceRegistry {
         };
         let mut guard = self.state.lock().await;
         let _ = guard.pending_by_id.remove(&request_id);
+        let snapshot = guard.clone();
+        drop(guard);
+        let _ = self.persist_state_snapshot(snapshot).await;
     }
 
     async fn approve(&self, request_id: &str) -> Option<DevicePairApproveResult> {
@@ -10689,6 +10912,9 @@ impl DeviceRegistry {
             .paired_by_device_id
             .insert(device.device_id.clone(), device.clone());
         prune_oldest_paired_devices(&mut guard.paired_by_device_id, 2_048);
+        let snapshot = guard.clone();
+        drop(guard);
+        let _ = self.persist_state_snapshot(snapshot).await;
         Some(DevicePairApproveResult {
             request_id: request_id.to_owned(),
             device: redact_paired_device(&device),
@@ -10698,6 +10924,9 @@ impl DeviceRegistry {
     async fn reject(&self, request_id: &str) -> Option<DevicePairRejectResult> {
         let mut guard = self.state.lock().await;
         let pending = guard.pending_by_id.remove(request_id)?;
+        let snapshot = guard.clone();
+        drop(guard);
+        let _ = self.persist_state_snapshot(snapshot).await;
         Some(DevicePairRejectResult {
             request_id: request_id.to_owned(),
             device_id: pending.device_id,
@@ -10711,6 +10940,9 @@ impl DeviceRegistry {
         }
         let mut guard = self.state.lock().await;
         guard.paired_by_device_id.remove(normalized)?;
+        let snapshot = guard.clone();
+        drop(guard);
+        let _ = self.persist_state_snapshot(snapshot).await;
         Some(DevicePairRemoveResult {
             device_id: normalized.to_owned(),
         })
@@ -10755,6 +10987,9 @@ impl DeviceRegistry {
         if scopes.is_some() {
             device.scopes = Some(requested_scopes);
         }
+        let snapshot = guard.clone();
+        drop(guard);
+        let _ = self.persist_state_snapshot(snapshot).await;
         Some(next)
     }
 
@@ -10777,6 +11012,9 @@ impl DeviceRegistry {
         device
             .tokens
             .insert(normalized_role.to_owned(), revoked.clone());
+        let snapshot = guard.clone();
+        drop(guard);
+        let _ = self.persist_state_snapshot(snapshot).await;
         Some(revoked)
     }
 }
@@ -11827,6 +12065,11 @@ impl ConfigRegistry {
         session_runtime_config_from_config(&guard.config)
     }
 
+    async fn device_pair_runtime_config(&self) -> DevicePairRuntimeConfig {
+        let guard = self.state.lock().await;
+        device_pair_runtime_config_from_config(&guard.config)
+    }
+
     async fn node_pair_runtime_config(&self) -> NodePairRuntimeConfig {
         let guard = self.state.lock().await;
         node_pair_runtime_config_from_config(&guard.config)
@@ -11981,6 +12224,44 @@ fn session_runtime_config_from_config(config: &Value) -> SessionRuntimeConfig {
         )
     });
     SessionRuntimeConfig { store_path }
+}
+
+fn device_pair_runtime_config_from_config(config: &Value) -> DevicePairRuntimeConfig {
+    let runtime = config.get("runtime").and_then(Value::as_object);
+    let device_pair = config.get("devicePair").and_then(Value::as_object);
+    let device_pair_nested = config
+        .get("device")
+        .and_then(Value::as_object)
+        .and_then(|device| device.get("pair").and_then(Value::as_object));
+
+    let store_path = device_pair
+        .and_then(|obj| {
+            read_config_string(
+                obj,
+                &["storePath", "store_path", "statePath", "state_path"],
+                2048,
+            )
+        })
+        .or_else(|| {
+            device_pair_nested.and_then(|obj| {
+                read_config_string(
+                    obj,
+                    &["storePath", "store_path", "statePath", "state_path"],
+                    2048,
+                )
+            })
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string(
+                    obj,
+                    &["devicePairStorePath", "device_pair_store_path"],
+                    2048,
+                )
+            })
+        });
+
+    DevicePairRuntimeConfig { store_path }
 }
 
 fn node_pair_runtime_config_from_config(config: &Value) -> NodePairRuntimeConfig {
@@ -12337,6 +12618,107 @@ fn persist_session_store_disk_state(
             "failed moving session store temp file into place {}: {err}",
             store_path.display()
         ))
+    })?;
+    Ok(())
+}
+
+fn device_pair_store_path_is_memory(path: &str) -> bool {
+    path.trim().to_ascii_lowercase().starts_with("memory://")
+}
+
+fn load_device_pair_store_disk_state(path: &str) -> Result<DevicePairStoreDiskState, String> {
+    if device_pair_store_path_is_memory(path) {
+        return Ok(DevicePairStoreDiskState::default());
+    }
+    let store_path = PathBuf::from(path);
+    if !store_path.exists() {
+        return Ok(DevicePairStoreDiskState::default());
+    }
+    let raw = std::fs::read_to_string(&store_path).map_err(|err| {
+        format!(
+            "failed reading device pair store {}: {err}",
+            store_path.display()
+        )
+    })?;
+    serde_json::from_str::<DevicePairStoreDiskState>(&raw).map_err(|err| {
+        format!(
+            "failed parsing device pair store {}: {err}",
+            store_path.display()
+        )
+    })
+}
+
+fn persist_device_pair_store_disk_state(path: &str, state: &DevicePairState) -> Result<(), String> {
+    if device_pair_store_path_is_memory(path) {
+        return Ok(());
+    }
+    let mut pending = state
+        .pending_by_id
+        .values()
+        .cloned()
+        .collect::<Vec<DevicePairPendingRequest>>();
+    pending.sort_by(|a, b| {
+        b.ts.cmp(&a.ts)
+            .then_with(|| a.request_id.cmp(&b.request_id))
+    });
+
+    let mut paired = state
+        .paired_by_device_id
+        .values()
+        .cloned()
+        .collect::<Vec<PairedDeviceEntry>>();
+    paired.sort_by(|a, b| {
+        b.approved_at_ms
+            .cmp(&a.approved_at_ms)
+            .then_with(|| a.device_id.cmp(&b.device_id))
+    });
+
+    let snapshot = DevicePairStoreDiskState {
+        version: 1,
+        pending,
+        paired,
+    };
+    let payload = serde_json::to_string_pretty(&snapshot)
+        .map_err(|err| format!("failed serializing device pair store: {err}"))?;
+
+    let store_path = PathBuf::from(path);
+    if let Some(parent) = store_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|err| {
+                format!(
+                    "failed creating device pair store parent directory {}: {err}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
+
+    let mut temp_path = store_path.clone();
+    let temp_extension = format!(
+        "{}.tmp.{}",
+        store_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("json"),
+        now_ms()
+    );
+    temp_path.set_extension(temp_extension);
+
+    std::fs::write(&temp_path, payload).map_err(|err| {
+        format!(
+            "failed writing device pair store temp file {}: {err}",
+            temp_path.display()
+        )
+    })?;
+
+    if store_path.exists() {
+        let _ = std::fs::remove_file(&store_path);
+    }
+    std::fs::rename(&temp_path, &store_path).map_err(|err| {
+        format!(
+            "failed moving device pair store temp file into place {}: {err}",
+            store_path.display()
+        )
     })?;
     Ok(())
 }
@@ -24987,6 +25369,197 @@ mod tests {
                 );
             }
             _ => panic!("expected device.pair.reject handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_device_pair_store_path_persists_and_recovers_devices_across_dispatchers() {
+        let root = std::env::temp_dir().join(format!("openclaw-rs-device-pair-store-{}", now_ms()));
+        std::fs::create_dir_all(&root).expect("creating device pair temp root");
+        let store_path = root.join("devices").join("pairs.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        let dispatcher = RpcDispatcher::new();
+        let get_primary_hash = RpcRequestFrame {
+            id: "req-device-pair-store-config-hash".to_owned(),
+            method: "config.get".to_owned(),
+            params: serde_json::json!({}),
+        };
+        let primary_hash = match dispatcher.handle_request(&get_primary_hash).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/hash")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("config hash"),
+            _ => panic!("expected config.get handled"),
+        };
+        let patch_primary = RpcRequestFrame {
+            id: "req-device-pair-store-config".to_owned(),
+            method: "config.patch".to_owned(),
+            params: serde_json::json!({
+                "baseHash": primary_hash,
+                "raw": serde_json::json!({
+                    "devicePair": {
+                        "storePath": store_path_text
+                    }
+                })
+                .to_string()
+            }),
+        };
+        match dispatcher.handle_request(&patch_primary).await {
+            RpcDispatchOutcome::Handled(_) => {}
+            other => panic!("expected config.patch handled, got {other:?}"),
+        }
+
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "event": "device.pair.requested",
+                "payload": {
+                    "requestId": "pair-store-1",
+                    "deviceId": "device-store-1",
+                    "publicKey": "pub-store-1",
+                    "displayName": "Store Device",
+                    "role": "operator",
+                    "roles": ["operator"],
+                    "scopes": ["exec:read", "exec:write"],
+                    "ts": 111222333
+                }
+            }))
+            .await;
+
+        let approve = RpcRequestFrame {
+            id: "req-device-pair-store-approve".to_owned(),
+            method: "device.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": "pair-store-1"
+            }),
+        };
+        match dispatcher.handle_request(&approve).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/device/deviceId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("device-store-1")
+                );
+            }
+            _ => panic!("expected device.pair.approve handled"),
+        }
+
+        let rotate = RpcRequestFrame {
+            id: "req-device-pair-store-rotate".to_owned(),
+            method: "device.token.rotate".to_owned(),
+            params: serde_json::json!({
+                "deviceId": "device-store-1",
+                "role": "operator",
+                "scopes": ["exec:read"]
+            }),
+        };
+        match dispatcher.handle_request(&rotate).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                let token = payload
+                    .pointer("/token")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                assert!(token.starts_with("dtk_"));
+            }
+            _ => panic!("expected device.token.rotate handled"),
+        }
+
+        assert!(store_path.exists(), "device pair store should exist");
+        let persisted =
+            std::fs::read_to_string(&store_path).expect("reading persisted device pair store");
+        assert!(
+            persisted.contains("device-store-1"),
+            "persisted device pair store should contain device id"
+        );
+        assert!(
+            persisted.contains("operator"),
+            "persisted device pair store should contain role metadata"
+        );
+
+        let dispatcher_restarted = RpcDispatcher::new();
+        let get_secondary_hash = RpcRequestFrame {
+            id: "req-device-pair-store-config-hash-restart".to_owned(),
+            method: "config.get".to_owned(),
+            params: serde_json::json!({}),
+        };
+        let secondary_hash = match dispatcher_restarted
+            .handle_request(&get_secondary_hash)
+            .await
+        {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/hash")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("config hash"),
+            _ => panic!("expected config.get handled"),
+        };
+        let patch_secondary = RpcRequestFrame {
+            id: "req-device-pair-store-config-restart".to_owned(),
+            method: "config.patch".to_owned(),
+            params: serde_json::json!({
+                "baseHash": secondary_hash,
+                "raw": serde_json::json!({
+                    "device": {
+                        "pair": {
+                            "storePath": store_path.to_string_lossy().to_string()
+                        }
+                    }
+                })
+                .to_string()
+            }),
+        };
+        match dispatcher_restarted.handle_request(&patch_secondary).await {
+            RpcDispatchOutcome::Handled(_) => {}
+            other => panic!("expected config.patch handled, got {other:?}"),
+        }
+
+        let list = RpcRequestFrame {
+            id: "req-device-pair-store-list".to_owned(),
+            method: "device.pair.list".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher_restarted.handle_request(&list).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/paired/0/deviceId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("device-store-1")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/paired/0/tokens/0/role")
+                        .and_then(serde_json::Value::as_str),
+                    Some("operator")
+                );
+            }
+            _ => panic!("expected device.pair.list handled"),
+        }
+
+        let revoke = RpcRequestFrame {
+            id: "req-device-pair-store-revoke".to_owned(),
+            method: "device.token.revoke".to_owned(),
+            params: serde_json::json!({
+                "deviceId": "device-store-1",
+                "role": "operator"
+            }),
+        };
+        match dispatcher_restarted.handle_request(&revoke).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/deviceId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("device-store-1")
+                );
+                assert!(payload
+                    .pointer("/revokedAtMs")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some());
+            }
+            _ => panic!("expected device.token.revoke handled"),
         }
     }
 
