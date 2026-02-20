@@ -91,7 +91,7 @@ systemctl --user status openclaw-agent-rs.service
 - Responds to gateway introspection RPCs (`health`, `status`) with runtime/session metadata.
 - Responds to usage RPCs (`usage.status`, `usage.cost`) with Rust-side aggregate usage/cost placeholder summaries.
 - Runs due cron jobs automatically in standalone mode with a bounded in-process tick worker (no explicit `cron.run` call required for due schedules).
-- Executes cron webhook delivery side effects (`delivery.mode = webhook`) as HTTP POST callbacks with structured run/job payload envelopes.
+- Executes cron webhook delivery side effects (`delivery.mode = webhook`) as HTTP POST callbacks with upstream-aligned `finished` event payloads, optional bearer-token auth (`cron.webhookToken`), summary gating, and legacy `notify: true` fallback via `cron.webhook`.
 - Tracks session metadata (`label`, `spawnedBy`) via `sessions.patch` and uses it for filtered `sessions.resolve` lookups.
 - Supports `sessions.usage` range inputs (`startDate`, `endDate`) and optional `includeContextWeight` output hints.
 - Extends `sessions.usage` response parity with `updatedAt`, `startDate`/`endDate`, totals, action rollups, and aggregate placeholder sections (`messages`, `tools`, `byAgent`, `byChannel`).

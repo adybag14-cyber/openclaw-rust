@@ -1,87 +1,82 @@
 [parity] running CP7 fixture: tests::cli_parses_doctor_command_and_flags
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on package cache
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.47s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test tests::cli_parses_doctor_command_and_flags ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP7 fixture: tests::cli_parses_gateway_status_command_and_json_flag
-    Blocking waiting for file lock on package cache
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.61s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.48s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test tests::cli_parses_gateway_status_command_and_json_flag ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP7 fixture: tests::cli_parses_message_send_command
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.49s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test tests::cli_parses_message_send_command ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP7 fixture: tests::doctor_report_marks_config_load_failure_as_blocking
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.47s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test tests::doctor_report_marks_config_load_failure_as_blocking ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP7 fixture: tests::doctor_report_warns_when_docker_is_unavailable
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
-     Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
 
 running 1 test
+     Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 test tests::doctor_report_warns_when_docker_is_unavailable ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP7 fixture: tests::cli_dispatch_rpc_status_returns_runtime_payload
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test tests::cli_dispatch_rpc_status_returns_runtime_payload ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP7 fixture: tests::cli_dispatch_rpc_send_returns_message_identifiers
-    Blocking waiting for file lock on package cache
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.37s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test tests::cli_dispatch_rpc_send_returns_message_identifiers ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP7 fixture: tests::cli_dispatch_rpc_sessions_list_returns_count_field
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.37s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test tests::cli_dispatch_rpc_sessions_list_returns_count_field ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP7 fixture: gateway::tests::dispatcher_update_and_web_login_methods_report_expected_payloads
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_update_and_web_login_methods_report_expected_payloads ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] CP7 gate passed

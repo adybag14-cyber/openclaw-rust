@@ -1,14 +1,14 @@
 {
-  "elapsedMs": 21,
+  "elapsedMs": 22,
   "fixture": "gateway::tests::dispatcher_status_benchmark_emits_latency_profile",
   "iterations": 512,
   "latencyUs": {
-    "max": 333,
-    "min": 16,
-    "p50": 27,
-    "p95": 60,
-    "p99": 84
+    "max": 281,
+    "min": 29,
+    "p50": 31,
+    "p95": 39,
+    "p99": 68
   },
   "rssKiB": null,
-  "throughputOpsPerSec": 23348.92968871134
+  "throughputOpsPerSec": 22973.54900949005
 }

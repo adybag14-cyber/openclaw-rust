@@ -15,8 +15,8 @@ Repo: `adybag14-cyber/openclaw-rust`
 - Rust gateway method surface: **103** supported RPC methods
   - Source: `src/gateway.rs` (`SUPPORTED_RPC_METHODS`)
 - Current validation depth:
-  - 239 tests pass (default)
-  - 242 tests pass with `sqlite-state`
+  - 246 tests pass (default)
+  - 249 tests pass with `sqlite-state`
   - Full matrix passing (`fmt`, `test`, `clippy`, `release`, `sqlite-state` variants)
 
 ## Definition of Done (100%)
@@ -197,7 +197,7 @@ Exit gates:
 - Security suite has no critical findings.
 - Rust is default runtime in production; TS path decommissioned.
 
-Status: **Completed (Gate Achieved: reliability/security fixtures, benchmark artifact metrics, cutover runbook validation, standalone bounded auto due-cron execution, and cron webhook callback side effects)**
+Status: **Completed (Gate Achieved: reliability/security fixtures, benchmark artifact metrics, cutover runbook validation, standalone bounded auto due-cron execution, plus upstream-aligned cron webhook callback semantics including bearer-token headers, summary gating, and legacy notify fallback)**
 
 ## Progress Scorecard Template
 

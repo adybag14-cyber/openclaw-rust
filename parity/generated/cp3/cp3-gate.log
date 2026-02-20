@@ -1,15 +1,11 @@
 [parity] running CP3 fixture: security::tool_policy::tests::profile_coding_expands_group_runtime_and_fs
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on build directory
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.32s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test security::tool_policy::tests::profile_coding_expands_group_runtime_and_fs ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP3 fixture: security::tool_policy::tests::deny_takes_precedence_over_allow
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
@@ -18,92 +14,87 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; fi
 running 1 test
 test security::tool_policy::tests::deny_takes_precedence_over_allow ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP3 fixture: security::tool_policy::tests::provider_specific_rule_is_applied_after_global_policy
-    Blocking waiting for file lock on package cache
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test security::tool_policy::tests::provider_specific_rule_is_applied_after_global_policy ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP3 fixture: security::tool_policy::tests::provider_model_specific_rule_beats_provider_fallback
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test security::tool_policy::tests::provider_model_specific_rule_beats_provider_fallback ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP3 fixture: security::tool_policy::tests::allowlisted_exec_implies_apply_patch
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test security::tool_policy::tests::allowlisted_exec_implies_apply_patch ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP3 fixture: security::tool_loop::tests::emits_warning_and_critical_on_repeated_identical_tool_calls
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test security::tool_loop::tests::emits_warning_and_critical_on_repeated_identical_tool_calls ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP3 fixture: security::tests::tool_runtime_policy_profile_blocks_non_profile_tools
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test security::tests::tool_runtime_policy_profile_blocks_non_profile_tools ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.02s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.02s
 
 [parity] running CP3 fixture: security::tests::tool_loop_detection_escalates_warning_then_critical
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.31s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test security::tests::tool_loop_detection_escalates_warning_then_critical ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.02s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.02s
 
 [parity] running CP3 fixture: tool_runtime::tests::tool_runtime_corpus_matches_expected_outcomes
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.31s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test tool_runtime::tests::tool_runtime_corpus_matches_expected_outcomes ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.03s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.03s
 
 [parity] running CP3 fixture: tool_runtime::tests::tool_runtime_policy_and_loop_guard_enforced_on_tool_host
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on build directory
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.49s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test tool_runtime::tests::tool_runtime_policy_and_loop_guard_enforced_on_tool_host ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.03s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.03s
 
 [parity] running CP3 fixture: tool_runtime::tests::tool_runtime_background_exec_process_poll_roundtrip
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test tool_runtime::tests::tool_runtime_background_exec_process_poll_roundtrip ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.04s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.04s
 
 [parity] CP3 gate passed

@@ -1,94 +1,83 @@
 [parity] running CP5 fixture: gateway::tests::dispatcher_browser_request_validates_and_reports_unavailable_contract
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on build directory
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.48s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_browser_request_validates_and_reports_unavailable_contract ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_browser_request_routes_through_node_proxy_runtime
-    Blocking waiting for file lock on package cache
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_browser_request_routes_through_node_proxy_runtime ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.03s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.01s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_browser_request_enforces_browser_proxy_command_allowlist
-    Blocking waiting for file lock on package cache
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_browser_request_enforces_browser_proxy_command_allowlist ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_browser_open_routes_through_browser_proxy_runtime
-    Blocking waiting for file lock on package cache
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.40s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_browser_open_routes_through_browser_proxy_runtime ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.02s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.02s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_canvas_present_routes_through_node_runtime
-    Blocking waiting for file lock on package cache
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_canvas_present_routes_through_node_runtime ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.02s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.01s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_canvas_present_rejects_disallowed_command
-    Blocking waiting for file lock on package cache
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.38s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_canvas_present_rejects_disallowed_command ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_device_pair_and_token_methods_follow_parity_contract
-    Blocking waiting for file lock on package cache
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_device_pair_and_token_methods_follow_parity_contract ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_node_pairing_methods_follow_parity_contract
-    Blocking waiting for file lock on package cache
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.38s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_node_pairing_methods_follow_parity_contract ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_node_invoke_and_event_methods_follow_parity_contract
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_node_invoke_and_event_methods_follow_parity_contract ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.01s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_node_invoke_supports_camera_screen_location_and_system_commands_when_declared
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
@@ -97,6 +86,6 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; fi
 running 1 test
 test gateway::tests::dispatcher_node_invoke_supports_camera_screen_location_and_system_commands_when_declared ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
 
 [parity] CP5 gate passed
