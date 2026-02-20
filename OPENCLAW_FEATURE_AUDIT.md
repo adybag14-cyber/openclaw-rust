@@ -223,6 +223,6 @@ CP12 increment (2026-02-20):
 ## Immediate Next Build Targets
 
 1. Expand session model parity to include group isolation, activation policy tuning, and reply-back semantics.
-2. Expand compose parity stack beyond multi-event matrix into retry/backoff reconnect chaos assertions under container restarts.
-3. Integrate signed policy-bundle rotation/distribution workflow into CI staged rollout verification and artifact retention.
-4. Advance remaining subsystem depth from `Partial` to `Implemented` (gateway replacement durability, tool runtime breadth, nodes/device runtime host coverage, voice I/O, and docker matrix breadth).
+2. Add dedicated node/device host runtime process orchestration parity beyond in-process invoke handling.
+3. Expand voice runtime from TTS/voicewake control-plane parity to live audio capture/playback device flows.
+4. Expand Rust validation into broader real-transport channel integration matrices and replay drift assertions.
