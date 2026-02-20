@@ -360,7 +360,10 @@ impl ToolRuntimeHost {
             std::fs::create_dir_all(parent).map_err(|err| {
                 ToolRuntimeError::new(
                     ToolRuntimeErrorCode::Io,
-                    format!("failed creating parent directory {}: {err}", parent.display()),
+                    format!(
+                        "failed creating parent directory {}: {err}",
+                        parent.display()
+                    ),
                 )
             })?;
         }
@@ -463,9 +466,10 @@ impl ToolRuntimeHost {
             let session_cwd = cwd.clone();
             let command_text = command.clone();
             let started = now_ms();
-            let handle = tokio::spawn(async move {
-                run_shell_command(command_text, session_cwd.clone()).await
-            });
+            let handle =
+                tokio::spawn(
+                    async move { run_shell_command(command_text, session_cwd.clone()).await },
+                );
 
             let mut sessions = self.process_sessions.lock().await;
             sessions.insert(
@@ -758,11 +762,7 @@ fn resolve_path_inside_root(root: &Path, raw: &str) -> ToolRuntimeResult<PathBuf
     if !resolved.starts_with(root) {
         return Err(ToolRuntimeError::new(
             ToolRuntimeErrorCode::PathOutsideRoot,
-            format!(
-                "path `{}` escapes allowed root {}",
-                raw,
-                root.display()
-            ),
+            format!("path `{}` escapes allowed root {}", raw, root.display()),
         ));
     }
     Ok(resolved)
@@ -787,10 +787,7 @@ async fn run_shell_command(
     let output = cmd.output().await.map_err(|err| {
         ToolRuntimeError::new(
             ToolRuntimeErrorCode::ExecutionFailed,
-            format!(
-                "failed running shell command in {}: {err}",
-                cwd.display()
-            ),
+            format!("failed running shell command in {}: {err}", cwd.display()),
         )
     })?;
 
@@ -1184,11 +1181,7 @@ fn apply_update_chunks(original: &str, chunks: &[PatchChunk]) -> ToolRuntimeResu
     Ok(rebuilt)
 }
 
-fn find_subsequence(
-    haystack: &[String],
-    needle: &[String],
-    start_index: usize,
-) -> Option<usize> {
+fn find_subsequence(haystack: &[String], needle: &[String], start_index: usize) -> Option<usize> {
     if needle.is_empty() {
         return Some(start_index.min(haystack.len()));
     }
@@ -1288,7 +1281,10 @@ mod tests {
                 });
                 if let Some(expected_status) = &case.expect.status {
                     assert_eq!(
-                        response.result.get("status").and_then(serde_json::Value::as_str),
+                        response
+                            .result
+                            .get("status")
+                            .and_then(serde_json::Value::as_str),
                         Some(expected_status.as_str()),
                         "case {}",
                         case.name
@@ -1381,7 +1377,10 @@ mod tests {
             .execute(make_loop_request("loop-2"))
             .await
             .expect("second loop request");
-        assert!(second.warnings.iter().any(|warning| warning.contains("loop warning")));
+        assert!(second
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("loop warning")));
 
         let third = host.execute(make_loop_request("loop-3")).await;
         let third_error = third.expect_err("third loop request should be critical");
