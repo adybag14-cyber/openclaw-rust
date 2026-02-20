@@ -26,6 +26,7 @@ tests=(
   "gateway_server::tests::broadcaster_backpressure_drop_if_slow_semantics"
   "channels::tests::retry_backoff_policy_scales_and_caps"
   "gateway::tests::dispatcher_status_benchmark_emits_latency_profile"
+  "gateway::tests::dispatcher_node_pair_store_path_persists_and_recovers_pairs_across_dispatchers"
   "security::prompt_guard::tests::scores_prompt_injection_patterns"
   "security::command_guard::tests::blocks_known_destructive_patterns"
   "security::tests::tool_loop_detection_escalates_warning_then_critical"
@@ -79,6 +80,8 @@ run_fixture() {
   elif [[ "${test_name}" == gateway_server::tests::* ]]; then
     reliability_fixtures=$((reliability_fixtures + 1))
   elif [[ "${test_name}" == channels::tests::* ]]; then
+    reliability_fixtures=$((reliability_fixtures + 1))
+  elif [[ "${test_name}" == "gateway::tests::dispatcher_node_pair_store_path_persists_and_recovers_pairs_across_dispatchers" ]]; then
     reliability_fixtures=$((reliability_fixtures + 1))
   elif [[ "${test_name}" == security::* ]]; then
     security_fixtures=$((security_fixtures + 1))

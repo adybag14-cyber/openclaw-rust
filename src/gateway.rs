@@ -760,6 +760,7 @@ const CHAT_RUN_COMPLETE_DELAY_MS: u64 = 25;
 const MAX_SEND_CACHE_ENTRIES: usize = 4_096;
 const SEND_CACHE_STORE_PATH: &str = "memory://idempotency/send-cache.json";
 const DEFAULT_SEND_CACHE_TTL_MS: u64 = 300_000;
+const NODE_PAIR_STORE_PATH: &str = "memory://nodes/pairs.json";
 const DEFAULT_SEND_CHANNEL: &str = "whatsapp";
 const TTS_PREFS_PATH: &str = "memory://tts/prefs.json";
 const TTS_OPENAI_MODELS: &[&str] = &["gpt-4o-mini-tts", "tts-1", "tts-1-hd"];
@@ -984,6 +985,11 @@ impl RpcDispatcher {
             })
     }
 
+    async fn sync_node_pair_runtime_from_config(&self) -> Result<(), String> {
+        let runtime = self.config.node_pair_runtime_config().await;
+        self.nodes.apply_runtime_config(runtime).await
+    }
+
     pub async fn handle_request(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
         match normalize(&req.method).as_str() {
             "connect" => self.handle_connect().await,
@@ -1200,9 +1206,21 @@ impl RpcDispatcher {
                 self.devices.ingest_pair_resolved(payload.clone()).await;
             }
             "node.pair.requested" => {
+                if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+                    self.system
+                        .log_line(format!("node_pair.runtime sync failed: {err}"))
+                        .await;
+                    return;
+                }
                 self.nodes.ingest_pair_requested(payload.clone()).await;
             }
             "node.pair.resolved" => {
+                if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+                    self.system
+                        .log_line(format!("node_pair.runtime sync failed: {err}"))
+                        .await;
+                    return;
+                }
                 self.nodes.ingest_pair_resolved(payload.clone()).await;
             }
             _ => {}
@@ -2899,6 +2917,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_node_pair_request(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "node pair runtime unavailable: {err}"
+            ));
+        }
         let params = match decode_params::<NodePairRequestParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2921,6 +2944,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_node_pair_list(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "node pair runtime unavailable: {err}"
+            ));
+        }
         if let Err(err) = decode_params::<NodePairListParams>(&req.params) {
             return RpcDispatchOutcome::bad_request(format!(
                 "invalid node.pair.list params: {err}"
@@ -2931,6 +2959,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_node_pair_approve(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "node pair runtime unavailable: {err}"
+            ));
+        }
         let params = match decode_params::<NodePairApproveParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2957,6 +2990,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_node_pair_reject(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "node pair runtime unavailable: {err}"
+            ));
+        }
         let params = match decode_params::<NodePairRejectParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2977,6 +3015,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_node_pair_verify(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "node pair runtime unavailable: {err}"
+            ));
+        }
         let params = match decode_params::<NodePairVerifyParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -3000,6 +3043,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_node_rename(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "node pair runtime unavailable: {err}"
+            ));
+        }
         let params = match decode_params::<NodeRenameParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -3021,6 +3069,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_node_list(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "node pair runtime unavailable: {err}"
+            ));
+        }
         if let Err(err) = decode_params::<NodeListParams>(&req.params) {
             return RpcDispatchOutcome::bad_request(format!("invalid node.list params: {err}"));
         }
@@ -3032,6 +3085,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_node_describe(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "node pair runtime unavailable: {err}"
+            ));
+        }
         let params = match decode_params::<NodeDescribeParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -3068,6 +3126,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_node_invoke(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "node pair runtime unavailable: {err}"
+            ));
+        }
         let params = match decode_params::<NodeInvokeParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -3198,6 +3261,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_browser_request(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "node pair runtime unavailable: {err}"
+            ));
+        }
         let params = req.params.as_object();
         let method = params
             .and_then(|value| value.get("method"))
@@ -3444,6 +3512,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_canvas_present(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "node pair runtime unavailable: {err}"
+            ));
+        }
         let params = match decode_params::<CanvasPresentParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -3630,6 +3703,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_exec_approvals_node_get(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "node pair runtime unavailable: {err}"
+            ));
+        }
         let params = match decode_params::<ExecApprovalsNodeGetParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -3655,6 +3733,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_exec_approvals_node_set(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "node pair runtime unavailable: {err}"
+            ));
+        }
         let params = match decode_params::<ExecApprovalsNodeSetParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -6916,6 +6999,11 @@ struct SessionRuntimeConfig {
     store_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct NodePairRuntimeConfig {
+    store_path: Option<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind")]
 enum CronSchedule {
@@ -7762,12 +7850,35 @@ impl SkillsRegistry {
 
 struct NodePairRegistry {
     state: Mutex<NodePairState>,
+    runtime: Mutex<NodePairRuntimeState>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct NodePairState {
     pending_by_id: HashMap<String, NodePairPendingRequest>,
     paired_by_node_id: HashMap<String, PairedNodeEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct NodePairRuntimeState {
+    store_path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct NodePairStoreDiskState {
+    version: u32,
+    pending: Vec<NodePairPendingRequest>,
+    paired: Vec<PairedNodeEntry>,
+}
+
+impl Default for NodePairStoreDiskState {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            pending: Vec::new(),
+            paired: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -7953,7 +8064,67 @@ impl NodePairRegistry {
     fn new() -> Self {
         Self {
             state: Mutex::new(NodePairState::default()),
+            runtime: Mutex::new(NodePairRuntimeState {
+                store_path: NODE_PAIR_STORE_PATH.to_owned(),
+            }),
         }
+    }
+
+    async fn apply_runtime_config(&self, runtime: NodePairRuntimeConfig) -> Result<(), String> {
+        let target_store_path = runtime
+            .store_path
+            .and_then(|value| normalize_optional_text(Some(value), 2048))
+            .unwrap_or_else(|| NODE_PAIR_STORE_PATH.to_owned());
+
+        let current_store_path = { self.runtime.lock().await.store_path.clone() };
+        if current_store_path == target_store_path {
+            return Ok(());
+        }
+
+        let loaded = load_node_pair_store_disk_state(&target_store_path)?;
+        let mut next_state = NodePairState::default();
+
+        for pending in loaded.pending {
+            let Some(request_id) = normalize_optional_text(Some(pending.request_id.clone()), 128)
+            else {
+                continue;
+            };
+            let Some(node_id) = normalize_optional_text(Some(pending.node_id.clone()), 128) else {
+                continue;
+            };
+            let mut normalized = pending;
+            normalized.request_id = request_id.clone();
+            normalized.node_id = node_id;
+            next_state.pending_by_id.insert(request_id, normalized);
+        }
+
+        for paired in loaded.paired {
+            let Some(node_id) = normalize_optional_text(Some(paired.node_id.clone()), 128) else {
+                continue;
+            };
+            let mut normalized = paired;
+            normalized.node_id = node_id.clone();
+            next_state.paired_by_node_id.insert(node_id, normalized);
+        }
+
+        prune_oldest_node_pending(&mut next_state.pending_by_id, 512);
+        prune_oldest_node_pairs(&mut next_state.paired_by_node_id, 2_048);
+
+        {
+            let mut guard = self.state.lock().await;
+            *guard = next_state.clone();
+        }
+        {
+            let mut runtime_guard = self.runtime.lock().await;
+            runtime_guard.store_path = target_store_path.clone();
+        }
+        persist_node_pair_store_disk_state(&target_store_path, &next_state)?;
+        Ok(())
+    }
+
+    async fn persist_state_snapshot(&self, state: NodePairState) -> Result<(), String> {
+        let store_path = { self.runtime.lock().await.store_path.clone() };
+        persist_node_pair_store_disk_state(&store_path, &state)
     }
 
     async fn request(
@@ -8004,6 +8175,9 @@ impl NodePairRegistry {
             .pending_by_id
             .insert(request.request_id.clone(), request.clone());
         prune_oldest_node_pending(&mut guard.pending_by_id, 512);
+        let snapshot = guard.clone();
+        drop(guard);
+        self.persist_state_snapshot(snapshot).await?;
         Ok(NodePairRequestResult {
             status: "pending",
             request,
@@ -8062,6 +8236,9 @@ impl NodePairRegistry {
             .paired_by_node_id
             .insert(node.node_id.clone(), node.clone());
         prune_oldest_node_pairs(&mut guard.paired_by_node_id, 2_048);
+        let snapshot = guard.clone();
+        drop(guard);
+        let _ = self.persist_state_snapshot(snapshot).await;
         Some(NodePairApproveResult {
             request_id: request_id.to_owned(),
             node,
@@ -8071,6 +8248,9 @@ impl NodePairRegistry {
     async fn reject(&self, request_id: &str) -> Option<NodePairRejectResult> {
         let mut guard = self.state.lock().await;
         let request = guard.pending_by_id.remove(request_id)?;
+        let snapshot = guard.clone();
+        drop(guard);
+        let _ = self.persist_state_snapshot(snapshot).await;
         Some(NodePairRejectResult {
             request_id: request_id.to_owned(),
             node_id: request.node_id,
@@ -8117,6 +8297,9 @@ impl NodePairRegistry {
         let mut guard = self.state.lock().await;
         let node = guard.paired_by_node_id.get_mut(normalized_node_id)?;
         node.display_name = Some(trimmed_name.to_owned());
+        let snapshot = guard.clone();
+        drop(guard);
+        let _ = self.persist_state_snapshot(snapshot).await;
         Some(NodeRenameResult {
             node_id: normalized_node_id.to_owned(),
             display_name: trimmed_name.to_owned(),
@@ -8209,6 +8392,9 @@ impl NodePairRegistry {
             .retain(|key, pending| key == &request_id || pending.node_id != node_id);
         guard.pending_by_id.insert(request_id, request);
         prune_oldest_node_pending(&mut guard.pending_by_id, 512);
+        let snapshot = guard.clone();
+        drop(guard);
+        let _ = self.persist_state_snapshot(snapshot).await;
     }
 
     async fn ingest_pair_resolved(&self, payload: Value) {
@@ -8220,6 +8406,9 @@ impl NodePairRegistry {
         };
         let mut guard = self.state.lock().await;
         let _ = guard.pending_by_id.remove(&request_id);
+        let snapshot = guard.clone();
+        drop(guard);
+        let _ = self.persist_state_snapshot(snapshot).await;
     }
 }
 
@@ -11637,6 +11826,11 @@ impl ConfigRegistry {
         let guard = self.state.lock().await;
         session_runtime_config_from_config(&guard.config)
     }
+
+    async fn node_pair_runtime_config(&self) -> NodePairRuntimeConfig {
+        let guard = self.state.lock().await;
+        node_pair_runtime_config_from_config(&guard.config)
+    }
 }
 
 fn parse_config_raw(raw: String, method: &str) -> Result<Value, String> {
@@ -11787,6 +11981,40 @@ fn session_runtime_config_from_config(config: &Value) -> SessionRuntimeConfig {
         )
     });
     SessionRuntimeConfig { store_path }
+}
+
+fn node_pair_runtime_config_from_config(config: &Value) -> NodePairRuntimeConfig {
+    let runtime = config.get("runtime").and_then(Value::as_object);
+    let node_pair = config.get("nodePair").and_then(Value::as_object);
+    let node_pair_nested = config
+        .get("node")
+        .and_then(Value::as_object)
+        .and_then(|node| node.get("pair").and_then(Value::as_object));
+
+    let store_path = node_pair
+        .and_then(|obj| {
+            read_config_string(
+                obj,
+                &["storePath", "store_path", "statePath", "state_path"],
+                2048,
+            )
+        })
+        .or_else(|| {
+            node_pair_nested.and_then(|obj| {
+                read_config_string(
+                    obj,
+                    &["storePath", "store_path", "statePath", "state_path"],
+                    2048,
+                )
+            })
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string(obj, &["nodePairStorePath", "node_pair_store_path"], 2048)
+            })
+        });
+
+    NodePairRuntimeConfig { store_path }
 }
 
 fn read_config_string(
@@ -12109,6 +12337,107 @@ fn persist_session_store_disk_state(
             "failed moving session store temp file into place {}: {err}",
             store_path.display()
         ))
+    })?;
+    Ok(())
+}
+
+fn node_pair_store_path_is_memory(path: &str) -> bool {
+    path.trim().to_ascii_lowercase().starts_with("memory://")
+}
+
+fn load_node_pair_store_disk_state(path: &str) -> Result<NodePairStoreDiskState, String> {
+    if node_pair_store_path_is_memory(path) {
+        return Ok(NodePairStoreDiskState::default());
+    }
+    let store_path = PathBuf::from(path);
+    if !store_path.exists() {
+        return Ok(NodePairStoreDiskState::default());
+    }
+    let raw = std::fs::read_to_string(&store_path).map_err(|err| {
+        format!(
+            "failed reading node pair store {}: {err}",
+            store_path.display()
+        )
+    })?;
+    serde_json::from_str::<NodePairStoreDiskState>(&raw).map_err(|err| {
+        format!(
+            "failed parsing node pair store {}: {err}",
+            store_path.display()
+        )
+    })
+}
+
+fn persist_node_pair_store_disk_state(path: &str, state: &NodePairState) -> Result<(), String> {
+    if node_pair_store_path_is_memory(path) {
+        return Ok(());
+    }
+    let mut pending = state
+        .pending_by_id
+        .values()
+        .cloned()
+        .collect::<Vec<NodePairPendingRequest>>();
+    pending.sort_by(|a, b| {
+        b.ts.cmp(&a.ts)
+            .then_with(|| a.request_id.cmp(&b.request_id))
+    });
+
+    let mut paired = state
+        .paired_by_node_id
+        .values()
+        .cloned()
+        .collect::<Vec<PairedNodeEntry>>();
+    paired.sort_by(|a, b| {
+        b.approved_at_ms
+            .cmp(&a.approved_at_ms)
+            .then_with(|| a.node_id.cmp(&b.node_id))
+    });
+
+    let snapshot = NodePairStoreDiskState {
+        version: 1,
+        pending,
+        paired,
+    };
+    let payload = serde_json::to_string_pretty(&snapshot)
+        .map_err(|err| format!("failed serializing node pair store: {err}"))?;
+
+    let store_path = PathBuf::from(path);
+    if let Some(parent) = store_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|err| {
+                format!(
+                    "failed creating node pair store parent directory {}: {err}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
+
+    let mut temp_path = store_path.clone();
+    let temp_extension = format!(
+        "{}.tmp.{}",
+        store_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("json"),
+        now_ms()
+    );
+    temp_path.set_extension(temp_extension);
+
+    std::fs::write(&temp_path, payload).map_err(|err| {
+        format!(
+            "failed writing node pair store temp file {}: {err}",
+            temp_path.display()
+        )
+    })?;
+
+    if store_path.exists() {
+        let _ = std::fs::remove_file(&store_path);
+    }
+    std::fs::rename(&temp_path, &store_path).map_err(|err| {
+        format!(
+            "failed moving node pair store temp file into place {}: {err}",
+            store_path.display()
+        )
     })?;
     Ok(())
 }
@@ -24940,6 +25269,166 @@ mod tests {
                 );
             }
             _ => panic!("expected node.pair.reject handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_node_pair_store_path_persists_and_recovers_pairs_across_dispatchers() {
+        let root = std::env::temp_dir().join(format!("openclaw-rs-node-pair-store-{}", now_ms()));
+        std::fs::create_dir_all(&root).expect("creating node pair temp root");
+        let store_path = root.join("nodes").join("pairs.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        let dispatcher = RpcDispatcher::new();
+        let get_primary_hash = RpcRequestFrame {
+            id: "req-node-pair-store-config-hash".to_owned(),
+            method: "config.get".to_owned(),
+            params: serde_json::json!({}),
+        };
+        let primary_hash = match dispatcher.handle_request(&get_primary_hash).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/hash")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("config hash"),
+            _ => panic!("expected config.get handled"),
+        };
+        let patch_primary = RpcRequestFrame {
+            id: "req-node-pair-store-config".to_owned(),
+            method: "config.patch".to_owned(),
+            params: serde_json::json!({
+                "baseHash": primary_hash,
+                "raw": serde_json::json!({
+                    "nodePair": {
+                        "storePath": store_path_text
+                    }
+                })
+                .to_string()
+            }),
+        };
+        match dispatcher.handle_request(&patch_primary).await {
+            RpcDispatchOutcome::Handled(_) => {}
+            other => panic!("expected config.patch handled, got {other:?}"),
+        }
+
+        let request = RpcRequestFrame {
+            id: "req-node-pair-store-request".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "node-store-1",
+                "displayName": "Store Node",
+                "commands": ["browser.proxy"]
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&request).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("node pair request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+
+        let approve = RpcRequestFrame {
+            id: "req-node-pair-store-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        let token = match dispatcher.handle_request(&approve).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/node/token")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("paired node token"),
+            _ => panic!("expected node.pair.approve handled"),
+        };
+
+        assert!(store_path.exists(), "node pair store should exist");
+        let persisted =
+            std::fs::read_to_string(&store_path).expect("reading persisted node pair store");
+        assert!(
+            persisted.contains("node-store-1"),
+            "persisted node pair store should contain node id"
+        );
+
+        let dispatcher_restarted = RpcDispatcher::new();
+        let get_secondary_hash = RpcRequestFrame {
+            id: "req-node-pair-store-config-hash-restart".to_owned(),
+            method: "config.get".to_owned(),
+            params: serde_json::json!({}),
+        };
+        let secondary_hash = match dispatcher_restarted
+            .handle_request(&get_secondary_hash)
+            .await
+        {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/hash")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("config hash"),
+            _ => panic!("expected config.get handled"),
+        };
+        let patch_secondary = RpcRequestFrame {
+            id: "req-node-pair-store-config-restart".to_owned(),
+            method: "config.patch".to_owned(),
+            params: serde_json::json!({
+                "baseHash": secondary_hash,
+                "raw": serde_json::json!({
+                    "node": {
+                        "pair": {
+                            "storePath": store_path.to_string_lossy().to_string()
+                        }
+                    }
+                })
+                .to_string()
+            }),
+        };
+        match dispatcher_restarted.handle_request(&patch_secondary).await {
+            RpcDispatchOutcome::Handled(_) => {}
+            other => panic!("expected config.patch handled, got {other:?}"),
+        }
+
+        let list = RpcRequestFrame {
+            id: "req-node-pair-store-list".to_owned(),
+            method: "node.pair.list".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher_restarted.handle_request(&list).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/paired/0/nodeId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("node-store-1")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/paired/0/token")
+                        .and_then(serde_json::Value::as_str),
+                    Some(token.as_str())
+                );
+            }
+            _ => panic!("expected node.pair.list handled"),
+        }
+
+        let verify = RpcRequestFrame {
+            id: "req-node-pair-store-verify".to_owned(),
+            method: "node.pair.verify".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "node-store-1",
+                "token": token
+            }),
+        };
+        match dispatcher_restarted.handle_request(&verify).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/ok").and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected node.pair.verify handled"),
         }
     }
 
