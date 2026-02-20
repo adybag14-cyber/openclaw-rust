@@ -1077,6 +1077,29 @@ impl RpcDispatcher {
                 })
                 .await;
         }
+        if let Some(webhook_dispatch) = execution.webhook_dispatch.as_ref() {
+            match dispatch_cron_webhook(webhook_dispatch).await {
+                Ok(()) => {
+                    self.system
+                        .log_line(format!(
+                            "cron.webhook id={} target={} status=ok",
+                            execution.entry.job_id, webhook_dispatch.target
+                        ))
+                        .await;
+                }
+                Err(err) => {
+                    self.system
+                        .log_line(format!(
+                            "cron.webhook id={} target={} status=error bestEffort={} error={}",
+                            execution.entry.job_id,
+                            webhook_dispatch.target,
+                            webhook_dispatch.best_effort,
+                            err
+                        ))
+                        .await;
+                }
+            }
+        }
         self.system
             .log_line(format!(
                 "cron.run id={} mode={}",
@@ -6595,6 +6618,14 @@ impl CronRunMode {
 struct CronRunExecution {
     entry: CronRunLogEntry,
     system_event_text: Option<String>,
+    webhook_dispatch: Option<CronWebhookDispatch>,
+}
+
+#[derive(Debug, Clone)]
+struct CronWebhookDispatch {
+    target: String,
+    payload: Value,
+    best_effort: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -6918,7 +6949,7 @@ impl CronRegistry {
     ) -> Result<CronRunExecution, CronRegistryError> {
         let now = now_ms();
         let mut guard = self.state.lock().await;
-        let (entry, system_event_text, should_disable, should_delete) = {
+        let (entry, system_event_text, webhook_dispatch, should_disable, should_delete) = {
             let Some(job) = guard.jobs.get_mut(job_id) else {
                 return Err(CronRegistryError::NotFound(format!(
                     "cron job not found: {job_id}"
@@ -6993,9 +7024,11 @@ impl CronRegistry {
                 duration_ms: Some(0),
                 next_run_at_ms: job.state.next_run_at_ms,
             };
+            let webhook_dispatch = build_cron_webhook_dispatch(job, &entry);
             (
                 entry,
                 system_event_text,
+                webhook_dispatch,
                 matches!(&job.schedule, CronSchedule::At { .. }),
                 job.delete_after_run.unwrap_or(false),
             )
@@ -7022,6 +7055,7 @@ impl CronRegistry {
         Ok(CronRunExecution {
             entry,
             system_event_text,
+            webhook_dispatch,
         })
     }
 
@@ -13929,9 +13963,60 @@ fn estimate_next_run_at_ms(schedule: &CronSchedule, now: u64) -> Option<u64> {
     }
 }
 
+fn build_cron_webhook_dispatch(
+    job: &CronJob,
+    entry: &CronRunLogEntry,
+) -> Option<CronWebhookDispatch> {
+    if !matches!(entry.status.as_ref(), Some(CronRunStatus::Ok)) {
+        return None;
+    }
+    let delivery = job.delivery.as_ref()?;
+    if delivery.mode != "webhook" {
+        return None;
+    }
+    let target = delivery.to.clone()?;
+    Some(CronWebhookDispatch {
+        target,
+        payload: json!({
+            "job": {
+                "id": job.id.clone(),
+                "name": job.name.clone(),
+                "agentId": job.agent_id.clone(),
+                "sessionKey": job.session_key.clone(),
+                "sessionTarget": job.session_target.clone(),
+                "wakeMode": job.wake_mode.clone()
+            },
+            "run": entry.clone(),
+            "payload": job.payload.clone(),
+            "delivery": delivery.clone()
+        }),
+        best_effort: delivery.best_effort.unwrap_or(false),
+    })
+}
+
 fn next_cron_job_id() -> String {
     let sequence = CRON_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     format!("cron-{sequence:08x}-{}", now_ms())
+}
+
+async fn dispatch_cron_webhook(dispatch: &CronWebhookDispatch) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|err| format!("failed creating webhook client: {err}"))?;
+    let response = client
+        .post(&dispatch.target)
+        .json(&dispatch.payload)
+        .send()
+        .await
+        .map_err(|err| format!("webhook request failed: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "webhook returned HTTP {}",
+            response.status().as_u16()
+        ));
+    }
+    Ok(())
 }
 
 fn channel_label(id: &str) -> String {
@@ -14679,7 +14764,8 @@ fn next_wizard_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::io::{Read, Write};
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use serde::Deserialize;
@@ -25085,6 +25171,100 @@ mod tests {
         };
         let out = dispatcher.handle_request(&invalid_webhook).await;
         assert!(matches!(out, RpcDispatchOutcome::Error { code: 400, .. }));
+    }
+
+    #[tokio::test]
+    async fn dispatcher_cron_run_webhook_delivery_posts_payload() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind webhook listener");
+        let webhook_addr = listener.local_addr().expect("webhook local addr");
+        let captured_body: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let captured_body_server = Arc::clone(&captured_body);
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept webhook request");
+            let mut buffer = [0u8; 16 * 1024];
+            let bytes_read = stream.read(&mut buffer).expect("read webhook request");
+            let request_text = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+            let body = request_text
+                .split("\r\n\r\n")
+                .nth(1)
+                .unwrap_or_default()
+                .to_owned();
+            let mut guard = captured_body_server
+                .lock()
+                .expect("lock captured webhook body");
+            *guard = Some(body);
+            let response = b"HTTP/1.1 200 OK\r\nContent-Length:2\r\nConnection: close\r\n\r\nok";
+            stream.write_all(response).expect("write webhook response");
+        });
+
+        let dispatcher = RpcDispatcher::new();
+        let add = RpcRequestFrame {
+            id: "req-cron-webhook-delivery-add".to_owned(),
+            method: "cron.add".to_owned(),
+            params: serde_json::json!({
+                "name": "Webhook cron delivery",
+                "schedule": {
+                    "kind": "every",
+                    "everyMs": 60_000
+                },
+                "sessionTarget": "main",
+                "wakeMode": "next-heartbeat",
+                "payload": {
+                    "kind": "systemEvent",
+                    "text": "cron webhook payload"
+                },
+                "delivery": {
+                    "mode": "webhook",
+                    "to": format!("http://{webhook_addr}/cron")
+                }
+            }),
+        };
+        let job_id = match dispatcher.handle_request(&add).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/id")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("cron webhook job id"),
+            _ => panic!("expected cron.add handled"),
+        };
+
+        let run = RpcRequestFrame {
+            id: "req-cron-webhook-delivery-run".to_owned(),
+            method: "cron.run".to_owned(),
+            params: serde_json::json!({
+                "id": job_id,
+                "mode": "force"
+            }),
+        };
+        let out = dispatcher.handle_request(&run).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        server.join().expect("join webhook server thread");
+        let body = captured_body
+            .lock()
+            .expect("lock captured webhook body")
+            .clone()
+            .unwrap_or_default();
+        let payload: serde_json::Value =
+            serde_json::from_str(&body).expect("parse webhook JSON payload");
+        assert_eq!(
+            payload
+                .pointer("/job/name")
+                .and_then(serde_json::Value::as_str),
+            Some("Webhook cron delivery")
+        );
+        assert_eq!(
+            payload
+                .pointer("/run/status")
+                .and_then(serde_json::Value::as_str),
+            Some("ok")
+        );
+        assert_eq!(
+            payload
+                .pointer("/payload/kind")
+                .and_then(serde_json::Value::as_str),
+            Some("systemEvent")
+        );
     }
 
     #[tokio::test]

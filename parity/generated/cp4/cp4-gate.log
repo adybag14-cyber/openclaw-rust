@@ -1,83 +1,83 @@
 [parity] running CP4 fixture: channels::tests::exposes_channel_capabilities_and_wave1_order
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test channels::tests::exposes_channel_capabilities_and_wave1_order ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: channels::tests::signal_driver_detects_source
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test channels::tests::signal_driver_detects_source ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: channels::tests::webchat_driver_detects_source
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test channels::tests::webchat_driver_detects_source ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: channels::tests::normalize_chat_type_supports_dm_alias
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test channels::tests::normalize_chat_type_supports_dm_alias ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: channels::tests::mention_gate_skips_when_required_and_not_mentioned
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test channels::tests::mention_gate_skips_when_required_and_not_mentioned ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: channels::tests::mention_gate_with_bypass_allows_authorized_control_commands
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test channels::tests::mention_gate_with_bypass_allows_authorized_control_commands ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: channels::tests::chunking_supports_length_and_newline_modes
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.32s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test channels::tests::chunking_supports_length_and_newline_modes ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: channels::tests::default_chunk_limit_matches_core_channel_defaults
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test channels::tests::default_chunk_limit_matches_core_channel_defaults ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: channels::tests::retry_backoff_policy_scales_and_caps
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test channels::tests::retry_backoff_policy_scales_and_caps ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: channels::tests::wave2_drivers_detect_source_aliases
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
@@ -86,34 +86,34 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; fi
 running 1 test
 test channels::tests::wave2_drivers_detect_source_aliases ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: channels::tests::normalize_channel_id_supports_wave2_aliases
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test channels::tests::normalize_channel_id_supports_wave2_aliases ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: channels::tests::wave3_drivers_detect_source_aliases
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test channels::tests::wave3_drivers_detect_source_aliases ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: channels::tests::normalize_channel_id_supports_wave3_aliases
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test channels::tests::normalize_channel_id_supports_wave3_aliases ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: channels::tests::wave4_drivers_detect_source_aliases
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
@@ -122,88 +122,88 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; fi
 running 1 test
 test channels::tests::wave4_drivers_detect_source_aliases ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: channels::tests::normalize_channel_id_supports_wave4_aliases
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test channels::tests::normalize_channel_id_supports_wave4_aliases ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: scheduler::tests::mention_activation_accepts_group_message_when_detection_unavailable
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test scheduler::tests::mention_activation_accepts_group_message_when_detection_unavailable ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: scheduler::tests::mention_activation_bypasses_for_authorized_control_command
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test scheduler::tests::mention_activation_bypasses_for_authorized_control_command ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_methods_report_status_and_validate_logout
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.31s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_methods_report_status_and_validate_logout ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_rejects_unknown_params
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_rejects_unknown_params ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_probe_false_sets_null_channel_last_probe_at
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_probe_false_sets_null_channel_last_probe_at ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.01s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_logout_rejects_unknown_params
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_logout_rejects_unknown_params ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_logout_accepts_channel_alias
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_logout_accepts_channel_alias ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_reflects_runtime_event_snapshots
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_reflects_runtime_event_snapshots ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.01s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_tracks_payload_channel_alias_runtime
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
@@ -212,52 +212,52 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; fi
 running 1 test
 test gateway::tests::dispatcher_channels_status_tracks_payload_channel_alias_runtime ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_tracks_wave3_payload_channel_alias_runtime
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_tracks_wave3_payload_channel_alias_runtime ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_tracks_wave4_payload_channel_alias_runtime
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_tracks_wave4_payload_channel_alias_runtime ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.01s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_logout_marks_runtime_offline
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_logout_marks_runtime_offline ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_logout_without_runtime_account_does_not_create_account
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.32s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_logout_without_runtime_account_does_not_create_account ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_ingests_channel_accounts_runtime_map
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_ingests_channel_accounts_runtime_map ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_honors_default_account_hints_from_runtime_payload
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
@@ -266,88 +266,88 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; fi
 running 1 test
 test gateway::tests::dispatcher_channels_status_honors_default_account_hints_from_runtime_payload ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.01s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_ingests_nested_default_account_id_from_channels_map
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.32s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_ingests_nested_default_account_id_from_channels_map ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.01s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_ingests_nested_snake_case_default_account_id_from_channels_map
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_ingests_nested_snake_case_default_account_id_from_channels_map ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_ingests_alias_channel_ids_in_runtime_maps
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_ingests_alias_channel_ids_in_runtime_maps ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.01s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_includes_wave2_channel_catalog_entries
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_includes_wave2_channel_catalog_entries ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_ingests_wave2_alias_channel_ids_in_runtime_maps
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_ingests_wave2_alias_channel_ids_in_runtime_maps ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_includes_wave3_channel_catalog_entries
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_includes_wave3_channel_catalog_entries ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_ingests_wave3_alias_channel_ids_in_runtime_maps
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_ingests_wave3_alias_channel_ids_in_runtime_maps ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_includes_wave4_channel_catalog_entries
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_includes_wave4_channel_catalog_entries ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.01s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_ingests_wave4_alias_channel_ids_in_runtime_maps
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_ingests_wave4_alias_channel_ids_in_runtime_maps ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.01s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_ingests_snake_case_runtime_maps
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
@@ -356,222 +356,222 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; fi
 running 1 test
 test gateway::tests::dispatcher_channels_status_ingests_snake_case_runtime_maps ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_tracks_inbound_when_channel_is_only_in_payload
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_tracks_inbound_when_channel_is_only_in_payload ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_chat_send_updates_webchat_runtime_outbound_activity
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_chat_send_updates_webchat_runtime_outbound_activity ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_defaults_to_unconfigured_unlinked_without_runtime
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_defaults_to_unconfigured_unlinked_without_runtime ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.01s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_probe_false_sets_null_account_last_probe_at
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_probe_false_sets_null_account_last_probe_at ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_probe_true_sets_account_last_probe_at
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_probe_true_sets_account_last_probe_at ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_ingests_extended_account_metadata_fields
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_ingests_extended_account_metadata_fields ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_ingests_runtime_probe_audit_and_application_payloads
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_ingests_runtime_probe_audit_and_application_payloads ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_logout_matches_account_id_case_insensitively
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_logout_matches_account_id_case_insensitively ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_logout_blank_account_id_defaults_default
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_logout_blank_account_id_defaults_default ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_canonicalizes_default_account_id_casing
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_canonicalizes_default_account_id_casing ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_orders_default_account_first
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_orders_default_account_first ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.01s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_ingests_runtime_account_name
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_ingests_runtime_account_name ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_ingests_runtime_display_name_alias
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_ingests_runtime_display_name_alias ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_ingests_snake_case_extended_metadata_fields
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_ingests_snake_case_extended_metadata_fields ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_parses_allow_from_string_list
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_parses_allow_from_string_list ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_tracks_lifecycle_event_suffixes
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_tracks_lifecycle_event_suffixes ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_send_accepts_wave2_channel_aliases
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_send_accepts_wave2_channel_aliases ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_send_accepts_wave3_channel_aliases
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_send_accepts_wave3_channel_aliases ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_send_accepts_wave4_channel_aliases
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_send_accepts_wave4_channel_aliases ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channel_acceptance_canary_covers_wave_channels
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channel_acceptance_canary_covers_wave_channels ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.09s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.09s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_accepts_numeric_channel_default_account_id_map_values
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_accepts_numeric_channel_default_account_id_map_values ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.01s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_accepts_numeric_payload_default_account_id
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_accepts_numeric_payload_default_account_id ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_accepts_numeric_nested_default_account_id
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_accepts_numeric_nested_default_account_id ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
 
 [parity] running CP4 fixture: gateway::tests::dispatcher_channels_status_parses_last_probe_at_from_string_number
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_channels_status_parses_last_probe_at_from_string_number ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.01s
 
 [parity] CP4 gate passed
