@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::{timeout, MissedTickBehavior};
@@ -25,7 +26,7 @@ use crate::config::{
 use crate::gateway::{supported_rpc_methods, RpcDispatchOutcome, RpcDispatcher};
 use crate::protocol::{
     decision_event_frame, frame_kind, parse_frame_text, parse_rpc_request,
-    rpc_error_response_frame, rpc_success_response_frame, FrameKind,
+    rpc_error_response_frame, rpc_success_response_frame, FrameKind, RpcRequestFrame,
 };
 use crate::scheduler::{SessionScheduler, SessionSchedulerConfig, SubmitOutcome};
 use crate::security::ActionEvaluator;
@@ -261,6 +262,7 @@ impl GatewayServer {
             broadcaster: GatewayBroadcaster::new(),
         });
         let cron_due_task = self.spawn_cron_due_task(state.rpc.clone());
+        let http_task = self.spawn_control_http_task(state.rpc.clone());
 
         tokio::pin!(shutdown);
         loop {
@@ -288,6 +290,10 @@ impl GatewayServer {
         }
 
         if let Some(task) = reload_task {
+            task.abort();
+            let _ = task.await;
+        }
+        if let Some(task) = http_task {
             task.abort();
             let _ = task.await;
         }
@@ -343,6 +349,48 @@ impl GatewayServer {
                 }
             }
         })
+    }
+
+    fn spawn_control_http_task(
+        &self,
+        rpc: Arc<RpcDispatcher>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let bind = self.gateway.server.http_bind.clone()?;
+        if bind.trim().is_empty() {
+            return None;
+        }
+        Some(tokio::spawn(async move {
+            let listener = match TcpListener::bind(&bind).await {
+                Ok(listener) => listener,
+                Err(err) => {
+                    warn!("standalone gateway control-http bind failed on {bind}: {err}");
+                    return;
+                }
+            };
+            let bound = listener
+                .local_addr()
+                .map(|addr| addr.to_string())
+                .unwrap_or(bind.clone());
+            info!("standalone gateway control-http listening on http://{bound}");
+            loop {
+                match listener.accept().await {
+                    Ok((stream, remote_addr)) => {
+                        let rpc = rpc.clone();
+                        tokio::spawn(async move {
+                            if let Err(err) = handle_control_http_connection(stream, rpc).await {
+                                warn!(
+                                    "standalone gateway control-http connection {} failed: {err}",
+                                    remote_addr
+                                );
+                            }
+                        });
+                    }
+                    Err(err) => {
+                        warn!("standalone gateway control-http accept failed: {err}");
+                    }
+                }
+            }
+        }))
     }
 }
 
@@ -418,6 +466,209 @@ impl GatewayBroadcaster {
             guard.remove(&conn_id);
         }
     }
+}
+
+async fn handle_control_http_connection(
+    mut stream: tokio::net::TcpStream,
+    rpc: Arc<RpcDispatcher>,
+) -> Result<()> {
+    let mut buffer = vec![0_u8; 16 * 1024];
+    let read = stream
+        .read(&mut buffer)
+        .await
+        .context("failed reading control-http request")?;
+    if read == 0 {
+        return Ok(());
+    }
+    let request = String::from_utf8_lossy(&buffer[..read]);
+    let request_line = request.lines().next().unwrap_or_default();
+    let mut segments = request_line.split_whitespace();
+    let method = segments.next().unwrap_or_default();
+    let path = segments.next().unwrap_or("/");
+    let path = path.split('?').next().unwrap_or(path);
+
+    if method != "GET" {
+        let body = json!({
+            "ok": false,
+            "error": "method_not_allowed"
+        });
+        return write_http_json_response(&mut stream, 405, &body).await;
+    }
+
+    match path {
+        "/" | "/ui" | "/control" => {
+            write_http_html_response(&mut stream, 200, control_ui_html().as_bytes()).await
+        }
+        "/health" => {
+            let req = RpcRequestFrame {
+                id: "http-health".to_owned(),
+                method: "health".to_owned(),
+                params: json!({}),
+            };
+            let payload = dispatch_http_rpc(&rpc, req).await;
+            write_http_json_response(&mut stream, 200, &payload).await
+        }
+        "/status" => {
+            let req = RpcRequestFrame {
+                id: "http-status".to_owned(),
+                method: "status".to_owned(),
+                params: json!({}),
+            };
+            let payload = dispatch_http_rpc(&rpc, req).await;
+            write_http_json_response(&mut stream, 200, &payload).await
+        }
+        "/rpc/methods" => {
+            let methods = supported_rpc_methods()
+                .iter()
+                .map(|method| Value::String((*method).to_owned()))
+                .collect::<Vec<_>>();
+            let payload = json!({
+                "ok": true,
+                "count": methods.len(),
+                "methods": methods
+            });
+            write_http_json_response(&mut stream, 200, &payload).await
+        }
+        _ => {
+            let payload = json!({
+                "ok": false,
+                "error": "not_found",
+                "path": path
+            });
+            write_http_json_response(&mut stream, 404, &payload).await
+        }
+    }
+}
+
+async fn dispatch_http_rpc(rpc: &RpcDispatcher, request: RpcRequestFrame) -> Value {
+    match rpc.handle_request(&request).await {
+        RpcDispatchOutcome::Handled(payload) => json!({
+            "ok": true,
+            "result": payload
+        }),
+        RpcDispatchOutcome::Error {
+            code,
+            message,
+            details,
+        } => json!({
+            "ok": false,
+            "error": {
+                "code": code,
+                "message": message,
+                "details": details
+            }
+        }),
+        RpcDispatchOutcome::NotHandled => json!({
+            "ok": true,
+            "notHandled": true
+        }),
+    }
+}
+
+async fn write_http_json_response(
+    stream: &mut tokio::net::TcpStream,
+    status_code: u16,
+    payload: &Value,
+) -> Result<()> {
+    let body = serde_json::to_vec(payload).context("failed serializing control-http JSON body")?;
+    write_http_response(
+        stream,
+        status_code,
+        "application/json; charset=utf-8",
+        &body,
+    )
+    .await
+}
+
+async fn write_http_html_response(
+    stream: &mut tokio::net::TcpStream,
+    status_code: u16,
+    body: &[u8],
+) -> Result<()> {
+    write_http_response(stream, status_code, "text/html; charset=utf-8", body).await
+}
+
+async fn write_http_response(
+    stream: &mut tokio::net::TcpStream,
+    status_code: u16,
+    content_type: &str,
+    body: &[u8],
+) -> Result<()> {
+    let status_text = match status_code {
+        200 => "OK",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        _ => "OK",
+    };
+    let head = format!(
+        "HTTP/1.1 {status_code} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",
+        body.len()
+    );
+    stream
+        .write_all(head.as_bytes())
+        .await
+        .context("failed writing control-http headers")?;
+    stream
+        .write_all(body)
+        .await
+        .context("failed writing control-http body")?;
+    let _ = stream.shutdown().await;
+    Ok(())
+}
+
+fn control_ui_html() -> String {
+    let html = r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenClaw Rust Control</title>
+    <style>
+      :root { --bg:#0f172a; --fg:#e2e8f0; --muted:#94a3b8; --acc:#22d3ee; --panel:#111827; }
+      body { margin:0; font-family: ui-sans-serif,system-ui,-apple-system; background: radial-gradient(circle at top,#1e293b 0%,#0f172a 45%,#020617 100%); color:var(--fg); }
+      main { max-width: 980px; margin: 2rem auto; padding: 1.25rem; }
+      .panel { background: rgba(17,24,39,0.88); border: 1px solid rgba(148,163,184,0.2); border-radius: 14px; padding: 1rem; margin-bottom: 1rem; }
+      h1 { margin: 0 0 1rem 0; font-size: 1.4rem; letter-spacing: 0.01em; }
+      h2 { margin: 0 0 .6rem 0; font-size: 1rem; color: var(--acc); }
+      pre { margin: 0; white-space: pre-wrap; color: var(--muted); font-size: .85rem; }
+      .hint { color: var(--muted); font-size: .85rem; margin-top: .5rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>OpenClaw Rust Control Surface</h1>
+      <div class="panel">
+        <h2>Health</h2>
+        <pre id="health">loading...</pre>
+      </div>
+      <div class="panel">
+        <h2>Status</h2>
+        <pre id="status">loading...</pre>
+      </div>
+      <div class="panel">
+        <h2>RPC Methods</h2>
+        <pre id="methods">loading...</pre>
+      </div>
+      <div class="hint">This UI is served by the Rust standalone gateway HTTP control surface.</div>
+    </main>
+    <script>
+      async function load(id, url) {
+        const el = document.getElementById(id);
+        try {
+          const res = await fetch(url, { cache: "no-store" });
+          const data = await res.json();
+          el.textContent = JSON.stringify(data, null, 2);
+        } catch (err) {
+          el.textContent = String(err);
+        }
+      }
+      load("health", "/health");
+      load("status", "/status");
+      load("methods", "/rpc/methods");
+    </script>
+  </body>
+</html>"#;
+    html.to_owned()
 }
 
 async fn handle_connection(
@@ -912,6 +1163,8 @@ mod tests {
     use async_trait::async_trait;
     use futures_util::{SinkExt, StreamExt};
     use serde_json::{json, Value};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
     use tokio::sync::{mpsc, oneshot};
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message;
@@ -955,6 +1208,7 @@ mod tests {
             runtime_mode: GatewayRuntimeMode::StandaloneServer,
             server: GatewayServerConfig {
                 bind,
+                http_bind: None,
                 auth_mode: GatewayAuthMode::Token,
                 handshake_timeout_ms: 3_000,
                 event_queue_capacity: 8,
@@ -1010,6 +1264,22 @@ mod tests {
             Some("hello-ok")
         );
         Ok(ws)
+    }
+
+    async fn http_get_json(bind: &str, path: &str) -> Result<Value> {
+        let mut stream = TcpStream::connect(bind).await?;
+        let request = format!(
+            "GET {path} HTTP/1.1\r\nHost: {bind}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).await?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await?;
+        let text = String::from_utf8(raw)?;
+        let body = text
+            .split("\r\n\r\n")
+            .nth(1)
+            .ok_or_else(|| anyhow::anyhow!("missing HTTP body"))?;
+        Ok(serde_json::from_str(body)?)
     }
 
     #[test]
@@ -1076,6 +1346,50 @@ mod tests {
             resp_json.pointer("/id").and_then(Value::as_str),
             Some("health-1")
         );
+
+        let _ = shutdown_tx.send(());
+        task.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn standalone_gateway_control_http_serves_health_status_and_methods() -> Result<()> {
+        let ws_bind = reserve_bind()?;
+        let http_bind = reserve_bind()?;
+        let mut gateway = test_gateway(ws_bind);
+        gateway.server.http_bind = Some(http_bind.clone());
+        let server = GatewayServer::new(
+            gateway,
+            "security.decision".to_owned(),
+            64,
+            SessionQueueMode::Followup,
+            GroupActivationMode::Always,
+        );
+        let evaluator: Arc<dyn ActionEvaluator> = Arc::new(AllowEvaluator);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            server
+                .run_until(evaluator, None, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let health = http_get_json(&http_bind, "/health").await?;
+        assert_eq!(health.pointer("/ok").and_then(Value::as_bool), Some(true));
+        assert!(health.pointer("/result").is_some());
+
+        let status = http_get_json(&http_bind, "/status").await?;
+        assert_eq!(status.pointer("/ok").and_then(Value::as_bool), Some(true));
+        assert!(status.pointer("/result/runtime/version").is_some());
+
+        let methods = http_get_json(&http_bind, "/rpc/methods").await?;
+        assert_eq!(methods.pointer("/ok").and_then(Value::as_bool), Some(true));
+        assert!(methods
+            .pointer("/count")
+            .and_then(Value::as_u64)
+            .is_some_and(|count| count > 0));
 
         let _ = shutdown_tx.send(());
         task.await??;

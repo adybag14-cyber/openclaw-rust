@@ -26,7 +26,9 @@ sha2 = "0.10.8"
 smallvec = "1.15.1"
 tokio = { version = "1.44.2", features = [
   "fs",
+  "io-util",
   "macros",
+  "net",
   "process",
   "rt-multi-thread",
   "signal",

@@ -220,6 +220,63 @@
         "status": "completed",
         "contains": "cp3-thread-2"
       }
+    },
+    {
+      "name": "browser-open",
+      "request": {
+        "request_id": "cp3-browser-open-1",
+        "session_id": "cp3-browser",
+        "tool_name": "browser",
+        "args": {
+          "action": "open",
+          "url": "https://example.com"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "browser.proxy"
+      }
+    },
+    {
+      "name": "canvas-present",
+      "request": {
+        "request_id": "cp3-canvas-present-1",
+        "session_id": "cp3-canvas",
+        "tool_name": "canvas",
+        "args": {
+          "action": "present",
+          "nodeId": "cp3-node-a",
+          "view": "default"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "canvas.present"
+      }
+    },
+    {
+      "name": "nodes-location-invoke",
+      "request": {
+        "request_id": "cp3-nodes-location-1",
+        "session_id": "cp3-node",
+        "tool_name": "nodes",
+        "args": {
+          "action": "invoke",
+          "nodeId": "cp3-node-a",
+          "command": "location.get",
+          "params": {}
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "location.get"
+      }
     }
   ]
 }

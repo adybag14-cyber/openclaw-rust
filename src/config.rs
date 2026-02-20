@@ -28,6 +28,8 @@ pub struct GatewayConfig {
 pub struct GatewayServerConfig {
     #[serde(default = "default_gateway_server_bind")]
     pub bind: String,
+    #[serde(default)]
+    pub http_bind: Option<String>,
     #[serde(default = "default_gateway_auth_mode")]
     pub auth_mode: GatewayAuthMode,
     #[serde(default = "default_gateway_handshake_timeout_ms")]
@@ -42,6 +44,7 @@ impl Default for GatewayServerConfig {
     fn default() -> Self {
         Self {
             bind: default_gateway_server_bind(),
+            http_bind: None,
             auth_mode: default_gateway_auth_mode(),
             handshake_timeout_ms: default_gateway_handshake_timeout_ms(),
             event_queue_capacity: default_gateway_event_queue_capacity(),
@@ -193,6 +196,7 @@ impl Default for Config {
                 runtime_mode: default_gateway_runtime_mode(),
                 server: GatewayServerConfig {
                     bind: default_gateway_server_bind(),
+                    http_bind: None,
                     auth_mode: default_gateway_auth_mode(),
                     handshake_timeout_ms: default_gateway_handshake_timeout_ms(),
                     event_queue_capacity: default_gateway_event_queue_capacity(),
@@ -310,6 +314,14 @@ impl Config {
                 self.gateway.server.bind = trimmed.to_owned();
             }
         }
+        if let Ok(v) = env::var("OPENCLAW_RS_GATEWAY_HTTP_BIND") {
+            let trimmed = v.trim();
+            self.gateway.server.http_bind = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            };
+        }
         if let Ok(v) = env::var("OPENCLAW_RS_GATEWAY_EVENT_QUEUE_CAPACITY") {
             if let Ok(n) = v.parse::<usize>() {
                 self.gateway.server.event_queue_capacity = n.max(8);
@@ -416,6 +428,15 @@ impl Config {
         }
         if self.gateway.server.bind.trim().is_empty() {
             anyhow::bail!("gateway.server.bind must not be empty");
+        }
+        if self
+            .gateway
+            .server
+            .http_bind
+            .as_deref()
+            .is_some_and(|bind| bind.trim().is_empty())
+        {
+            anyhow::bail!("gateway.server.http_bind must not be empty when provided");
         }
         if self.gateway.server.event_queue_capacity == 0 {
             anyhow::bail!("gateway.server.event_queue_capacity must be > 0");

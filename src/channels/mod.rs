@@ -908,7 +908,11 @@ fn extract_with_hints(
     hints: &[&str],
 ) -> Option<ActionRequest> {
     let mut request = ActionRequest::from_gateway_frame(frame)?;
-    if let Some(channel) = request.channel.as_deref() {
+    let explicit_hint = request
+        .channel
+        .clone()
+        .or_else(|| extract_channel_hint(frame));
+    if let Some(channel) = explicit_hint.as_deref() {
         let normalized = normalize_channel_id(Some(channel))?;
         if normalized == canonical_channel {
             request.channel = Some(canonical_channel.to_owned());
@@ -933,6 +937,67 @@ fn extract_with_hints(
     }
 
     None
+}
+
+fn extract_channel_hint(frame: &Value) -> Option<String> {
+    const CHANNEL_KEYS: &[&str] = &[
+        "channel",
+        "channelName",
+        "channel_name",
+        "channelId",
+        "channel_id",
+        "sourceChannel",
+        "source_channel",
+        "transportChannel",
+        "transport_channel",
+        "platformChannel",
+        "platform_channel",
+        "channelHint",
+        "channel_hint",
+    ];
+
+    let candidates = [
+        frame.get("payload"),
+        frame.get("params"),
+        frame.get("meta"),
+        frame.get("context"),
+        frame.get("ctx"),
+        frame.get("runtime"),
+        frame.get("data"),
+        frame.get("payload").and_then(|v| v.get("meta")),
+        frame.get("payload").and_then(|v| v.get("context")),
+        frame.get("payload").and_then(|v| v.get("ctx")),
+        frame.get("payload").and_then(|v| v.get("runtime")),
+        frame.get("payload").and_then(|v| v.get("data")),
+    ];
+
+    for candidate in candidates.into_iter().flatten() {
+        if let Some(value) = find_first_string_by_keys(candidate, CHANNEL_KEYS) {
+            return Some(value);
+        }
+    }
+    find_first_string_by_keys(frame, CHANNEL_KEYS)
+}
+
+fn find_first_string_by_keys(root: &Value, keys: &[&str]) -> Option<String> {
+    match root {
+        Value::Object(map) => {
+            for key in keys {
+                if let Some(value) = map.get(*key).and_then(Value::as_str) {
+                    let trimmed = value.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_owned());
+                    }
+                }
+            }
+            map.values()
+                .find_map(|value| find_first_string_by_keys(value, keys))
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|value| find_first_string_by_keys(value, keys)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -995,6 +1060,48 @@ mod tests {
         });
         let request = registry.extract(&frame).expect("request");
         assert_eq!(request.channel.as_deref(), Some("webchat"));
+    }
+
+    #[test]
+    fn driver_extracts_channel_from_nested_runtime_hint_alias() {
+        let registry = DriverRegistry::default_registry();
+        let frame = json!({
+            "type": "event",
+            "event": "message.received",
+            "payload": {
+                "id": "req-nested-channel",
+                "command": "git status",
+                "tool": "exec",
+                "meta": {
+                    "context": {
+                        "runtime": {
+                            "channelHint": "web-chat"
+                        }
+                    }
+                }
+            }
+        });
+        let request = registry.extract(&frame).expect("request");
+        assert_eq!(request.channel.as_deref(), Some("webchat"));
+    }
+
+    #[test]
+    fn explicit_channel_hint_mismatch_falls_through_to_matching_driver() {
+        let registry = DriverRegistry::default_registry();
+        let frame = json!({
+            "type": "event",
+            "event": "message.received",
+            "payload": {
+                "id": "req-wa",
+                "command": "git status",
+                "tool": "exec",
+                "ctx": {
+                    "transport_channel": "wa"
+                }
+            }
+        });
+        let request = registry.extract(&frame).expect("request");
+        assert_eq!(request.channel.as_deref(), Some("whatsapp"));
     }
 
     #[test]

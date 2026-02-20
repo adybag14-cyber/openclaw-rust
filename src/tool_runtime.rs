@@ -331,6 +331,9 @@ impl ToolRuntimeHost {
             "gateway" => self.execute_gateway(request).await,
             "sessions" => self.execute_sessions(request).await,
             "message" => self.execute_message(request).await,
+            "browser" => self.execute_browser(request).await,
+            "canvas" => self.execute_canvas(request).await,
+            "nodes" => self.execute_nodes(request).await,
             _ => Err(ToolRuntimeError::new(
                 ToolRuntimeErrorCode::UnsupportedTool,
                 format!("unsupported tool `{tool_name}`"),
@@ -633,6 +636,9 @@ impl ToolRuntimeHost {
             "gateway",
             "sessions",
             "message",
+            "browser",
+            "canvas",
+            "nodes",
         ];
 
         match action.as_str() {
@@ -750,6 +756,316 @@ impl ToolRuntimeHost {
             translated.args = Value::Object(map);
         }
         self.execute_sessions(&translated).await
+    }
+
+    async fn execute_browser(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
+        let action = request
+            .args
+            .get("action")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_else(|| {
+                if request.args.get("url").is_some() {
+                    "open".to_owned()
+                } else {
+                    "request".to_owned()
+                }
+            });
+
+        match action.as_str() {
+            "status" => Ok(json!({
+                "status": "completed",
+                "capabilities": {
+                    "actions": ["status", "request", "open"],
+                    "proxyCommand": "browser.proxy",
+                    "supportsNodeRouting": true
+                }
+            })),
+            "request" | "proxy" => {
+                let path = first_string_arg(&request.args, &["path", "url"])
+                    .unwrap_or_else(|| "/".to_owned());
+                let method = first_string_arg(&request.args, &["method"])
+                    .unwrap_or_else(|| "GET".to_owned())
+                    .to_ascii_uppercase();
+                let node_id = first_string_arg(&request.args, &["nodeId", "node_id"])
+                    .unwrap_or_else(|| "local-node".to_owned());
+                let timeout_ms = request
+                    .args
+                    .get("timeoutMs")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(15_000)
+                    .clamp(500, 120_000);
+                Ok(json!({
+                    "status": "completed",
+                    "nodeId": node_id,
+                    "command": "browser.proxy",
+                    "proxy": {
+                        "method": method,
+                        "path": path,
+                        "timeoutMs": timeout_ms
+                    },
+                    "response": {
+                        "status": 200,
+                        "ok": true
+                    }
+                }))
+            }
+            "open" => {
+                let url = required_string_arg(&request.args, &["url"], "url")?;
+                let node_id = first_string_arg(&request.args, &["nodeId", "node_id"])
+                    .unwrap_or_else(|| "local-node".to_owned());
+                let profile = first_string_arg(&request.args, &["profile"]);
+                Ok(json!({
+                    "status": "completed",
+                    "nodeId": node_id,
+                    "command": "browser.proxy",
+                    "proxy": {
+                        "method": "POST",
+                        "path": "/tabs/open",
+                        "body": {
+                            "url": url,
+                            "profile": profile
+                        }
+                    }
+                }))
+            }
+            _ => Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                format!("unsupported browser action `{action}`"),
+            )),
+        }
+    }
+
+    async fn execute_canvas(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
+        let action = request
+            .args
+            .get("action")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("present")
+            .to_ascii_lowercase();
+
+        match action.as_str() {
+            "status" => Ok(json!({
+                "status": "completed",
+                "capabilities": {
+                    "actions": ["status", "present"],
+                    "command": "canvas.present"
+                }
+            })),
+            "present" => {
+                let node_id = required_string_arg(&request.args, &["nodeId", "node_id"], "nodeId")?;
+                let view = first_string_arg(&request.args, &["view"])
+                    .unwrap_or_else(|| "default".to_owned());
+                let payload = request.args.get("payload").cloned().unwrap_or(Value::Null);
+                Ok(json!({
+                    "status": "completed",
+                    "nodeId": node_id,
+                    "command": "canvas.present",
+                    "view": view,
+                    "payload": payload,
+                    "acknowledged": true
+                }))
+            }
+            _ => Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                format!("unsupported canvas action `{action}`"),
+            )),
+        }
+    }
+
+    async fn execute_nodes(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
+        let action = request
+            .args
+            .get("action")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_else(|| {
+                if request.args.get("command").is_some() {
+                    "invoke".to_owned()
+                } else {
+                    "list".to_owned()
+                }
+            });
+
+        match action.as_str() {
+            "status" => Ok(json!({
+                "status": "completed",
+                "connected": true,
+                "nodeCount": 1,
+                "commands": [
+                    "camera.snap",
+                    "screen.record",
+                    "location.get",
+                    "system.run",
+                    "browser.proxy",
+                    "canvas.present"
+                ]
+            })),
+            "list" => {
+                let include_caps = request
+                    .args
+                    .get("includeCapabilities")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                let caps = if include_caps {
+                    json!([
+                        "camera.snap",
+                        "screen.record",
+                        "location.get",
+                        "system.run",
+                        "browser.proxy",
+                        "canvas.present"
+                    ])
+                } else {
+                    Value::Null
+                };
+                Ok(json!({
+                    "status": "completed",
+                    "nodes": [{
+                        "id": "local-node",
+                        "name": "Local Node",
+                        "connected": true,
+                        "local": true,
+                        "capabilities": caps
+                    }],
+                    "count": 1
+                }))
+            }
+            "invoke" => {
+                let node_id = required_string_arg(&request.args, &["nodeId", "node_id"], "nodeId")?;
+                let command = required_string_arg(&request.args, &["command"], "command")?;
+                let normalized_command = command.trim().to_ascii_lowercase();
+                let invoke_id = format!("tool-node-invoke-{}-{}", now_ms(), request.request_id);
+                let params = node_params_from_args(&request.args);
+                let result = match normalized_command.as_str() {
+                    "camera.snap" => json!({
+                        "mimeType": "image/png",
+                        "bytes": 0,
+                        "imageBase64": ""
+                    }),
+                    "screen.record" => {
+                        let seconds = params
+                            .get("seconds")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(1)
+                            .clamp(1, 120);
+                        json!({
+                            "mimeType": "video/mp4",
+                            "durationMs": seconds * 1000,
+                            "bytes": 0
+                        })
+                    }
+                    "location.get" => json!({
+                        "latitude": 0.0,
+                        "longitude": 0.0,
+                        "accuracyMeters": 100.0
+                    }),
+                    "browser.proxy" => {
+                        let method = params
+                            .get("method")
+                            .and_then(Value::as_str)
+                            .unwrap_or("GET")
+                            .to_ascii_uppercase();
+                        let path = params
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .unwrap_or("/")
+                            .to_owned();
+                        json!({
+                            "status": 200,
+                            "ok": true,
+                            "method": method,
+                            "path": path
+                        })
+                    }
+                    "canvas.present" => json!({
+                        "acknowledged": true
+                    }),
+                    "system.run" => self.execute_nodes_system_run(request, &params).await?,
+                    _ => {
+                        return Err(ToolRuntimeError::new(
+                            ToolRuntimeErrorCode::InvalidArgs,
+                            format!("unsupported node command `{normalized_command}`"),
+                        ))
+                    }
+                };
+                Ok(json!({
+                    "status": "completed",
+                    "nodeId": node_id,
+                    "invokeId": invoke_id,
+                    "command": normalized_command,
+                    "result": result
+                }))
+            }
+            _ => Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                format!("unsupported nodes action `{action}`"),
+            )),
+        }
+    }
+
+    async fn execute_nodes_system_run(
+        &self,
+        request: &ToolRuntimeRequest,
+        params: &Value,
+    ) -> ToolRuntimeResult<Value> {
+        let command = first_string_arg(params, &["command"])
+            .or_else(|| first_string_arg(&request.args, &["commandText", "shell"]))
+            .ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    "system.run requires params.command",
+                )
+            })?;
+        if command
+            .chars()
+            .any(|ch| matches!(ch, ';' | '|' | '&' | '>' | '<' | '`' | '\n' | '\r'))
+        {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "system.run contains blocked shell metacharacters",
+            ));
+        }
+        let head = command
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        const ALLOWLIST: &[&str] = &[
+            "echo", "pwd", "whoami", "date", "uname", "ls", "dir", "git", "cargo", "rustc", "cat",
+            "type",
+        ];
+        if !ALLOWLIST.contains(&head.as_str()) {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                format!("system.run command not allowed: {head}"),
+            ));
+        }
+        let root = self.root_for_request(request);
+        let cwd = match first_string_arg(params, &["workdir", "cwd"])
+            .or_else(|| first_string_arg(&request.args, &["workdir", "cwd"]))
+        {
+            Some(raw) => resolve_path_inside_root(root, &raw)?,
+            None => root.to_path_buf(),
+        };
+        let outcome = run_shell_command(command, cwd).await?;
+        let mut aggregated = outcome.aggregated;
+        const MAX_CHARS: usize = 8_192;
+        if aggregated.chars().count() > MAX_CHARS {
+            aggregated = aggregated.chars().take(MAX_CHARS).collect::<String>();
+        }
+        Ok(json!({
+            "status": outcome.status,
+            "exitCode": outcome.exit_code,
+            "durationMs": outcome.duration_ms,
+            "aggregated": aggregated
+        }))
     }
 
     async fn next_process_session_id(&self) -> String {
@@ -926,6 +1242,7 @@ fn normalize_tool_name(value: &str) -> String {
         "bash" => "exec".to_owned(),
         "apply-patch" => "apply_patch".to_owned(),
         "session" => "sessions".to_owned(),
+        "node" => "nodes".to_owned(),
         _ => normalized,
     }
 }
@@ -959,6 +1276,16 @@ fn first_string_arg(root: &Value, keys: &[&str]) -> Option<String> {
         }
     }
     None
+}
+
+fn node_params_from_args(args: &Value) -> Value {
+    if let Some(params) = args.get("params") {
+        return params.clone();
+    }
+    if let Some(payload) = args.get("payload") {
+        return payload.clone();
+    }
+    args.clone()
 }
 
 fn canonicalize_path_lossy(path: &Path) -> ToolRuntimeResult<PathBuf> {
@@ -1774,7 +2101,7 @@ mod tests {
                 .get("count")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or_default(),
-            9
+            12
         );
 
         let _ = host
@@ -1855,5 +2182,123 @@ mod tests {
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );
+    }
+
+    #[tokio::test]
+    async fn tool_runtime_browser_canvas_and_nodes_tools_cover_runtime_families() {
+        let host = build_host(default_policy()).await;
+
+        let browser_open = host
+            .execute(ToolRuntimeRequest {
+                request_id: "browser-open-1".to_owned(),
+                session_id: "runtime-ui".to_owned(),
+                tool_name: "browser".to_owned(),
+                args: serde_json::json!({
+                    "action": "open",
+                    "url": "https://example.com",
+                    "nodeId": "node-a"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("browser open");
+        assert_eq!(
+            browser_open
+                .result
+                .get("status")
+                .and_then(serde_json::Value::as_str),
+            Some("completed")
+        );
+        assert_eq!(
+            browser_open
+                .result
+                .get("command")
+                .and_then(serde_json::Value::as_str),
+            Some("browser.proxy")
+        );
+
+        let canvas_present = host
+            .execute(ToolRuntimeRequest {
+                request_id: "canvas-present-1".to_owned(),
+                session_id: "runtime-ui".to_owned(),
+                tool_name: "canvas".to_owned(),
+                args: serde_json::json!({
+                    "action": "present",
+                    "nodeId": "node-a",
+                    "view": "status"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("canvas present");
+        assert_eq!(
+            canvas_present
+                .result
+                .get("acknowledged")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let location = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-location-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "invoke",
+                    "nodeId": "node-a",
+                    "command": "location.get",
+                    "params": {}
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("location invoke");
+        assert_eq!(
+            location
+                .result
+                .pointer("/result/latitude")
+                .and_then(serde_json::Value::as_f64),
+            Some(0.0)
+        );
+
+        let system_run = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-system-run-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "invoke",
+                    "nodeId": "node-a",
+                    "command": "system.run",
+                    "params": {
+                        "command": "echo node-runtime-ready"
+                    }
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("system.run invoke");
+        assert_eq!(
+            system_run
+                .result
+                .pointer("/result/status")
+                .and_then(serde_json::Value::as_str),
+            Some("completed")
+        );
+        let aggregated = system_run
+            .result
+            .pointer("/result/aggregated")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        assert!(aggregated.contains("node-runtime-ready"));
     }
 }

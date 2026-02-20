@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -789,11 +790,19 @@ const TTS_OPENAI_VOICES: &[&str] = &[
     "alloy", "ash", "ballad", "cedar", "coral", "echo", "fable", "juniper", "marin", "onyx",
     "nova", "sage", "shimmer", "verse",
 ];
+const TTS_OPENAI_DEFAULT_MODEL: &str = "gpt-4o-mini-tts";
+const TTS_OPENAI_DEFAULT_VOICE: &str = "alloy";
+const TTS_OPENAI_API_KEY_ENV: &str = "OPENAI_API_KEY";
 const TTS_ELEVENLABS_MODELS: &[&str] = &[
     "eleven_multilingual_v2",
     "eleven_turbo_v2_5",
     "eleven_monolingual_v1",
 ];
+const TTS_ELEVENLABS_DEFAULT_MODEL: &str = "eleven_turbo_v2_5";
+const TTS_ELEVENLABS_API_KEY_ENV: &str = "ELEVENLABS_API_KEY";
+const TTS_ELEVENLABS_VOICE_ID_ENV: &str = "ELEVENLABS_VOICE_ID";
+const TTS_ELEVENLABS_DEFAULT_VOICE_ID: &str = "EXAVITQu4vr4xnSDxMaL";
+const TTS_PROVIDER_HTTP_TIMEOUT_SECS: u64 = 15;
 const DEFAULT_VOICEWAKE_TRIGGERS: &[&str] = &["openclaw", "claude", "computer"];
 static SESSION_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static CRON_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -1554,6 +1563,8 @@ impl RpcDispatcher {
             return RpcDispatchOutcome::bad_request(format!("invalid tts.status params: {err}"));
         }
         let state = self.tts.snapshot().await;
+        let has_openai_key = tts_provider_api_key("openai").is_some();
+        let has_elevenlabs_key = tts_provider_api_key("elevenlabs").is_some();
         let fallback_providers = tts_fallback_providers(&state.provider);
         let fallback_provider = fallback_providers.first().cloned();
         RpcDispatchOutcome::Handled(json!({
@@ -1563,8 +1574,8 @@ impl RpcDispatcher {
             "fallbackProvider": fallback_provider,
             "fallbackProviders": fallback_providers,
             "prefsPath": TTS_PREFS_PATH,
-            "hasOpenAIKey": false,
-            "hasElevenLabsKey": false,
+            "hasOpenAIKey": has_openai_key,
+            "hasElevenLabsKey": has_elevenlabs_key,
             "edgeEnabled": true
         }))
     }
@@ -1611,13 +1622,16 @@ impl RpcDispatcher {
         };
         let text_chars = text.chars().count();
         let audio_path = next_tts_audio_path(extension);
-        let (audio_bytes, duration_ms, sample_rate_hz) =
-            synthesize_tts_audio_blob(&text, output_format);
+        let audio_blob =
+            synthesize_tts_audio_blob_with_provider(&text, output_format, &state.provider).await;
+        let audio_bytes = audio_blob.bytes;
         let audio_base64 = BASE64_STANDARD.encode(&audio_bytes);
         self.system
             .log_line(format!(
-                "tts.convert provider={} channel={} chars={}",
+                "tts.convert provider={} providerUsed={} source={} channel={} chars={}",
                 state.provider,
+                audio_blob.provider_used,
+                audio_blob.source,
                 channel.unwrap_or_else(|| "default".to_owned()),
                 text_chars
             ))
@@ -1625,12 +1639,14 @@ impl RpcDispatcher {
         RpcDispatchOutcome::Handled(json!({
             "audioPath": audio_path,
             "provider": state.provider,
+            "providerUsed": audio_blob.provider_used,
+            "synthSource": audio_blob.source,
             "outputFormat": output_format,
             "voiceCompatible": voice_compatible,
             "audioBytes": audio_bytes.len(),
             "audioBase64": audio_base64,
-            "durationMs": duration_ms,
-            "sampleRateHz": sample_rate_hz,
+            "durationMs": audio_blob.duration_ms,
+            "sampleRateHz": audio_blob.sample_rate_hz,
             "channels": 1,
             "textChars": text_chars
         }))
@@ -1664,19 +1680,21 @@ impl RpcDispatcher {
             return RpcDispatchOutcome::bad_request(format!("invalid tts.providers params: {err}"));
         }
         let active = self.tts.snapshot().await.provider;
+        let openai_configured = tts_provider_api_key("openai").is_some();
+        let elevenlabs_configured = tts_provider_api_key("elevenlabs").is_some();
         RpcDispatchOutcome::Handled(json!({
             "providers": [
                 {
                     "id": "openai",
                     "name": "OpenAI",
-                    "configured": false,
+                    "configured": openai_configured,
                     "models": TTS_OPENAI_MODELS,
                     "voices": TTS_OPENAI_VOICES
                 },
                 {
                     "id": "elevenlabs",
                     "name": "ElevenLabs",
-                    "configured": false,
+                    "configured": elevenlabs_configured,
                     "models": TTS_ELEVENLABS_MODELS
                 },
                 {
@@ -10001,7 +10019,153 @@ fn next_tts_audio_path(extension: &str) -> String {
     format!("memory://tts/audio-{}-{sequence}{extension}", now_ms())
 }
 
-fn synthesize_tts_audio_blob(text: &str, output_format: &str) -> (Vec<u8>, u64, u32) {
+struct TtsAudioBlob {
+    bytes: Vec<u8>,
+    duration_ms: u64,
+    sample_rate_hz: u32,
+    provider_used: String,
+    source: &'static str,
+}
+
+async fn synthesize_tts_audio_blob_with_provider(
+    text: &str,
+    output_format: &str,
+    preferred_provider: &str,
+) -> TtsAudioBlob {
+    for provider in tts_provider_order(preferred_provider) {
+        if let Some(api_key) = tts_provider_api_key(provider) {
+            if let Some(blob) =
+                try_synthesize_tts_audio_blob_remote(provider, &api_key, text, output_format).await
+            {
+                return blob;
+            }
+        }
+    }
+    let normalized = normalize(preferred_provider);
+    let (bytes, duration_ms, sample_rate_hz) =
+        synthesize_tts_audio_blob_simulated(text, output_format);
+    TtsAudioBlob {
+        bytes,
+        duration_ms,
+        sample_rate_hz,
+        provider_used: if normalized.is_empty() {
+            "edge".to_owned()
+        } else {
+            normalized
+        },
+        source: "simulated",
+    }
+}
+
+fn tts_provider_api_key(provider: &str) -> Option<String> {
+    match normalize(provider).as_str() {
+        "openai" => env::var(TTS_OPENAI_API_KEY_ENV).ok(),
+        "elevenlabs" => env::var(TTS_ELEVENLABS_API_KEY_ENV).ok(),
+        _ => None,
+    }
+    .map(|value| value.trim().to_owned())
+    .filter(|value| !value.is_empty())
+}
+
+async fn try_synthesize_tts_audio_blob_remote(
+    provider: &str,
+    api_key: &str,
+    text: &str,
+    output_format: &str,
+) -> Option<TtsAudioBlob> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(TTS_PROVIDER_HTTP_TIMEOUT_SECS))
+        .build()
+        .ok()?;
+    let provider = normalize(provider);
+    match provider.as_str() {
+        "openai" => {
+            let format = if output_format.eq_ignore_ascii_case("opus") {
+                "opus"
+            } else {
+                "mp3"
+            };
+            let response = client
+                .post("https://api.openai.com/v1/audio/speech")
+                .bearer_auth(api_key)
+                .json(&json!({
+                    "model": TTS_OPENAI_DEFAULT_MODEL,
+                    "voice": TTS_OPENAI_DEFAULT_VOICE,
+                    "input": text,
+                    "format": format
+                }))
+                .send()
+                .await
+                .ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            let bytes = response.bytes().await.ok()?.to_vec();
+            if bytes.is_empty() {
+                return None;
+            }
+            let duration_ms = estimate_tts_duration_ms(text, bytes.len());
+            Some(TtsAudioBlob {
+                bytes,
+                duration_ms,
+                sample_rate_hz: 24_000,
+                provider_used: "openai".to_owned(),
+                source: "remote",
+            })
+        }
+        "elevenlabs" => {
+            let voice_id = env::var(TTS_ELEVENLABS_VOICE_ID_ENV)
+                .ok()
+                .and_then(|value| {
+                    let trimmed = value.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_owned())
+                    }
+                })
+                .unwrap_or_else(|| TTS_ELEVENLABS_DEFAULT_VOICE_ID.to_owned());
+            let response = client
+                .post(format!(
+                    "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+                ))
+                .header("xi-api-key", api_key)
+                .header("Accept", "audio/mpeg")
+                .json(&json!({
+                    "text": text,
+                    "model_id": TTS_ELEVENLABS_DEFAULT_MODEL,
+                    "output_format": "mp3_44100_128"
+                }))
+                .send()
+                .await
+                .ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            let bytes = response.bytes().await.ok()?.to_vec();
+            if bytes.is_empty() {
+                return None;
+            }
+            let duration_ms = estimate_tts_duration_ms(text, bytes.len());
+            Some(TtsAudioBlob {
+                bytes,
+                duration_ms,
+                sample_rate_hz: 44_100,
+                provider_used: "elevenlabs".to_owned(),
+                source: "remote",
+            })
+        }
+        _ => None,
+    }
+}
+
+fn estimate_tts_duration_ms(text: &str, bytes: usize) -> u64 {
+    let chars = text.chars().count() as u64;
+    let bytes_bias = (bytes as u64 / 16).clamp(0, 8_000);
+    (chars * 40 + bytes_bias).clamp(350, 30_000)
+}
+
+fn synthesize_tts_audio_blob_simulated(text: &str, output_format: &str) -> (Vec<u8>, u64, u32) {
     use sha2::{Digest, Sha256};
 
     let sample_rate_hz = 24_000_u32;
@@ -22515,6 +22679,16 @@ mod tests {
                         .and_then(serde_json::Value::as_str),
                     Some("openai")
                 );
+                assert_eq!(
+                    payload
+                        .pointer("/providerUsed")
+                        .and_then(serde_json::Value::as_str),
+                    Some("openai")
+                );
+                assert!(payload
+                    .pointer("/synthSource")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| value == "simulated" || value == "remote"));
                 assert_eq!(
                     payload
                         .pointer("/outputFormat")
