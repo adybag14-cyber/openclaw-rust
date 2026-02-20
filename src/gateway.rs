@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -707,6 +707,7 @@ pub struct RpcDispatcher {
     send: SendRegistry,
     skills: SkillsRegistry,
     cron: CronRegistry,
+    legacy_cron_notify_warned: Mutex<HashSet<String>>,
     config: ConfigRegistry,
     web_login: WebLoginRegistry,
     wizard: WizardRegistry,
@@ -921,6 +922,7 @@ impl RpcDispatcher {
             send: SendRegistry::new(),
             skills: SkillsRegistry::new(),
             cron: CronRegistry::new(),
+            legacy_cron_notify_warned: Mutex::new(HashSet::new()),
             config: ConfigRegistry::new(),
             web_login: WebLoginRegistry::new(),
             wizard: WizardRegistry::new(),
@@ -1081,6 +1083,23 @@ impl RpcDispatcher {
         if let Some(webhook_dispatch) =
             build_cron_webhook_dispatch(&execution.job, &execution.entry, &webhook_defaults)
         {
+            if matches!(
+                webhook_dispatch.source,
+                CronWebhookSource::LegacyNotifyFallback
+            ) {
+                let should_warn = {
+                    let mut warned = self.legacy_cron_notify_warned.lock().await;
+                    warned.insert(execution.entry.job_id.clone())
+                };
+                if should_warn {
+                    self.system
+                        .log_line(format!(
+                            "cron.webhook id={} source=legacy_notify_fallback deprecation=notify+cron.webhook",
+                            execution.entry.job_id
+                        ))
+                        .await;
+                }
+            }
             match dispatch_cron_webhook(&webhook_dispatch).await {
                 Ok(()) => {
                     self.system
@@ -6630,6 +6649,13 @@ struct CronWebhookDispatch {
     payload: Value,
     best_effort: bool,
     authorization_bearer: Option<String>,
+    source: CronWebhookSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CronWebhookSource {
+    DeliveryMode,
+    LegacyNotifyFallback,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -14039,12 +14065,16 @@ fn build_cron_webhook_dispatch(
     let delivery_target = delivery
         .filter(|value| value.mode == "webhook")
         .and_then(|value| value.to.clone());
-    let legacy_target = if delivery_target.is_none() && job.notify.unwrap_or(false) {
-        defaults.webhook.clone()
+    let (target, source) = if let Some(target) = delivery_target {
+        (target, CronWebhookSource::DeliveryMode)
+    } else if job.notify.unwrap_or(false) {
+        (
+            defaults.webhook.clone()?,
+            CronWebhookSource::LegacyNotifyFallback,
+        )
     } else {
-        None
+        return None;
     };
-    let target = delivery_target.or(legacy_target)?;
     let best_effort = delivery
         .and_then(|value| value.best_effort)
         .unwrap_or(false);
@@ -14053,6 +14083,7 @@ fn build_cron_webhook_dispatch(
         payload: serde_json::to_value(entry).ok()?,
         best_effort,
         authorization_bearer: defaults.webhook_token.clone(),
+        source,
     })
 }
 
@@ -25477,6 +25508,31 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("legacy cron webhook payload")
         );
+
+        let logs_tail = RpcRequestFrame {
+            id: "req-cron-webhook-legacy-logs".to_owned(),
+            method: "logs.tail".to_owned(),
+            params: json!({
+                "limit": 200
+            }),
+        };
+        match dispatcher.handle_request(&logs_tail).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                let lines = payload
+                    .pointer("/lines")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                assert!(lines.iter().any(|line| {
+                    line.as_str().map_or(false, |text| {
+                        text.contains(
+                            "source=legacy_notify_fallback deprecation=notify+cron.webhook",
+                        )
+                    })
+                }));
+            }
+            _ => panic!("expected logs.tail handled"),
+        }
     }
 
     #[test]

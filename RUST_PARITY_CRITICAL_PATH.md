@@ -197,7 +197,7 @@ Exit gates:
 - Security suite has no critical findings.
 - Rust is default runtime in production; TS path decommissioned.
 
-Status: **Completed (Gate Achieved: reliability/security fixtures, benchmark artifact metrics, cutover runbook validation, standalone bounded auto due-cron execution, plus upstream-aligned cron webhook callback semantics including bearer-token headers, summary gating, and legacy notify fallback)**
+Status: **Completed (Gate Achieved: reliability/security fixtures, benchmark artifact metrics, cutover runbook validation, standalone bounded auto due-cron execution, plus upstream-aligned cron webhook callback semantics including bearer-token headers, summary gating, legacy notify fallback, and one-time fallback deprecation warnings)**
 
 ## Progress Scorecard Template
 

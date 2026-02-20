@@ -3,9 +3,9 @@
   "defaultPassed": 15,
   "sqliteFeaturePassed": 2,
   "totalFixtures": 17,
-  "totalDurationMs": 15573,
-  "avgFixtureDurationMs": 916,
+  "totalDurationMs": 19697,
+  "avgFixtureDurationMs": 1159,
   "soakFixtureCount": 3,
-  "soakFixtureDurationMs": 9867,
+  "soakFixtureDurationMs": 10923,
   "resultsTsv": "cp2-fixture-results.tsv"
 }
