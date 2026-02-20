@@ -133,9 +133,11 @@ systemctl --user status openclaw-agent-rs.service
 - `gateway.password`: optional shared-secret password for gateway auth.
 - `gateway.runtime_mode`: `bridge_client` or `standalone_server`.
 - `gateway.server.bind`: standalone server bind address.
+- `gateway.server.http_bind`: optional standalone control HTTP bind address (`/health`, `/status`, `/rpc/methods`, `POST /rpc`).
 - `gateway.server.auth_mode`: `auto`, `none`, `token`, or `password`.
 - `gateway.server.handshake_timeout_ms`: max connect handshake duration.
 - `gateway.server.event_queue_capacity`: per-connection outbound event queue cap.
+- `gateway.server.tick_interval_ms`: standalone tick-event cadence and advertised `policy.tickIntervalMs`.
 - `gateway.server.reload_interval_secs`: config live-reload polling interval (`0` disables live reload).
 
 ## Signed policy bundles

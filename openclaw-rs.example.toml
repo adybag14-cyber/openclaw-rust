@@ -6,9 +6,11 @@ runtime_mode = "bridge_client" # bridge_client | standalone_server
 
 [gateway.server]
 bind = "127.0.0.1:18789"
+# http_bind = "127.0.0.1:18890" # optional control HTTP surface
 auth_mode = "auto" # auto | none | token | password
 handshake_timeout_ms = 10000
 event_queue_capacity = 256
+tick_interval_ms = 30000
 reload_interval_secs = 3
 
 [runtime]

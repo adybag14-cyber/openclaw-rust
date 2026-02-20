@@ -186,7 +186,20 @@ impl GatewayBridge {
                                 FrameKind::Unknown => {}
                             }
 
-                            if let Some(request) = self.drivers.extract(&frame) {
+                            if let Some(mut request) = self.drivers.extract(&frame) {
+                                if request
+                                    .session_id
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|value| !value.is_empty())
+                                    .is_none()
+                                {
+                                    if let Some(resolved) =
+                                        self.rpc.resolve_session_for_delivery_hints(&request.raw).await
+                                    {
+                                        request.session_id = Some(resolved);
+                                    }
+                                }
                                 match scheduler.submit(request).await {
                                     SubmitOutcome::Dispatch(dispatch_request) => {
                                         let Ok(slot) = inflight.clone().try_acquire_owned() else {

@@ -983,6 +983,25 @@ impl RpcDispatcher {
         executed
     }
 
+    pub async fn resolve_session_for_delivery_hints(&self, raw: &Value) -> Option<String> {
+        let (channel, to, account_id) = extract_delivery_context_hints(raw);
+        if channel.is_none() && to.is_none() && account_id.is_none() {
+            return None;
+        }
+        self.sessions
+            .resolve_query(SessionResolveQuery {
+                label: None,
+                agent_id: None,
+                spawned_by: None,
+                channel,
+                to,
+                account_id,
+                include_global: true,
+                include_unknown: true,
+            })
+            .await
+    }
+
     async fn sync_cron_runtime_from_config(&self) -> Result<(), String> {
         let runtime = self.config.cron_runtime_config().await;
         self.cron
@@ -10271,6 +10290,73 @@ fn normalize_outbound_target_segment(target: &str) -> String {
     normalized
 }
 
+fn extract_delivery_context_hints(raw: &Value) -> (Option<String>, Option<String>, Option<String>) {
+    const CHANNEL_KEYS: &[&str] = &[
+        "channel",
+        "channelName",
+        "channel_name",
+        "platform",
+        "provider",
+    ];
+    const TO_KEYS: &[&str] = &[
+        "to",
+        "recipient",
+        "target",
+        "peer",
+        "chatId",
+        "chat_id",
+        "threadId",
+        "thread_id",
+    ];
+    const ACCOUNT_KEYS: &[&str] = &[
+        "accountId",
+        "account_id",
+        "fromAccountId",
+        "from_account_id",
+        "channelAccountId",
+        "channel_account_id",
+        "defaultAccountId",
+        "default_account_id",
+    ];
+    let channel = find_delivery_hint_string(raw, CHANNEL_KEYS)
+        .and_then(|value| normalize_channel_id(Some(&value)).or_else(|| Some(normalize(&value))));
+    let to = find_delivery_hint_string(raw, TO_KEYS)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let account_id = find_delivery_hint_string(raw, ACCOUNT_KEYS)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    (channel, to, account_id)
+}
+
+fn find_delivery_hint_string(root: &Value, keys: &[&str]) -> Option<String> {
+    match root {
+        Value::Object(map) => {
+            for key in keys {
+                if let Some(value) = map.get(*key) {
+                    match value {
+                        Value::String(text) => {
+                            let trimmed = text.trim();
+                            if !trimmed.is_empty() {
+                                return Some(trimmed.to_owned());
+                            }
+                        }
+                        Value::Number(number) => return Some(number.to_string()),
+                        Value::Bool(boolean) => return Some(boolean.to_string()),
+                        _ => {}
+                    }
+                }
+            }
+            map.values()
+                .find_map(|value| find_delivery_hint_string(value, keys))
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|value| find_delivery_hint_string(value, keys)),
+        _ => None,
+    }
+}
+
 struct ChatRegistry {
     state: Arc<Mutex<ChatState>>,
 }
@@ -14811,13 +14897,21 @@ impl SessionRegistry {
         entry.total_requests += 1;
         entry.last_action = Some(decision.action);
         entry.last_risk_score = decision.risk_score;
+        let (delivery_channel, delivery_to, delivery_account_id) =
+            extract_delivery_context_hints(&request.raw);
         match decision.action {
             DecisionAction::Allow => entry.allowed_count += 1,
             DecisionAction::Review => entry.review_count += 1,
             DecisionAction::Block => entry.blocked_count += 1,
         }
-        if entry.channel.is_none() {
-            entry.channel = request.channel.clone();
+        if request.channel.is_some() || delivery_channel.is_some() {
+            entry.channel = request.channel.clone().or(delivery_channel.clone());
+        }
+        if delivery_to.is_some() {
+            entry.last_to = delivery_to.clone();
+        }
+        if delivery_account_id.is_some() {
+            entry.last_account_id = delivery_account_id.clone();
         }
         entry.push_history(SessionHistoryEvent {
             at_ms: now,
@@ -14828,7 +14922,11 @@ impl SessionRegistry {
             action: Some(decision.action),
             risk_score: Some(decision.risk_score),
             source: normalize_optional_text(Some(request.source.clone()), 128),
-            channel: request.channel.clone().or_else(|| entry.channel.clone()),
+            channel: request
+                .channel
+                .clone()
+                .or(delivery_channel)
+                .or_else(|| entry.channel.clone()),
         });
         let snapshot = guard.values().cloned().collect::<Vec<_>>();
         drop(guard);
@@ -20443,6 +20541,112 @@ mod tests {
             }
             _ => panic!("expected handled history"),
         }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_record_decision_populates_delivery_context_hints() {
+        let dispatcher = RpcDispatcher::new();
+        let session_key = "agent:ops:whatsapp:group:g-hints";
+        let request = ActionRequest {
+            id: "req-hints-1".to_owned(),
+            source: "agent".to_owned(),
+            session_id: Some(session_key.to_owned()),
+            prompt: Some("route this decision".to_owned()),
+            command: None,
+            tool_name: Some("exec".to_owned()),
+            channel: None,
+            url: None,
+            file_path: None,
+            raw: serde_json::json!({
+                "deliveryContext": {
+                    "channel": "wa",
+                    "to": "+15550001111",
+                    "accountId": "work"
+                }
+            }),
+        };
+        let decision = Decision {
+            action: DecisionAction::Allow,
+            risk_score: 10,
+            reasons: vec!["ok".to_owned()],
+            tags: vec![],
+            source: "openclaw-agent-rs".to_owned(),
+        };
+        dispatcher.record_decision(&request, &decision).await;
+
+        let list = RpcRequestFrame {
+            id: "req-list-hints".to_owned(),
+            method: "sessions.list".to_owned(),
+            params: serde_json::json!({
+                "channel": "whatsapp",
+                "to": "+15550001111",
+                "accountId": "work",
+                "limit": 5
+            }),
+        };
+        match dispatcher.handle_request(&list).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/sessions/0/key")
+                        .and_then(serde_json::Value::as_str),
+                    Some(session_key)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/sessions/0/deliveryContext/channel")
+                        .and_then(serde_json::Value::as_str),
+                    Some("whatsapp")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/sessions/0/deliveryContext/to")
+                        .and_then(serde_json::Value::as_str),
+                    Some("+15550001111")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/sessions/0/deliveryContext/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("work")
+                );
+            }
+            _ => panic!("expected delivery-context hinted session list"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_resolves_session_from_delivery_hints() {
+        let dispatcher = RpcDispatcher::new();
+        let send = RpcRequestFrame {
+            id: "req-send-hints".to_owned(),
+            method: "sessions.send".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": "agent:ops:telegram:group:g-bridge-hints",
+                "message": "seed route",
+                "channel": "telegram",
+                "to": "peer-bridge",
+                "accountId": "acct-bridge"
+            }),
+        };
+        match dispatcher.handle_request(&send).await {
+            RpcDispatchOutcome::Handled(_) => {}
+            _ => panic!("expected seeded sessions.send"),
+        }
+
+        let resolved = dispatcher
+            .resolve_session_for_delivery_hints(&serde_json::json!({
+                "deliveryContext": {
+                    "channel": "tg",
+                    "to": "peer-bridge",
+                    "accountId": "acct-bridge"
+                }
+            }))
+            .await;
+        assert_eq!(
+            resolved.as_deref(),
+            Some("agent:ops:telegram:group:g-bridge-hints")
+        );
     }
 
     #[tokio::test]

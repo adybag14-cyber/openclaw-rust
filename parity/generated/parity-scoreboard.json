@@ -1,101 +1,116 @@
 {
-    "current":  {
-                    "manifestVersion":  "1.0.0",
-                    "methodSurface":  {
-                                          "rustCount":  103,
-                                          "base":  {
-                                                       "upstreamCount":  89,
-                                                       "rustCount":  103,
-                                                       "intersectionCount":  89,
-                                                       "coveragePercent":  100,
-                                                       "missingInRustCount":  0,
-                                                       "rustOnlyCount":  14
-                                                   },
-                                          "handlers":  {
-                                                           "upstreamCount":  98,
-                                                           "rustCount":  103,
-                                                           "intersectionCount":  98,
-                                                           "coveragePercent":  100,
-                                                           "missingInRustCount":  0,
-                                                           "rustOnlyCount":  5
-                                                       }
-                                      },
-                    "audit":  {
-                                  "counts":  {
-                                                 "total":  22,
-                                                 "implemented":  12,
-                                                 "partial":  10,
-                                                 "deferred":  0,
-                                                 "notStarted":  0,
-                                                 "unknown":  0
-                                             },
-                                  "byFeature":  {
-                                                    "Runtime portability":  "Implemented",
-                                                    "Gateway protocol connectivity":  "Partial",
-                                                    "Full Gateway replacement":  "Partial",
-                                                    "Session model":  "Partial",
-                                                    "Channel integrations":  "Partial",
-                                                    "Tool execution layer":  "Partial",
-                                                    "Nodes + device features":  "Partial",
-                                                    "Voice stack":  "Partial",
-                                                    "Model/provider layer":  "Implemented",
-                                                    "CLI + control surface":  "Implemented",
-                                                    "Prompt-injection defense":  "Implemented",
-                                                    "Command safety defense":  "Implemented",
-                                                    "Host integrity defense":  "Implemented",
-                                                    "VirusTotal integration":  "Implemented",
-                                                    "Decision policy engine":  "Implemented",
-                                                    "Tool/channel policy controls":  "Implemented",
-                                                    "Idempotency dedupe":  "Implemented",
-                                                    "Channel driver abstraction":  "Partial",
-                                                    "Quarantine records":  "Implemented",
-                                                    "Backpressure + memory controls":  "Implemented",
-                                                    "Test coverage (Rust)":  "Partial",
-                                                    "Dockerized validation":  "Partial"
-                                                }
-                              }
-                },
-    "baselinePresent":  true,
-    "delta":  {
-                  "audit":  {
-                                "implemented":  3,
-                                "partial":  1,
-                                "deferred":  -3,
-                                "notStarted":  0
-                            },
-                  "methodSurface":  {
-                                        "rustCount":  2,
-                                        "baseCoveragePercent":  0,
-                                        "handlersCoveragePercent":  0,
-                                        "baseMissingInRustCount":  0,
-                                        "handlersMissingInRustCount":  0
-                                    },
-                  "changedSubsystems":  [
-                                            {
-                                                "subsystem":  "CLI + control surface",
-                                                "baseline":  null,
-                                                "current":  "Implemented"
-                                            },
-                                            {
-                                                "subsystem":  "Idempotency dedupe",
-                                                "baseline":  "Partial",
-                                                "current":  "Implemented"
-                                            },
-                                            {
-                                                "subsystem":  "Model/provider layer",
-                                                "baseline":  "Deferred",
-                                                "current":  "Implemented"
-                                            },
-                                            {
-                                                "subsystem":  "Nodes + device features",
-                                                "baseline":  "Deferred",
-                                                "current":  "Partial"
-                                            },
-                                            {
-                                                "subsystem":  "Tool execution layer",
-                                                "baseline":  "Deferred",
-                                                "current":  "Partial"
-                                            }
-                                        ]
-              }
+  "current": {
+    "manifestVersion": "1.0.0",
+    "methodSurface": {
+      "rustCount": 103,
+      "base": {
+        "upstreamCount": 89,
+        "rustCount": 103,
+        "intersectionCount": 89,
+        "coveragePercent": 100.0,
+        "missingInRustCount": 0,
+        "rustOnlyCount": 14
+      },
+      "handlers": {
+        "upstreamCount": 98,
+        "rustCount": 103,
+        "intersectionCount": 98,
+        "coveragePercent": 100.0,
+        "missingInRustCount": 0,
+        "rustOnlyCount": 5
+      }
+    },
+    "audit": {
+      "counts": {
+        "total": 22,
+        "implemented": 16,
+        "partial": 6,
+        "deferred": 0,
+        "notStarted": 0,
+        "unknown": 0
+      },
+      "byFeature": {
+        "Runtime portability": "Implemented",
+        "Gateway protocol connectivity": "Implemented",
+        "Full Gateway replacement": "Implemented",
+        "Session model": "Partial",
+        "Channel integrations": "Partial",
+        "Tool execution layer": "Implemented",
+        "Nodes + device features": "Partial",
+        "Voice stack": "Partial",
+        "Model/provider layer": "Implemented",
+        "CLI + control surface": "Implemented",
+        "Prompt-injection defense": "Implemented",
+        "Command safety defense": "Implemented",
+        "Host integrity defense": "Implemented",
+        "VirusTotal integration": "Implemented",
+        "Decision policy engine": "Implemented",
+        "Tool/channel policy controls": "Implemented",
+        "Idempotency dedupe": "Implemented",
+        "Channel driver abstraction": "Implemented",
+        "Quarantine records": "Implemented",
+        "Backpressure + memory controls": "Implemented",
+        "Test coverage (Rust)": "Partial",
+        "Dockerized validation": "Partial"
+      }
+    }
+  },
+  "baselinePresent": true,
+  "delta": {
+    "audit": {
+      "implemented": 7,
+      "partial": -3,
+      "deferred": -3,
+      "notStarted": 0
+    },
+    "methodSurface": {
+      "rustCount": 2,
+      "baseCoveragePercent": 0.0,
+      "handlersCoveragePercent": 0.0,
+      "baseMissingInRustCount": 0,
+      "handlersMissingInRustCount": 0
+    },
+    "changedSubsystems": [
+      {
+        "subsystem": "Channel driver abstraction",
+        "baseline": "Partial",
+        "current": "Implemented"
+      },
+      {
+        "subsystem": "CLI + control surface",
+        "baseline": null,
+        "current": "Implemented"
+      },
+      {
+        "subsystem": "Full Gateway replacement",
+        "baseline": "Partial",
+        "current": "Implemented"
+      },
+      {
+        "subsystem": "Gateway protocol connectivity",
+        "baseline": "Partial",
+        "current": "Implemented"
+      },
+      {
+        "subsystem": "Idempotency dedupe",
+        "baseline": "Partial",
+        "current": "Implemented"
+      },
+      {
+        "subsystem": "Model/provider layer",
+        "baseline": "Deferred",
+        "current": "Implemented"
+      },
+      {
+        "subsystem": "Nodes + device features",
+        "baseline": "Deferred",
+        "current": "Partial"
+      },
+      {
+        "subsystem": "Tool execution layer",
+        "baseline": "Deferred",
+        "current": "Implemented"
+      }
+    ]
+  }
 }

@@ -123,6 +123,28 @@ const EVENT_SCOPE_PAIRING: &[&str] = &[
 ];
 const CRON_DUE_TICK_INTERVAL_MS: u64 = 250;
 const CRON_DUE_MAX_BATCH: usize = 32;
+const CONTROL_HTTP_MAX_REQUEST_BYTES: usize = 256 * 1024;
+const CONTROL_HTTP_READ_CHUNK_BYTES: usize = 4096;
+const HELLO_BASE_EVENTS: &[&str] = &[
+    "connect.challenge",
+    "agent",
+    "chat",
+    "presence",
+    "tick",
+    "talk.mode",
+    "shutdown",
+    "health",
+    "heartbeat",
+    "cron",
+    "node.pair.requested",
+    "node.pair.resolved",
+    "node.invoke.request",
+    "device.pair.requested",
+    "device.pair.resolved",
+    "voicewake.changed",
+    "exec.approval.requested",
+    "exec.approval.resolved",
+];
 
 #[derive(Clone)]
 pub struct GatewayServer {
@@ -145,6 +167,7 @@ struct LiveServerSettings {
     auth: ResolvedGatewayAuth,
     handshake_timeout_ms: u64,
     event_queue_capacity: usize,
+    tick_interval_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -168,6 +191,22 @@ struct ServerState {
 struct GatewayBroadcaster {
     clients: Arc<Mutex<HashMap<String, ConnectedClient>>>,
     seq: Arc<AtomicU64>,
+}
+
+fn supported_gateway_events(decision_event: &str) -> Vec<String> {
+    let mut events = HELLO_BASE_EVENTS
+        .iter()
+        .map(|event| (*event).to_owned())
+        .collect::<Vec<_>>();
+    let decision_event = decision_event.trim();
+    if !decision_event.is_empty()
+        && !events
+            .iter()
+            .any(|event| event.eq_ignore_ascii_case(decision_event))
+    {
+        events.push(decision_event.to_owned());
+    }
+    events
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -262,12 +301,24 @@ impl GatewayServer {
             broadcaster: GatewayBroadcaster::new(),
         });
         let cron_due_task = self.spawn_cron_due_task(state.rpc.clone());
+        let tick_task = self.spawn_tick_task(state.broadcaster.clone());
         let http_task = self.spawn_control_http_task(state.rpc.clone());
 
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
                 _ = &mut shutdown => {
+                    state
+                        .broadcaster
+                        .broadcast_event(
+                            "shutdown",
+                            json!({
+                                "reason": "server_shutdown",
+                                "at": now_ms()
+                            }),
+                            false,
+                        )
+                        .await;
                     break;
                 }
                 accepted = listener.accept() => {
@@ -293,6 +344,8 @@ impl GatewayServer {
             task.abort();
             let _ = task.await;
         }
+        tick_task.abort();
+        let _ = tick_task.await;
         if let Some(task) = http_task {
             task.abort();
             let _ = task.await;
@@ -351,6 +404,20 @@ impl GatewayServer {
         })
     }
 
+    fn spawn_tick_task(&self, broadcaster: GatewayBroadcaster) -> tokio::task::JoinHandle<()> {
+        let tick_interval_ms = self.gateway.server.tick_interval_ms.max(250);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(tick_interval_ms));
+            interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                broadcaster
+                    .broadcast_event("tick", json!({ "at": now_ms() }), true)
+                    .await;
+            }
+        })
+    }
+
     fn spawn_control_http_task(
         &self,
         rpc: Arc<RpcDispatcher>,
@@ -400,6 +467,7 @@ impl LiveServerSettings {
             auth: resolve_gateway_auth(gateway),
             handshake_timeout_ms: gateway.server.handshake_timeout_ms.max(500),
             event_queue_capacity: gateway.server.event_queue_capacity.max(8),
+            tick_interval_ms: gateway.server.tick_interval_ms.max(250),
         }
     }
 }
@@ -472,34 +540,15 @@ async fn handle_control_http_connection(
     mut stream: tokio::net::TcpStream,
     rpc: Arc<RpcDispatcher>,
 ) -> Result<()> {
-    let mut buffer = vec![0_u8; 16 * 1024];
-    let read = stream
-        .read(&mut buffer)
-        .await
-        .context("failed reading control-http request")?;
-    if read == 0 {
+    let Some(request) = read_control_http_request(&mut stream).await? else {
         return Ok(());
-    }
-    let request = String::from_utf8_lossy(&buffer[..read]);
-    let request_line = request.lines().next().unwrap_or_default();
-    let mut segments = request_line.split_whitespace();
-    let method = segments.next().unwrap_or_default();
-    let path = segments.next().unwrap_or("/");
-    let path = path.split('?').next().unwrap_or(path);
+    };
 
-    if method != "GET" {
-        let body = json!({
-            "ok": false,
-            "error": "method_not_allowed"
-        });
-        return write_http_json_response(&mut stream, 405, &body).await;
-    }
-
-    match path {
-        "/" | "/ui" | "/control" => {
+    match (request.method.as_str(), request.path.as_str()) {
+        ("GET", "/" | "/ui" | "/control") => {
             write_http_html_response(&mut stream, 200, control_ui_html().as_bytes()).await
         }
-        "/health" => {
+        ("GET", "/health") => {
             let req = RpcRequestFrame {
                 id: "http-health".to_owned(),
                 method: "health".to_owned(),
@@ -508,7 +557,7 @@ async fn handle_control_http_connection(
             let payload = dispatch_http_rpc(&rpc, req).await;
             write_http_json_response(&mut stream, 200, &payload).await
         }
-        "/status" => {
+        ("GET", "/status") => {
             let req = RpcRequestFrame {
                 id: "http-status".to_owned(),
                 method: "status".to_owned(),
@@ -517,7 +566,7 @@ async fn handle_control_http_connection(
             let payload = dispatch_http_rpc(&rpc, req).await;
             write_http_json_response(&mut stream, 200, &payload).await
         }
-        "/rpc/methods" => {
+        ("GET", "/rpc/methods") => {
             let methods = supported_rpc_methods()
                 .iter()
                 .map(|method| Value::String((*method).to_owned()))
@@ -529,15 +578,166 @@ async fn handle_control_http_connection(
             });
             write_http_json_response(&mut stream, 200, &payload).await
         }
-        _ => {
+        ("POST", "/rpc") => match parse_control_http_rpc_request(&request.body) {
+            Ok(req) => {
+                let payload = dispatch_http_rpc(&rpc, req).await;
+                write_http_json_response(&mut stream, 200, &payload).await
+            }
+            Err(err) => {
+                let payload = json!({
+                    "ok": false,
+                    "error": {
+                        "code": 400,
+                        "message": err.to_string()
+                    }
+                });
+                write_http_json_response(&mut stream, 400, &payload).await
+            }
+        },
+        ("GET", _) | ("POST", _) => {
             let payload = json!({
                 "ok": false,
                 "error": "not_found",
-                "path": path
+                "path": request.path
             });
             write_http_json_response(&mut stream, 404, &payload).await
         }
+        _ => {
+            let body = json!({
+                "ok": false,
+                "error": "method_not_allowed"
+            });
+            write_http_json_response(&mut stream, 405, &body).await
+        }
     }
+}
+
+#[derive(Debug)]
+struct ControlHttpRequest {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+}
+
+fn parse_control_http_rpc_request(body: &[u8]) -> Result<RpcRequestFrame> {
+    let payload: Value = serde_json::from_slice(body).context("invalid /rpc JSON payload")?;
+    let method = payload
+        .get("method")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("invalid /rpc payload: method is required"))?
+        .to_owned();
+    let id = payload
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("http-rpc")
+        .to_owned();
+    let params = payload.get("params").cloned().unwrap_or_else(|| json!({}));
+    Ok(RpcRequestFrame { id, method, params })
+}
+
+fn find_http_header_terminator(buf: &[u8]) -> Option<(usize, usize)> {
+    for idx in 0..buf.len().saturating_sub(3) {
+        if &buf[idx..idx + 4] == b"\r\n\r\n" {
+            return Some((idx, 4));
+        }
+    }
+    for idx in 0..buf.len().saturating_sub(1) {
+        if &buf[idx..idx + 2] == b"\n\n" {
+            return Some((idx, 2));
+        }
+    }
+    None
+}
+
+fn parse_http_content_length(headers: &str) -> Option<usize> {
+    for line in headers.lines() {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("content-length") {
+                if let Ok(parsed) = value.trim().parse::<usize>() {
+                    return Some(parsed);
+                }
+            }
+        }
+    }
+    None
+}
+
+async fn read_control_http_request(
+    stream: &mut tokio::net::TcpStream,
+) -> Result<Option<ControlHttpRequest>> {
+    let mut buffer = Vec::with_capacity(8 * 1024);
+    let mut chunk = vec![0_u8; CONTROL_HTTP_READ_CHUNK_BYTES];
+    let mut header_info: Option<(usize, usize, usize)> = None;
+
+    loop {
+        let read = stream
+            .read(&mut chunk)
+            .await
+            .context("failed reading control-http request bytes")?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if buffer.len() > CONTROL_HTTP_MAX_REQUEST_BYTES {
+            anyhow::bail!("control-http request exceeds max size");
+        }
+
+        if header_info.is_none() {
+            if let Some((header_end, separator_len)) = find_http_header_terminator(&buffer) {
+                let headers = String::from_utf8_lossy(&buffer[..header_end]);
+                let content_length = parse_http_content_length(&headers).unwrap_or(0);
+                header_info = Some((header_end, separator_len, content_length));
+            }
+        }
+
+        if let Some((header_end, separator_len, content_length)) = header_info {
+            let body_start = header_end + separator_len;
+            if buffer.len() >= body_start + content_length {
+                break;
+            }
+        }
+    }
+
+    if buffer.is_empty() {
+        return Ok(None);
+    }
+
+    let (header_end, separator_len) = find_http_header_terminator(&buffer).ok_or_else(|| {
+        anyhow::anyhow!("invalid control-http request: missing header terminator")
+    })?;
+    let headers = String::from_utf8_lossy(&buffer[..header_end]);
+    let request_line = headers.lines().next().unwrap_or_default();
+    let mut segments = request_line.split_whitespace();
+    let method = segments
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_uppercase();
+    let path_raw = segments.next().unwrap_or("/").trim();
+    if method.is_empty() {
+        anyhow::bail!("invalid control-http request line");
+    }
+    let path = path_raw
+        .split('?')
+        .next()
+        .unwrap_or(path_raw)
+        .trim()
+        .to_owned();
+    let content_length = parse_http_content_length(&headers).unwrap_or(0);
+    let body_start = header_end + separator_len;
+    if buffer.len() < body_start + content_length {
+        anyhow::bail!("truncated control-http request body");
+    }
+    let body = if content_length == 0 {
+        Vec::new()
+    } else {
+        buffer[body_start..body_start + content_length].to_vec()
+    };
+    Ok(Some(ControlHttpRequest { method, path, body }))
 }
 
 async fn dispatch_http_rpc(rpc: &RpcDispatcher, request: RpcRequestFrame) -> Value {
@@ -596,6 +796,7 @@ async fn write_http_response(
 ) -> Result<()> {
     let status_text = match status_code {
         200 => "OK",
+        400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
         _ => "OK",
@@ -778,12 +979,12 @@ async fn handle_connection(
         },
         "features": {
             "methods": supported_rpc_methods(),
-            "events": ["heartbeat", "presence", "security.decision"]
+            "events": supported_gateway_events(&state.decision_event)
         },
         "policy": {
             "maxPayload": 25 * 1024 * 1024,
             "maxBufferedBytes": 50 * 1024 * 1024,
-            "tickIntervalMs": 30_000
+            "tickIntervalMs": settings.tick_interval_ms
         }
     });
     let hello_resp = rpc_success_response_frame(&connect_req.id, hello);
@@ -1213,6 +1414,7 @@ mod tests {
                 handshake_timeout_ms: 3_000,
                 event_queue_capacity: 8,
                 reload_interval_secs: 0,
+                tick_interval_ms: 30_000,
             },
         }
     }
@@ -1266,6 +1468,65 @@ mod tests {
         Ok(ws)
     }
 
+    async fn ws_connect_with_hello(
+        url: &str,
+        role: &str,
+        scopes: &[&str],
+        token: &str,
+    ) -> Result<(
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        Value,
+    )> {
+        let (mut ws, _) = connect_async(url).await?;
+        let challenge = ws
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("missing challenge"))??;
+        let challenge_frame: Value = serde_json::from_str(challenge.to_text()?)?;
+        assert_eq!(
+            challenge_frame.get("event").and_then(Value::as_str),
+            Some("connect.challenge")
+        );
+        let connect_req = json!({
+            "type": "req",
+            "id": "connect-hello-1",
+            "method": "connect",
+            "params": {
+                "client": { "id": "control-ui", "version": "1.0.0", "platform": "test", "mode": "desktop" },
+                "role": role,
+                "scopes": scopes,
+                "auth": { "token": token }
+            }
+        });
+        ws.send(Message::Text(connect_req.to_string())).await?;
+        let connect_resp = ws
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("missing connect resp"))??;
+        let connect_json: Value = serde_json::from_str(connect_resp.to_text()?)?;
+        assert_eq!(
+            connect_json.pointer("/ok").and_then(Value::as_bool),
+            Some(true)
+        );
+        let hello = connect_json
+            .get("result")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing hello result"))?;
+        Ok((ws, hello))
+    }
+
+    fn response_body_slice(raw: &[u8]) -> Result<&[u8]> {
+        if let Some(idx) = raw.windows(4).position(|chunk| chunk == b"\r\n\r\n") {
+            return Ok(&raw[idx + 4..]);
+        }
+        if let Some(idx) = raw.windows(2).position(|chunk| chunk == b"\n\n") {
+            return Ok(&raw[idx + 2..]);
+        }
+        anyhow::bail!("missing HTTP body");
+    }
+
     async fn http_get_json(bind: &str, path: &str) -> Result<Value> {
         let mut stream = TcpStream::connect(bind).await?;
         let request = format!(
@@ -1274,12 +1535,23 @@ mod tests {
         stream.write_all(request.as_bytes()).await?;
         let mut raw = Vec::new();
         stream.read_to_end(&mut raw).await?;
-        let text = String::from_utf8(raw)?;
-        let body = text
-            .split("\r\n\r\n")
-            .nth(1)
-            .ok_or_else(|| anyhow::anyhow!("missing HTTP body"))?;
-        Ok(serde_json::from_str(body)?)
+        let body = response_body_slice(&raw)?;
+        Ok(serde_json::from_slice(body)?)
+    }
+
+    async fn http_post_json(bind: &str, path: &str, payload: &Value) -> Result<Value> {
+        let mut stream = TcpStream::connect(bind).await?;
+        let body = serde_json::to_vec(payload)?;
+        let request = format!(
+            "POST {path} HTTP/1.1\r\nHost: {bind}\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).await?;
+        stream.write_all(&body).await?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await?;
+        let response_body = response_body_slice(&raw)?;
+        Ok(serde_json::from_slice(response_body)?)
     }
 
     #[test]
@@ -1390,6 +1662,113 @@ mod tests {
             .pointer("/count")
             .and_then(Value::as_u64)
             .is_some_and(|count| count > 0));
+
+        let rpc = http_post_json(
+            &http_bind,
+            "/rpc",
+            &json!({
+                "id": "http-rpc-1",
+                "method": "sessions.list",
+                "params": {
+                    "limit": 3
+                }
+            }),
+        )
+        .await?;
+        assert_eq!(rpc.pointer("/ok").and_then(Value::as_bool), Some(true));
+        assert!(rpc
+            .pointer("/result/sessions")
+            .and_then(Value::as_array)
+            .is_some());
+
+        let _ = shutdown_tx.send(());
+        task.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn standalone_gateway_hello_features_advertise_events_and_emit_tick() -> Result<()> {
+        let bind = reserve_bind()?;
+        let mut gateway = test_gateway(bind.clone());
+        gateway.server.tick_interval_ms = 250;
+        let server = GatewayServer::new(
+            gateway,
+            "security.decision".to_owned(),
+            64,
+            SessionQueueMode::Followup,
+            GroupActivationMode::Always,
+        );
+        let evaluator: Arc<dyn ActionEvaluator> = Arc::new(AllowEvaluator);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            server
+                .run_until(evaluator, None, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let url = format!("ws://{bind}");
+        let (mut ws, hello) =
+            ws_connect_with_hello(&url, "operator", &["operator.admin"], "cp1-token").await?;
+
+        let events = hello
+            .pointer("/features/events")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+            .collect::<Vec<_>>();
+        for expected in [
+            "connect.challenge",
+            "heartbeat",
+            "presence",
+            "tick",
+            "shutdown",
+            "exec.approval.requested",
+            "exec.approval.resolved",
+            "node.pair.requested",
+            "node.pair.resolved",
+            "device.pair.requested",
+            "device.pair.resolved",
+            "security.decision",
+        ] {
+            assert!(
+                events.iter().any(|event| event == expected),
+                "missing hello event {}",
+                expected
+            );
+        }
+        assert_eq!(
+            hello
+                .pointer("/policy/tickIntervalMs")
+                .and_then(Value::as_u64),
+            Some(250)
+        );
+
+        let tick_frame = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let frame = ws
+                    .next()
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("missing frame"))??;
+                if let Message::Text(text) = frame {
+                    let parsed: Value = serde_json::from_str(text.as_str())?;
+                    if parsed.get("type").and_then(Value::as_str) == Some("event")
+                        && parsed.get("event").and_then(Value::as_str) == Some("tick")
+                    {
+                        return Ok::<Value, anyhow::Error>(parsed);
+                    }
+                }
+            }
+        })
+        .await??;
+        assert!(tick_frame
+            .pointer("/payload/at")
+            .and_then(Value::as_u64)
+            .is_some());
 
         let _ = shutdown_tx.send(());
         task.await??;

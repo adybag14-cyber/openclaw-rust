@@ -38,6 +38,8 @@ pub struct GatewayServerConfig {
     pub event_queue_capacity: usize,
     #[serde(default = "default_gateway_reload_interval_secs")]
     pub reload_interval_secs: u64,
+    #[serde(default = "default_gateway_tick_interval_ms")]
+    pub tick_interval_ms: u64,
 }
 
 impl Default for GatewayServerConfig {
@@ -49,6 +51,7 @@ impl Default for GatewayServerConfig {
             handshake_timeout_ms: default_gateway_handshake_timeout_ms(),
             event_queue_capacity: default_gateway_event_queue_capacity(),
             reload_interval_secs: default_gateway_reload_interval_secs(),
+            tick_interval_ms: default_gateway_tick_interval_ms(),
         }
     }
 }
@@ -201,6 +204,7 @@ impl Default for Config {
                     handshake_timeout_ms: default_gateway_handshake_timeout_ms(),
                     event_queue_capacity: default_gateway_event_queue_capacity(),
                     reload_interval_secs: default_gateway_reload_interval_secs(),
+                    tick_interval_ms: default_gateway_tick_interval_ms(),
                 },
             },
             runtime: RuntimeConfig {
@@ -337,6 +341,11 @@ impl Config {
                 self.gateway.server.reload_interval_secs = n;
             }
         }
+        if let Ok(v) = env::var("OPENCLAW_RS_GATEWAY_TICK_INTERVAL_MS") {
+            if let Ok(n) = v.parse::<u64>() {
+                self.gateway.server.tick_interval_ms = n.max(250);
+            }
+        }
         if let Ok(v) = env::var("OPENCLAW_RS_AUDIT_ONLY") {
             self.runtime.audit_only = parse_bool(&v);
         }
@@ -443,6 +452,9 @@ impl Config {
         }
         if self.gateway.server.handshake_timeout_ms == 0 {
             anyhow::bail!("gateway.server.handshake_timeout_ms must be > 0");
+        }
+        if self.gateway.server.tick_interval_ms == 0 {
+            anyhow::bail!("gateway.server.tick_interval_ms must be > 0");
         }
         if self
             .security
@@ -636,6 +648,10 @@ fn default_gateway_event_queue_capacity() -> usize {
 
 fn default_gateway_reload_interval_secs() -> u64 {
     3
+}
+
+fn default_gateway_tick_interval_ms() -> u64 {
+    30_000
 }
 
 fn parse_session_queue_mode(s: &str) -> Option<SessionQueueMode> {
