@@ -19,15 +19,19 @@ pub const WAVE2_CHANNEL_ORDER: &[&str] = &[
     "zalouser",
     "zalo",
 ];
+#[cfg(test)]
+pub const WAVE3_CHANNEL_ORDER: &[&str] = &["irc", "imessage"];
 pub const CHANNEL_RUNTIME_ORDER: &[&str] = &[
     "telegram",
     "whatsapp",
     "discord",
+    "irc",
+    "googlechat",
     "slack",
     "signal",
+    "imessage",
     "webchat",
     "bluebubbles",
-    "googlechat",
     "msteams",
     "matrix",
     "zalouser",
@@ -178,6 +182,8 @@ pub fn normalize_channel_id(raw: Option<&str>) -> Option<String> {
         "tg" | "grammy" => "telegram",
         "wa" | "baileys" => "whatsapp",
         "bb" => "bluebubbles",
+        "internet-relay-chat" => "irc",
+        "imsg" => "imessage",
         "google-chat" | "gchat" => "googlechat",
         "teams" | "ms-teams" => "msteams",
         "signal-cli" => "signal",
@@ -404,6 +410,8 @@ fn driver_for_channel(channel: &str) -> Option<Box<dyn ChannelDriver>> {
         "telegram" => Some(Box::new(TelegramDriver)),
         "whatsapp" => Some(Box::new(WhatsAppDriver)),
         "discord" => Some(Box::new(DiscordDriver)),
+        "irc" => Some(Box::new(IrcDriver)),
+        "imessage" => Some(Box::new(IMessageDriver)),
         "slack" => Some(Box::new(SlackDriver)),
         "signal" => Some(Box::new(SignalDriver)),
         "webchat" => Some(Box::new(WebChatDriver)),
@@ -474,6 +482,48 @@ impl ChannelDriver for TelegramDriver {
             supports_reactions: true,
             supports_threads: false,
             supports_polls: true,
+            supports_media: true,
+            default_dm_pairing: true,
+        }
+    }
+}
+
+struct IrcDriver;
+
+impl ChannelDriver for IrcDriver {
+    fn extract(&self, frame: &Value) -> Option<ActionRequest> {
+        extract_with_hints(frame, "irc", &["irc", "internet-relay-chat"])
+    }
+
+    fn capabilities(&self) -> ChannelCapabilities {
+        ChannelCapabilities {
+            name: "irc",
+            supports_edit: false,
+            supports_delete: false,
+            supports_reactions: false,
+            supports_threads: false,
+            supports_polls: false,
+            supports_media: true,
+            default_dm_pairing: true,
+        }
+    }
+}
+
+struct IMessageDriver;
+
+impl ChannelDriver for IMessageDriver {
+    fn extract(&self, frame: &Value) -> Option<ActionRequest> {
+        extract_with_hints(frame, "imessage", &["imessage", "imsg"])
+    }
+
+    fn capabilities(&self) -> ChannelCapabilities {
+        ChannelCapabilities {
+            name: "imessage",
+            supports_edit: false,
+            supports_delete: false,
+            supports_reactions: false,
+            supports_threads: false,
+            supports_polls: false,
             supports_media: true,
             default_dm_pairing: true,
         }
@@ -742,7 +792,7 @@ mod tests {
         default_chunk_mode, default_text_chunk_limit, normalize_channel_id, normalize_chat_type,
         resolve_mention_gating, resolve_mention_gating_with_bypass, ChatType, ChunkMode,
         DriverRegistry, MentionGateParams, MentionGateWithBypassParams, RetryBackoffPolicy,
-        WAVE1_CHANNEL_ORDER, WAVE2_CHANNEL_ORDER,
+        WAVE1_CHANNEL_ORDER, WAVE2_CHANNEL_ORDER, WAVE3_CHANNEL_ORDER,
     };
 
     #[test]
@@ -869,6 +919,9 @@ mod tests {
         for channel in WAVE2_CHANNEL_ORDER {
             assert!(names.contains(channel), "missing wave2 channel: {channel}");
         }
+        for channel in WAVE3_CHANNEL_ORDER {
+            assert!(names.contains(channel), "missing wave3 channel: {channel}");
+        }
         assert!(caps
             .iter()
             .any(|c| c.name == "discord" && c.supports_threads));
@@ -885,6 +938,10 @@ mod tests {
         assert!(caps
             .iter()
             .any(|c| c.name == "bluebubbles" && c.supports_edit && c.supports_delete));
+        assert!(caps.iter().any(|c| c.name == "irc" && c.supports_media));
+        assert!(caps
+            .iter()
+            .any(|c| c.name == "imessage" && c.supports_media));
     }
 
     #[test]
@@ -935,6 +992,40 @@ mod tests {
         assert_eq!(
             normalize_channel_id(Some("zlu")).as_deref(),
             Some("zalouser")
+        );
+    }
+
+    #[test]
+    fn wave3_drivers_detect_source_aliases() {
+        let registry = DriverRegistry::default_registry();
+        let cases = vec![
+            ("irc", "internet-relay-chat.message", "irc"),
+            ("imessage", "imsg.message", "imessage"),
+        ];
+        for (id, event, expected_channel) in cases {
+            let frame = json!({
+                "type": "event",
+                "event": event,
+                "payload": {
+                    "id": format!("req-{id}"),
+                    "tool": "exec",
+                    "command": "git status"
+                }
+            });
+            let request = registry.extract(&frame).expect("request");
+            assert_eq!(request.channel.as_deref(), Some(expected_channel), "{id}");
+        }
+    }
+
+    #[test]
+    fn normalize_channel_id_supports_wave3_aliases() {
+        assert_eq!(
+            normalize_channel_id(Some("internet-relay-chat")).as_deref(),
+            Some("irc")
+        );
+        assert_eq!(
+            normalize_channel_id(Some("imsg")).as_deref(),
+            Some("imessage")
         );
     }
 

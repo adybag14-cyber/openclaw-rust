@@ -13759,7 +13759,9 @@ fn channel_label(id: &str) -> String {
         "telegram" => "Telegram".to_owned(),
         "slack" => "Slack".to_owned(),
         "discord" => "Discord".to_owned(),
+        "irc" => "IRC".to_owned(),
         "signal" => "Signal".to_owned(),
+        "imessage" => "iMessage".to_owned(),
         "webchat" => "WebChat".to_owned(),
         "bluebubbles" => "BlueBubbles".to_owned(),
         "googlechat" => "Google Chat".to_owned(),
@@ -13785,7 +13787,9 @@ fn channel_system_image(id: &str) -> &'static str {
         "telegram" => "paperplane",
         "slack" => "bubble.left.and.bubble.right",
         "discord" => "bubble.left",
+        "irc" => "network",
         "signal" => "lock.bubble.right",
+        "imessage" => "message.fill",
         "webchat" => "rectangle.and.pencil.and.ellipsis",
         "bluebubbles" => "bubble.left.and.text.bubble.right",
         "googlechat" => "message.badge",
@@ -15632,6 +15636,36 @@ mod tests {
             ("zl", "zalo"),
             ("zlu", "zalouser"),
         ];
+        for (channel, expected) in cases {
+            let req = RpcRequestFrame {
+                id: format!("req-send-{channel}"),
+                method: "send".to_owned(),
+                params: serde_json::json!({
+                    "to": "target:demo",
+                    "message": "hello alias",
+                    "channel": channel,
+                    "idempotencyKey": format!("send-{channel}")
+                }),
+            };
+            match dispatcher.handle_request(&req).await {
+                RpcDispatchOutcome::Handled(payload) => {
+                    assert_eq!(
+                        payload
+                            .pointer("/channel")
+                            .and_then(serde_json::Value::as_str),
+                        Some(expected),
+                        "{channel}"
+                    );
+                }
+                _ => panic!("expected send handled for alias channel"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_send_accepts_wave3_channel_aliases() {
+        let dispatcher = RpcDispatcher::new();
+        let cases = vec![("internet-relay-chat", "irc"), ("imsg", "imessage")];
         for (channel, expected) in cases {
             let req = RpcRequestFrame {
                 id: format!("req-send-{channel}"),
@@ -19005,6 +19039,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_channels_status_tracks_wave3_payload_channel_alias_runtime() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.message",
+                "payload": {
+                    "channel": "internet-relay-chat",
+                    "accountId": "relay"
+                }
+            }))
+            .await;
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.message",
+                "payload": {
+                    "channel": "imsg",
+                    "accountId": "phone"
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-wave3-payload-alias-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/irc")
+                        .and_then(serde_json::Value::as_str),
+                    Some("relay")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/irc/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("relay")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/imessage")
+                        .and_then(serde_json::Value::as_str),
+                    Some("phone")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/imessage/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("phone")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
     async fn dispatcher_channels_status_honors_default_account_hints_from_runtime_payload() {
         let dispatcher = RpcDispatcher::new();
         dispatcher
@@ -19348,6 +19444,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_channels_status_includes_wave3_channel_catalog_entries() {
+        let dispatcher = RpcDispatcher::new();
+        let status = RpcRequestFrame {
+            id: "req-channels-wave3-catalog".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                let order = payload
+                    .pointer("/channelOrder")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let names = order
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<Vec<_>>();
+                for expected in ["irc", "imessage"] {
+                    assert!(names.contains(&expected), "{expected}");
+                }
+                assert_eq!(
+                    payload
+                        .pointer("/channelLabels/irc")
+                        .and_then(serde_json::Value::as_str),
+                    Some("IRC")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelLabels/imessage")
+                        .and_then(serde_json::Value::as_str),
+                    Some("iMessage")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelSystemImages/irc")
+                        .and_then(serde_json::Value::as_str),
+                    Some("network")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelSystemImages/imessage")
+                        .and_then(serde_json::Value::as_str),
+                    Some("message.fill")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
     async fn dispatcher_channels_status_ingests_wave2_alias_channel_ids_in_runtime_maps() {
         let dispatcher = RpcDispatcher::new();
         dispatcher
@@ -19441,6 +19590,88 @@ mod tests {
                 assert_eq!(
                     payload
                         .pointer("/channels/zalouser/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_ingests_wave3_alias_channel_ids_in_runtime_maps() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channelAccounts": {
+                        "internet-relay-chat": {
+                            "relay": {
+                                "running": true,
+                                "connected": true,
+                                "mode": "socket"
+                            }
+                        },
+                        "imsg": {
+                            "phone": {
+                                "running": true,
+                                "connected": true,
+                                "mode": "bridge"
+                            }
+                        }
+                    },
+                    "channelDefaultAccountId": {
+                        "internet-relay-chat": "relay",
+                        "imsg": "phone"
+                    }
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-wave3-alias-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/irc")
+                        .and_then(serde_json::Value::as_str),
+                    Some("relay")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/irc/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("relay")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/irc/0/mode")
+                        .and_then(serde_json::Value::as_str),
+                    Some("socket")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/imessage")
+                        .and_then(serde_json::Value::as_str),
+                    Some("phone")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/imessage/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("phone")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channels/imessage/connected")
                         .and_then(serde_json::Value::as_bool),
                     Some(true)
                 );

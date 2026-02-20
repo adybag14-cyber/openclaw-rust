@@ -133,7 +133,7 @@ Exit gates:
 - Channel acceptance suite green per migrated channel.
 - Canary chat behavior matches TS reference runs.
 
-Status: **Partial (Wave-1 foundations + runtime lifecycle snapshot ingestion implemented, plus Wave-2 channel registry/canonicalization foundations for `bluebubbles`, `googlechat`, `msteams`, `matrix`, `zalo`, and `zalouser`; channel acceptance/canary parity pending)**
+Status: **Partial (Wave-1 foundations + runtime lifecycle snapshot ingestion implemented, Wave-2 channel registry/canonicalization foundations for `bluebubbles`, `googlechat`, `msteams`, `matrix`, `zalo`, and `zalouser`, and Wave-3 core registry/canonicalization foundations for `irc` + `imessage`; channel acceptance/canary parity pending)**
 
 ## CP5: Nodes, Browser, Canvas, Device Flows
 
