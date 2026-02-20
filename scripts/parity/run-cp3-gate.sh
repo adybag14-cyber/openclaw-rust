@@ -22,6 +22,7 @@ tests=(
   "tool_runtime::tests::tool_runtime_policy_and_loop_guard_enforced_on_tool_host"
   "tool_runtime::tests::tool_runtime_background_exec_process_poll_roundtrip"
   "tool_runtime::tests::tool_runtime_gateway_and_sessions_tools_cover_history_list_and_reset"
+  "tool_runtime::tests::tool_runtime_browser_canvas_and_nodes_tools_cover_runtime_families"
 )
 
 echo -e "test\tduration_ms\tstatus" > "${results_file}"

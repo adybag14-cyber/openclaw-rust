@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, VecDeque};
+use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -900,9 +901,12 @@ impl ToolRuntimeHost {
                 "nodeCount": 1,
                 "commands": [
                     "camera.snap",
+                    "camera.clip",
                     "screen.record",
                     "location.get",
                     "system.run",
+                    "system.which",
+                    "system.notify",
                     "browser.proxy",
                     "canvas.present"
                 ]
@@ -916,9 +920,12 @@ impl ToolRuntimeHost {
                 let caps = if include_caps {
                     json!([
                         "camera.snap",
+                        "camera.clip",
                         "screen.record",
                         "location.get",
                         "system.run",
+                        "system.which",
+                        "system.notify",
                         "browser.proxy",
                         "canvas.present"
                     ])
@@ -949,6 +956,39 @@ impl ToolRuntimeHost {
                         "bytes": 0,
                         "imageBase64": ""
                     }),
+                    "camera.clip" => {
+                        let duration_ms = params
+                            .get("durationMs")
+                            .or_else(|| params.get("duration_ms"))
+                            .and_then(Value::as_u64)
+                            .or_else(|| {
+                                params
+                                    .get("seconds")
+                                    .and_then(Value::as_u64)
+                                    .map(|seconds| seconds.saturating_mul(1000))
+                            })
+                            .unwrap_or(3_000)
+                            .clamp(1_000, 60_000);
+                        let has_audio = params
+                            .get("includeAudio")
+                            .or_else(|| params.get("include_audio"))
+                            .and_then(Value::as_bool)
+                            .or_else(|| {
+                                params
+                                    .get("noAudio")
+                                    .or_else(|| params.get("no_audio"))
+                                    .and_then(Value::as_bool)
+                                    .map(|no_audio| !no_audio)
+                            })
+                            .unwrap_or(true);
+                        json!({
+                            "mimeType": "video/mp4",
+                            "format": "mp4",
+                            "durationMs": duration_ms,
+                            "hasAudio": has_audio,
+                            "bytes": 0
+                        })
+                    }
                     "screen.record" => {
                         let seconds = params
                             .get("seconds")
@@ -988,6 +1028,8 @@ impl ToolRuntimeHost {
                         "acknowledged": true
                     }),
                     "system.run" => self.execute_nodes_system_run(request, &params).await?,
+                    "system.which" => self.execute_nodes_system_which(&params)?,
+                    "system.notify" => self.execute_nodes_system_notify(&params),
                     _ => {
                         return Err(ToolRuntimeError::new(
                             ToolRuntimeErrorCode::InvalidArgs,
@@ -1066,6 +1108,59 @@ impl ToolRuntimeHost {
             "durationMs": outcome.duration_ms,
             "aggregated": aggregated
         }))
+    }
+
+    fn execute_nodes_system_which(&self, params: &Value) -> ToolRuntimeResult<Value> {
+        const MAX_BINS: usize = 32;
+        const MAX_BIN_LEN: usize = 128;
+        let bins = match params.get("bins").or_else(|| params.get("bin")) {
+            Some(Value::String(single)) => normalize_text(Some(single.to_owned()), MAX_BIN_LEN)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .filter_map(Value::as_str)
+                .filter_map(|raw| normalize_text(Some(raw.to_owned()), MAX_BIN_LEN))
+                .take(MAX_BINS)
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        if bins.is_empty() {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "system.which requires params.bins (string or array)",
+            ));
+        }
+        let mut found = serde_json::Map::new();
+        for bin in bins {
+            if let Some(path) = resolve_tool_runtime_executable_path(&bin) {
+                found.insert(bin, Value::String(path));
+            }
+        }
+        Ok(json!({
+            "ok": true,
+            "bins": Value::Object(found)
+        }))
+    }
+
+    fn execute_nodes_system_notify(&self, params: &Value) -> Value {
+        let title = first_string_arg(params, &["title", "subject", "summary"])
+            .unwrap_or_else(|| "OpenClaw".to_owned());
+        let body = first_string_arg(params, &["body", "message", "text"]).unwrap_or_default();
+        let level = first_string_arg(params, &["level"]).unwrap_or_else(|| "info".to_owned());
+        let priority =
+            first_string_arg(params, &["priority"]).unwrap_or_else(|| "active".to_owned());
+        let delivery = first_string_arg(params, &["delivery"]).unwrap_or_else(|| "auto".to_owned());
+        json!({
+            "ok": true,
+            "notificationId": format!("tool-notify-{}", now_ms()),
+            "title": title,
+            "body": body,
+            "level": level,
+            "priority": priority,
+            "delivery": delivery,
+            "deliveredAtMs": now_ms()
+        })
     }
 
     async fn next_process_session_id(&self) -> String {
@@ -1276,6 +1371,95 @@ fn first_string_arg(root: &Value, keys: &[&str]) -> Option<String> {
         }
     }
     None
+}
+
+fn normalize_text(value: Option<String>, max_chars: usize) -> Option<String> {
+    let trimmed = value?.trim().to_owned();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut normalized = String::new();
+    for ch in trimmed.chars().take(max_chars) {
+        normalized.push(ch);
+    }
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn resolve_tool_runtime_executable_path(bin: &str) -> Option<String> {
+    let candidate = PathBuf::from(bin);
+    if candidate.is_absolute() || bin.contains('/') || bin.contains('\\') {
+        return if candidate.is_file() {
+            Some(candidate.to_string_lossy().to_string())
+        } else {
+            None
+        };
+    }
+    let path_env = env::var_os("PATH")?;
+    let search_paths = env::split_paths(&path_env).collect::<Vec<_>>();
+    if cfg!(windows) {
+        let mut extensions = resolve_tool_runtime_path_extensions();
+        if !extensions.iter().any(|ext| ext.is_empty()) {
+            extensions.insert(0, String::new());
+        }
+        let bin_lower = bin.to_ascii_lowercase();
+        for directory in search_paths {
+            for ext in &extensions {
+                let needs_ext = !ext.is_empty() && !bin_lower.ends_with(ext.as_str());
+                let file_name = if needs_ext {
+                    format!("{bin}{ext}")
+                } else {
+                    bin.to_owned()
+                };
+                let candidate = directory.join(file_name);
+                if candidate.is_file() {
+                    return Some(candidate.to_string_lossy().to_string());
+                }
+            }
+        }
+        return None;
+    }
+    for directory in search_paths {
+        let candidate = directory.join(bin);
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
+fn resolve_tool_runtime_path_extensions() -> Vec<String> {
+    let default = vec![
+        ".exe".to_owned(),
+        ".cmd".to_owned(),
+        ".bat".to_owned(),
+        ".com".to_owned(),
+    ];
+    let Some(raw) = env::var_os("PATHEXT") else {
+        return default;
+    };
+    let Some(text) = raw.to_str() else {
+        return default;
+    };
+    let mut out = Vec::new();
+    for value in text.split(';') {
+        let normalized = value.trim().to_ascii_lowercase();
+        if normalized.is_empty() || !normalized.starts_with('.') {
+            continue;
+        }
+        if out.iter().any(|existing: &String| existing == &normalized) {
+            continue;
+        }
+        out.push(normalized);
+    }
+    if out.is_empty() {
+        default
+    } else {
+        out
+    }
 }
 
 fn node_params_from_args(args: &Value) -> Value {
@@ -2268,6 +2452,48 @@ mod tests {
             Some(0.0)
         );
 
+        let camera_clip = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-camera-clip-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "invoke",
+                    "nodeId": "node-a",
+                    "command": "camera.clip",
+                    "params": {
+                        "durationMs": 2200,
+                        "includeAudio": false
+                    }
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("camera clip invoke");
+        assert_eq!(
+            camera_clip
+                .result
+                .pointer("/result/format")
+                .and_then(serde_json::Value::as_str),
+            Some("mp4")
+        );
+        assert_eq!(
+            camera_clip
+                .result
+                .pointer("/result/durationMs")
+                .and_then(serde_json::Value::as_u64),
+            Some(2200)
+        );
+        assert_eq!(
+            camera_clip
+                .result
+                .pointer("/result/hasAudio")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+
         let system_run = host
             .execute(ToolRuntimeRequest {
                 request_id: "nodes-system-run-1".to_owned(),
@@ -2300,5 +2526,79 @@ mod tests {
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
         assert!(aggregated.contains("node-runtime-ready"));
+
+        let system_which = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-system-which-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "invoke",
+                    "nodeId": "node-a",
+                    "command": "system.which",
+                    "params": {
+                        "bins": [if cfg!(windows) { "cmd" } else { "sh" }]
+                    }
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("system.which invoke");
+        let which_path = if cfg!(windows) {
+            system_which
+                .result
+                .pointer("/result/bins/cmd")
+                .and_then(serde_json::Value::as_str)
+        } else {
+            system_which
+                .result
+                .pointer("/result/bins/sh")
+                .and_then(serde_json::Value::as_str)
+        };
+        assert!(which_path.is_some(), "expected shell binary to be resolved");
+
+        let system_notify = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-system-notify-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "invoke",
+                    "nodeId": "node-a",
+                    "command": "system.notify",
+                    "params": {
+                        "title": "Parity",
+                        "body": "Tool runtime notify",
+                        "priority": "timeSensitive",
+                        "delivery": "overlay"
+                    }
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("system.notify invoke");
+        assert!(system_notify
+            .result
+            .pointer("/result/notificationId")
+            .and_then(serde_json::Value::as_str)
+            .is_some());
+        assert_eq!(
+            system_notify
+                .result
+                .pointer("/result/priority")
+                .and_then(serde_json::Value::as_str),
+            Some("timeSensitive")
+        );
+        assert_eq!(
+            system_notify
+                .result
+                .pointer("/result/delivery")
+                .and_then(serde_json::Value::as_str),
+            Some("overlay")
+        );
     }
 }

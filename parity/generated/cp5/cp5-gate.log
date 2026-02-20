@@ -1,5 +1,5 @@
 [parity] running CP5 fixture: gateway::tests::dispatcher_browser_request_validates_and_reports_unavailable_contract
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.53s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.46s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -8,7 +8,7 @@ test gateway::tests::dispatcher_browser_request_validates_and_reports_unavailabl
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 284 filtered out; finished in 0.00s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_browser_request_routes_through_node_proxy_runtime
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -17,25 +17,25 @@ test gateway::tests::dispatcher_browser_request_routes_through_node_proxy_runtim
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 284 filtered out; finished in 0.02s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_browser_request_enforces_browser_proxy_command_allowlist
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.51s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.46s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_browser_request_enforces_browser_proxy_command_allowlist ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 284 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 284 filtered out; finished in 0.01s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_browser_open_routes_through_browser_proxy_runtime
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.48s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_browser_open_routes_through_browser_proxy_runtime ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 284 filtered out; finished in 0.02s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 284 filtered out; finished in 0.03s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_canvas_present_routes_through_node_runtime
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.49s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -44,7 +44,7 @@ test gateway::tests::dispatcher_canvas_present_routes_through_node_runtime ... o
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 284 filtered out; finished in 0.02s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_canvas_present_rejects_disallowed_command
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.53s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -53,7 +53,7 @@ test gateway::tests::dispatcher_canvas_present_rejects_disallowed_command ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 284 filtered out; finished in 0.00s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_device_pair_and_token_methods_follow_parity_contract
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.52s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -62,7 +62,7 @@ test gateway::tests::dispatcher_device_pair_and_token_methods_follow_parity_cont
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 284 filtered out; finished in 0.01s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_node_pairing_methods_follow_parity_contract
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.49s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -71,7 +71,7 @@ test gateway::tests::dispatcher_node_pairing_methods_follow_parity_contract ... 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 284 filtered out; finished in 0.01s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_node_invoke_and_event_methods_follow_parity_contract
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.52s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.41s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -80,7 +80,7 @@ test gateway::tests::dispatcher_node_invoke_and_event_methods_follow_parity_cont
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 284 filtered out; finished in 0.01s
 
 [parity] running CP5 fixture: gateway::tests::dispatcher_node_invoke_supports_camera_screen_location_and_system_commands_when_declared
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.49s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -88,8 +88,17 @@ test gateway::tests::dispatcher_node_invoke_supports_camera_screen_location_and_
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 284 filtered out; finished in 0.00s
 
+[parity] running CP5 fixture: gateway::tests::dispatcher_local_node_host_runtime_completes_node_invoke_commands_in_process
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
+     Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
+
+running 1 test
+test gateway::tests::dispatcher_local_node_host_runtime_completes_node_invoke_commands_in_process ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 284 filtered out; finished in 0.05s
+
 [parity] running CP5 fixture: gateway::tests::dispatcher_local_node_host_runtime_command_override_map_routes_by_command
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.49s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.47s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test

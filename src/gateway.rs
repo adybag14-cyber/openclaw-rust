@@ -785,6 +785,20 @@ const LOCAL_NODE_CAP_HINTS: &[&str] = &[
 ];
 const LOCAL_NODE_HOST_SYSTEM_RUN_TIMEOUT_MS: u64 = 10_000;
 const LOCAL_NODE_HOST_SYSTEM_RUN_OUTPUT_MAX_CHARS: usize = 16_000;
+const LOCAL_NODE_HOST_CAMERA_CLIP_DEFAULT_DURATION_MS: u64 = 3_000;
+const LOCAL_NODE_HOST_CAMERA_CLIP_MAX_DURATION_MS: u64 = 60_000;
+const LOCAL_NODE_HOST_SYSTEM_RUN_MAX_ARGV_ITEMS: usize = 64;
+const LOCAL_NODE_HOST_SYSTEM_RUN_MAX_ARG_LEN: usize = 2_048;
+const LOCAL_NODE_HOST_SYSTEM_RUN_MAX_ENV_ITEMS: usize = 64;
+const LOCAL_NODE_HOST_SYSTEM_RUN_MAX_ENV_KEY_LEN: usize = 128;
+const LOCAL_NODE_HOST_SYSTEM_RUN_MAX_ENV_VALUE_LEN: usize = 4_096;
+const LOCAL_NODE_HOST_SYSTEM_WHICH_MAX_BINS: usize = 64;
+const LOCAL_NODE_HOST_SYSTEM_WHICH_MAX_BIN_LEN: usize = 128;
+const LOCAL_NODE_HOST_SYSTEM_NOTIFY_TITLE_MAX_CHARS: usize = 256;
+const LOCAL_NODE_HOST_SYSTEM_NOTIFY_BODY_MAX_CHARS: usize = 2_048;
+const LOCAL_NODE_HOST_SYSTEM_NOTIFY_LEVEL_MAX_CHARS: usize = 32;
+const LOCAL_NODE_HOST_SYSTEM_NOTIFY_PRIORITY_MAX_CHARS: usize = 32;
+const LOCAL_NODE_HOST_SYSTEM_NOTIFY_DELIVERY_MAX_CHARS: usize = 32;
 const LOCAL_NODE_HOST_EXTERNAL_QUEUE_CAPACITY: usize = 32;
 const LOCAL_NODE_HOST_EXTERNAL_IDLE_TIMEOUT_MS: u64 = 30_000;
 const LOCAL_NODE_HOST_EXTERNAL_MAX_SESSIONS: usize = 64;
@@ -821,6 +835,7 @@ static DEVICE_TOKEN_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NODE_PAIR_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NODE_TOKEN_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NODE_INVOKE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static NODE_NOTIFY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static BROWSER_PROXY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static CANVAS_PRESENT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static EXEC_APPROVAL_TOKEN_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -4195,6 +4210,45 @@ impl RpcDispatcher {
                     "source": "local-host-runtime"
                 }))
             }
+            "camera.clip" => {
+                let duration_ms = local_node_host_duration_ms_from_params(
+                    params.as_ref(),
+                    LOCAL_NODE_HOST_CAMERA_CLIP_DEFAULT_DURATION_MS,
+                    LOCAL_NODE_HOST_CAMERA_CLIP_MAX_DURATION_MS,
+                );
+                let include_audio = local_node_host_include_audio_from_params(params.as_ref());
+                let format = params
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|obj| obj.get("format"))
+                    .and_then(Value::as_str)
+                    .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 32))
+                    .unwrap_or_else(|| "mp4".to_owned());
+                let facing = params
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|obj| obj.get("facing"))
+                    .and_then(Value::as_str)
+                    .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 32));
+                let device_id = params
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|obj| obj.get("deviceId").or_else(|| obj.get("device_id")))
+                    .and_then(Value::as_str)
+                    .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 128));
+                local_node_command_ok(json!({
+                    "ok": true,
+                    "nodeId": node_id,
+                    "capturedAtMs": now_ms(),
+                    "format": format,
+                    "durationMs": duration_ms,
+                    "hasAudio": include_audio,
+                    "facing": facing,
+                    "deviceId": device_id,
+                    "videoPath": format!("memory://nodes/{node_id}/camera/{}.mp4", now_ms()),
+                    "source": "local-host-runtime"
+                }))
+            }
             "screen.record" => {
                 let seconds = params
                     .as_ref()
@@ -4289,6 +4343,8 @@ impl RpcDispatcher {
             "system.run" => {
                 local_node_host_execute_system_run(node_id, params.as_ref(), runtime).await
             }
+            "system.which" => local_node_host_execute_system_which(node_id, params.as_ref()),
+            "system.notify" => local_node_host_execute_system_notify(node_id, params.as_ref()),
             _ => local_node_command_error(
                 "LOCAL_COMMAND_UNSUPPORTED",
                 format!("local host runtime does not implement command: {command}"),
@@ -9746,6 +9802,23 @@ async fn local_node_host_execute_external_command(
     )
 }
 
+enum LocalNodeHostSystemRunExecMode {
+    Shell(String),
+    Argv(Vec<String>),
+}
+
+struct LocalNodeHostSystemRunPlan {
+    display_command: String,
+    raw_command: Option<String>,
+    argv: Option<Vec<String>>,
+    mode: LocalNodeHostSystemRunExecMode,
+    cwd: Option<String>,
+    timeout_ms: u64,
+    env: Vec<(String, String)>,
+    ignored_env_keys: Vec<String>,
+    needs_screen_recording: Option<bool>,
+}
+
 async fn local_node_host_execute_system_run(
     node_id: &str,
     params: Option<&Value>,
@@ -9757,79 +9830,62 @@ async fn local_node_host_execute_system_run(
             "system.run is disabled for local host runtime".to_owned(),
         );
     }
-    let Some(raw_command) = params
-        .and_then(Value::as_object)
-        .and_then(|obj| obj.get("command").or_else(|| obj.get("cmd")))
-        .and_then(Value::as_str)
-        .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 2_048))
-    else {
-        return local_node_command_error(
-            "LOCAL_SYSTEM_RUN_INVALID",
-            "system.run requires params.command".to_owned(),
-        );
+    let plan = match build_local_node_host_system_run_plan(params, runtime) {
+        Ok(plan) => plan,
+        Err(message) => {
+            return local_node_command_error("LOCAL_SYSTEM_RUN_INVALID", message);
+        }
     };
-    if raw_command
-        .chars()
-        .any(|ch| matches!(ch, '&' | '|' | ';' | '>' | '<' | '`'))
-    {
-        return local_node_command_error(
-            "LOCAL_SYSTEM_RUN_INVALID",
-            "system.run command contains blocked shell metacharacters".to_owned(),
-        );
-    }
-    let Some(head) = raw_command.split_whitespace().next() else {
-        return local_node_command_error(
-            "LOCAL_SYSTEM_RUN_INVALID",
-            "system.run command is empty".to_owned(),
-        );
+    let mut command = match &plan.mode {
+        LocalNodeHostSystemRunExecMode::Shell(raw_command) => {
+            if cfg!(windows) {
+                let mut cmd = TokioCommand::new("cmd");
+                cmd.arg("/C").arg(raw_command);
+                cmd
+            } else {
+                let mut cmd = TokioCommand::new("sh");
+                cmd.arg("-lc").arg(raw_command);
+                cmd
+            }
+        }
+        LocalNodeHostSystemRunExecMode::Argv(argv) => {
+            let mut cmd = TokioCommand::new(&argv[0]);
+            if argv.len() > 1 {
+                cmd.args(&argv[1..]);
+            }
+            cmd
+        }
     };
-    if !LOCAL_NODE_HOST_SYSTEM_RUN_ALLOWLIST
-        .iter()
-        .any(|allowed| allowed.eq_ignore_ascii_case(head))
-    {
-        return local_node_command_error(
-            "LOCAL_SYSTEM_RUN_NOT_ALLOWED",
-            format!("system.run command not allowed by local host runtime allowlist: {head}"),
-        );
-    }
-    let cwd = params
-        .and_then(Value::as_object)
-        .and_then(|obj| obj.get("cwd"))
-        .and_then(Value::as_str)
-        .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 2_048));
-    let timeout_ms = runtime.system_run_timeout_ms.clamp(500, 120_000);
-    let mut command = if cfg!(windows) {
-        let mut cmd = TokioCommand::new("cmd");
-        cmd.arg("/C").arg(raw_command.clone());
-        cmd
-    } else {
-        let mut cmd = TokioCommand::new("sh");
-        cmd.arg("-lc").arg(raw_command.clone());
-        cmd
-    };
-    if let Some(cwd) = cwd {
+    if let Some(cwd) = &plan.cwd {
         command.current_dir(cwd);
+    }
+    for (key, value) in &plan.env {
+        command.env(key, value);
     }
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let output =
-        match tokio::time::timeout(Duration::from_millis(timeout_ms), command.output()).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(err)) => {
-                return local_node_command_error(
-                    "LOCAL_SYSTEM_RUN_FAILED",
-                    format!("system.run execution failed: {err}"),
-                );
-            }
-            Err(_) => {
-                return local_node_command_error(
-                    "LOCAL_SYSTEM_RUN_TIMEOUT",
-                    format!("system.run timed out after {timeout_ms}ms"),
-                );
-            }
-        };
+    let output = match tokio::time::timeout(
+        Duration::from_millis(plan.timeout_ms),
+        command.output(),
+    )
+    .await
+    {
+        Ok(Ok(output)) => output,
+        Ok(Err(err)) => {
+            return local_node_command_error(
+                "LOCAL_SYSTEM_RUN_FAILED",
+                format!("system.run execution failed: {err}"),
+            );
+        }
+        Err(_) => {
+            return local_node_command_error(
+                "LOCAL_SYSTEM_RUN_TIMEOUT",
+                format!("system.run timed out after {}ms", plan.timeout_ms),
+            );
+        }
+    };
     let stdout = truncate_text(
         &String::from_utf8_lossy(&output.stdout),
         LOCAL_NODE_HOST_SYSTEM_RUN_OUTPUT_MAX_CHARS,
@@ -9841,29 +9897,605 @@ async fn local_node_host_execute_system_run(
     let payload = json!({
         "ok": output.status.success(),
         "nodeId": node_id,
-        "command": raw_command,
+        "command": plan.display_command,
+        "rawCommand": plan.raw_command,
+        "argv": plan.argv,
+        "cwd": plan.cwd,
         "stdout": stdout,
         "stderr": stderr,
         "exitCode": output.status.code(),
-        "timeoutMs": timeout_ms,
+        "timeoutMs": plan.timeout_ms,
+        "envCount": plan.env.len(),
+        "ignoredEnvKeys": plan.ignored_env_keys,
+        "needsScreenRecording": plan.needs_screen_recording,
         "source": "local-host-runtime"
     });
     if output.status.success() {
         local_node_command_ok(payload)
     } else {
+        let exit_code = output
+            .status
+            .code()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_owned());
         LocalNodeCommandExecution {
             ok: false,
             payload_json: serde_json::to_string(&payload).ok(),
             payload: Some(payload.clone()),
             error: Some(NodeInvokeResultError {
                 code: Some("LOCAL_SYSTEM_RUN_EXIT_NONZERO".to_owned()),
-                message: Some(format!(
-                    "system.run exited with status {:?}",
-                    output.status.code()
-                )),
+                message: Some(format!("system.run exited with status {exit_code}")),
             }),
         }
     }
+}
+
+fn build_local_node_host_system_run_plan(
+    params: Option<&Value>,
+    runtime: &NodeHostRuntimeConfig,
+) -> Result<LocalNodeHostSystemRunPlan, String> {
+    let Some(object) = params.and_then(Value::as_object) else {
+        return Err("system.run requires params.command".to_owned());
+    };
+    let raw_command = object
+        .get("rawCommand")
+        .or_else(|| object.get("raw_command"))
+        .and_then(Value::as_str)
+        .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 4_096));
+    let (display_command, mode, argv, allowlist_head, shell_text) =
+        match object.get("command").or_else(|| object.get("cmd")) {
+            Some(Value::String(raw)) => {
+                if raw_command.is_some() {
+                    return Err("rawCommand requires params.command".to_owned());
+                }
+                let Some(command_text) = normalize_optional_text(Some(raw.to_owned()), 4_096)
+                else {
+                    return Err("system.run command is empty".to_owned());
+                };
+                let Some(head) = local_node_host_system_run_head_token(&command_text) else {
+                    return Err("system.run command is empty".to_owned());
+                };
+                (
+                    command_text.clone(),
+                    LocalNodeHostSystemRunExecMode::Shell(command_text.clone()),
+                    None,
+                    head,
+                    Some(command_text),
+                )
+            }
+            Some(Value::Array(items)) => {
+                let argv = parse_local_node_host_system_run_argv(items)?;
+                let inferred = infer_local_node_host_system_run_text_from_argv(&argv);
+                if let Some(raw) = &raw_command {
+                    if raw != &inferred {
+                        return Err("INVALID_REQUEST: rawCommand does not match command".to_owned());
+                    }
+                }
+                let display_command = raw_command.clone().unwrap_or_else(|| inferred.clone());
+                let (allowlist_head, shell_text) =
+                    match extract_local_node_host_shell_command_from_argv(&argv) {
+                        Some(shell_command) => {
+                            let Some(head) = local_node_host_system_run_head_token(&shell_command)
+                            else {
+                                return Err("system.run command is empty".to_owned());
+                            };
+                            (head, Some(shell_command))
+                        }
+                        None => {
+                            let Some(head) = local_node_host_system_run_argv_head(&argv) else {
+                                return Err("system.run command is empty".to_owned());
+                            };
+                            (head, None)
+                        }
+                    };
+                (
+                    display_command,
+                    LocalNodeHostSystemRunExecMode::Argv(argv.clone()),
+                    Some(argv),
+                    allowlist_head,
+                    shell_text,
+                )
+            }
+            _ => return Err("system.run requires params.command".to_owned()),
+        };
+    if let Some(shell_command) = &shell_text {
+        if shell_command
+            .chars()
+            .any(|ch| matches!(ch, '&' | '|' | ';' | '>' | '<' | '`' | '\n' | '\r'))
+        {
+            return Err("system.run command contains blocked shell metacharacters".to_owned());
+        }
+    }
+    if !LOCAL_NODE_HOST_SYSTEM_RUN_ALLOWLIST
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(&allowlist_head))
+    {
+        return Err(format!(
+            "system.run command not allowed by local host runtime allowlist: {allowlist_head}"
+        ));
+    }
+    let cwd = object
+        .get("cwd")
+        .and_then(Value::as_str)
+        .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 2_048));
+    let timeout_ms = object
+        .get("timeoutMs")
+        .or_else(|| object.get("timeout_ms"))
+        .or_else(|| object.get("commandTimeoutMs"))
+        .or_else(|| object.get("command_timeout_ms"))
+        .or_else(|| object.get("commandTimeout"))
+        .or_else(|| object.get("command_timeout"))
+        .and_then(config_value_as_u64)
+        .unwrap_or(runtime.system_run_timeout_ms)
+        .clamp(500, 120_000);
+    let (env, ignored_env_keys) = parse_local_node_host_system_run_env(object);
+    let needs_screen_recording = object
+        .get("needsScreenRecording")
+        .or_else(|| object.get("needs_screen_recording"))
+        .and_then(Value::as_bool);
+    Ok(LocalNodeHostSystemRunPlan {
+        display_command,
+        raw_command,
+        argv,
+        mode,
+        cwd,
+        timeout_ms,
+        env,
+        ignored_env_keys,
+        needs_screen_recording,
+    })
+}
+
+fn parse_local_node_host_system_run_argv(items: &[Value]) -> Result<Vec<String>, String> {
+    let mut argv = Vec::new();
+    for item in items {
+        let Some(raw) = item.as_str() else {
+            continue;
+        };
+        let Some(arg) =
+            normalize_optional_text(Some(raw.to_owned()), LOCAL_NODE_HOST_SYSTEM_RUN_MAX_ARG_LEN)
+        else {
+            continue;
+        };
+        argv.push(arg);
+        if argv.len() >= LOCAL_NODE_HOST_SYSTEM_RUN_MAX_ARGV_ITEMS {
+            break;
+        }
+    }
+    if argv.is_empty() {
+        return Err("system.run requires params.command".to_owned());
+    }
+    Ok(argv)
+}
+
+fn local_node_host_system_run_head_token(command: &str) -> Option<String> {
+    let raw_head = command.split_whitespace().next()?;
+    let normalized = raw_head.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    let base = Path::new(normalized)
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| normalized.to_owned());
+    normalize_optional_text(Some(base), 160).map(|value| value.to_ascii_lowercase())
+}
+
+fn local_node_host_system_run_argv_head(argv: &[String]) -> Option<String> {
+    let first = argv.first()?;
+    let base = Path::new(first)
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| first.to_owned());
+    normalize_optional_text(Some(base), 160).map(|value| value.to_ascii_lowercase())
+}
+
+fn extract_local_node_host_shell_command_from_argv(argv: &[String]) -> Option<String> {
+    let token0 = argv.first()?.trim();
+    let base0 = Path::new(token0)
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| token0.to_owned())
+        .to_ascii_lowercase();
+    if matches!(base0.as_str(), "sh" | "bash" | "zsh" | "dash" | "ksh")
+        && matches!(argv.get(1).map(String::as_str), Some("-c") | Some("-lc"))
+    {
+        return argv
+            .get(2)
+            .and_then(|value| normalize_optional_text(Some(value.clone()), 4_096));
+    }
+    if matches!(base0.as_str(), "cmd" | "cmd.exe") {
+        let index = argv
+            .iter()
+            .position(|value| value.trim().eq_ignore_ascii_case("/c"))?;
+        return argv
+            .get(index + 1)
+            .and_then(|value| normalize_optional_text(Some(value.clone()), 4_096));
+    }
+    None
+}
+
+fn infer_local_node_host_system_run_text_from_argv(argv: &[String]) -> String {
+    if let Some(shell_command) = extract_local_node_host_shell_command_from_argv(argv) {
+        return shell_command;
+    }
+    argv.iter()
+        .map(|arg| {
+            if arg.chars().any(|ch| ch.is_whitespace() || ch == '"') {
+                format!("\"{}\"", arg.replace('"', "\\\""))
+            } else {
+                arg.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn parse_local_node_host_system_run_env(
+    object: &serde_json::Map<String, Value>,
+) -> (Vec<(String, String)>, Vec<String>) {
+    let mut env = Vec::new();
+    let mut ignored = Vec::new();
+    let Some(value) = object.get("env") else {
+        return (env, ignored);
+    };
+    match value {
+        Value::Object(map) => {
+            for (raw_key, raw_value) in map {
+                let Some(value_text) = raw_value.as_str().and_then(|raw| {
+                    normalize_optional_text(
+                        Some(raw.to_owned()),
+                        LOCAL_NODE_HOST_SYSTEM_RUN_MAX_ENV_VALUE_LEN,
+                    )
+                }) else {
+                    continue;
+                };
+                push_local_node_host_system_run_env_entry(
+                    &mut env,
+                    &mut ignored,
+                    raw_key,
+                    &value_text,
+                );
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                let Some(entry) = item.as_str() else {
+                    continue;
+                };
+                let Some((raw_key, raw_value)) = entry.split_once('=') else {
+                    continue;
+                };
+                let Some(value_text) = normalize_optional_text(
+                    Some(raw_value.to_owned()),
+                    LOCAL_NODE_HOST_SYSTEM_RUN_MAX_ENV_VALUE_LEN,
+                ) else {
+                    continue;
+                };
+                push_local_node_host_system_run_env_entry(
+                    &mut env,
+                    &mut ignored,
+                    raw_key,
+                    &value_text,
+                );
+                if env.len() >= LOCAL_NODE_HOST_SYSTEM_RUN_MAX_ENV_ITEMS {
+                    break;
+                }
+            }
+        }
+        _ => {}
+    }
+    (env, ignored)
+}
+
+fn push_local_node_host_system_run_env_entry(
+    env: &mut Vec<(String, String)>,
+    ignored: &mut Vec<String>,
+    raw_key: &str,
+    raw_value: &str,
+) {
+    if env.len() >= LOCAL_NODE_HOST_SYSTEM_RUN_MAX_ENV_ITEMS {
+        return;
+    }
+    let Some(key) = normalize_optional_text(
+        Some(raw_key.to_owned()),
+        LOCAL_NODE_HOST_SYSTEM_RUN_MAX_ENV_KEY_LEN,
+    ) else {
+        return;
+    };
+    if key.eq_ignore_ascii_case("PATH") {
+        if !ignored
+            .iter()
+            .any(|entry| entry.eq_ignore_ascii_case("PATH"))
+        {
+            ignored.push("PATH".to_owned());
+        }
+        return;
+    }
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return;
+    }
+    if !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        return;
+    }
+    if env
+        .iter()
+        .any(|(existing_key, _)| existing_key.eq_ignore_ascii_case(&key))
+    {
+        return;
+    }
+    env.push((key, raw_value.to_owned()));
+}
+
+fn local_node_host_execute_system_which(
+    node_id: &str,
+    params: Option<&Value>,
+) -> LocalNodeCommandExecution {
+    let bins = extract_local_node_host_system_which_bins(params);
+    if bins.is_empty() {
+        return local_node_command_error(
+            "LOCAL_SYSTEM_WHICH_INVALID",
+            "system.which requires params.bins (string or array)".to_owned(),
+        );
+    }
+    let mut found = serde_json::Map::new();
+    for bin in bins {
+        if let Some(path) = resolve_local_node_host_executable_path(&bin) {
+            found.insert(bin, Value::String(path));
+        }
+    }
+    local_node_command_ok(json!({
+        "ok": true,
+        "nodeId": node_id,
+        "bins": Value::Object(found),
+        "source": "local-host-runtime"
+    }))
+}
+
+fn extract_local_node_host_system_which_bins(params: Option<&Value>) -> Vec<String> {
+    let Some(object) = params.and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+
+    if let Some(value) = object.get("bins").or_else(|| object.get("bin")) {
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    if let Some(raw) = item.as_str() {
+                        push_local_node_host_system_which_bin(&mut out, raw);
+                        if out.len() >= LOCAL_NODE_HOST_SYSTEM_WHICH_MAX_BINS {
+                            break;
+                        }
+                    }
+                }
+            }
+            Value::String(raw) => push_local_node_host_system_which_bin(&mut out, raw),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn push_local_node_host_system_which_bin(out: &mut Vec<String>, raw: &str) {
+    let Some(bin) = normalize_optional_text(
+        Some(raw.to_owned()),
+        LOCAL_NODE_HOST_SYSTEM_WHICH_MAX_BIN_LEN,
+    ) else {
+        return;
+    };
+    if out.iter().any(|existing: &String| existing == &bin) {
+        return;
+    }
+    out.push(bin);
+}
+
+fn resolve_local_node_host_executable_path(bin: &str) -> Option<String> {
+    let candidate = PathBuf::from(bin);
+    if candidate.is_absolute() || bin.contains('/') || bin.contains('\\') {
+        if candidate.is_file() {
+            return Some(display_local_node_host_path(candidate));
+        }
+        return None;
+    }
+    let path_env = env::var_os("PATH")?;
+    let search_paths = env::split_paths(&path_env).collect::<Vec<_>>();
+    if cfg!(windows) {
+        let mut extensions = local_node_host_windows_path_extensions();
+        if !extensions.iter().any(|ext| ext.is_empty()) {
+            extensions.insert(0, String::new());
+        }
+        let bin_lower = bin.to_ascii_lowercase();
+        for directory in search_paths {
+            for ext in &extensions {
+                let needs_ext = !ext.is_empty() && !bin_lower.ends_with(ext.as_str());
+                let file_name = if needs_ext {
+                    format!("{bin}{ext}")
+                } else {
+                    bin.to_owned()
+                };
+                let candidate = directory.join(file_name);
+                if candidate.is_file() {
+                    return Some(display_local_node_host_path(candidate));
+                }
+            }
+        }
+        return None;
+    }
+    for directory in search_paths {
+        let candidate = directory.join(bin);
+        if candidate.is_file() {
+            return Some(display_local_node_host_path(candidate));
+        }
+    }
+    None
+}
+
+fn local_node_host_windows_path_extensions() -> Vec<String> {
+    let default = vec![
+        ".exe".to_owned(),
+        ".cmd".to_owned(),
+        ".bat".to_owned(),
+        ".com".to_owned(),
+    ];
+    let Some(raw) = env::var_os("PATHEXT") else {
+        return default;
+    };
+    let Some(text) = raw.to_str() else {
+        return default;
+    };
+    let mut out = Vec::new();
+    for value in text.split(';') {
+        let normalized = value.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        if !normalized.starts_with('.') {
+            continue;
+        }
+        if out.iter().any(|existing: &String| existing == &normalized) {
+            continue;
+        }
+        out.push(normalized);
+    }
+    if out.is_empty() {
+        default
+    } else {
+        out
+    }
+}
+
+fn display_local_node_host_path(path: PathBuf) -> String {
+    match path.canonicalize() {
+        Ok(canonical) => canonical.to_string_lossy().to_string(),
+        Err(_) => path.to_string_lossy().to_string(),
+    }
+}
+
+fn local_node_host_execute_system_notify(
+    node_id: &str,
+    params: Option<&Value>,
+) -> LocalNodeCommandExecution {
+    let params_obj = params.and_then(Value::as_object);
+    let title = params_obj
+        .and_then(|obj| {
+            obj.get("title")
+                .or_else(|| obj.get("subject"))
+                .or_else(|| obj.get("summary"))
+        })
+        .and_then(Value::as_str)
+        .and_then(|raw| {
+            normalize_optional_text(
+                Some(raw.to_owned()),
+                LOCAL_NODE_HOST_SYSTEM_NOTIFY_TITLE_MAX_CHARS,
+            )
+        })
+        .unwrap_or_else(|| "OpenClaw".to_owned());
+    let body = params_obj
+        .and_then(|obj| {
+            obj.get("body")
+                .or_else(|| obj.get("message"))
+                .or_else(|| obj.get("text"))
+        })
+        .and_then(Value::as_str)
+        .and_then(|raw| {
+            normalize_optional_text(
+                Some(raw.to_owned()),
+                LOCAL_NODE_HOST_SYSTEM_NOTIFY_BODY_MAX_CHARS,
+            )
+        })
+        .unwrap_or_default();
+    let level = params_obj
+        .and_then(|obj| obj.get("level"))
+        .and_then(Value::as_str)
+        .and_then(|raw| {
+            normalize_optional_text(
+                Some(raw.to_owned()),
+                LOCAL_NODE_HOST_SYSTEM_NOTIFY_LEVEL_MAX_CHARS,
+            )
+        })
+        .unwrap_or_else(|| "info".to_owned());
+    let priority = params_obj
+        .and_then(|obj| obj.get("priority"))
+        .and_then(Value::as_str)
+        .and_then(|raw| {
+            normalize_optional_text(
+                Some(raw.to_owned()),
+                LOCAL_NODE_HOST_SYSTEM_NOTIFY_PRIORITY_MAX_CHARS,
+            )
+        })
+        .unwrap_or_else(|| "active".to_owned());
+    let delivery = params_obj
+        .and_then(|obj| obj.get("delivery"))
+        .and_then(Value::as_str)
+        .and_then(|raw| {
+            normalize_optional_text(
+                Some(raw.to_owned()),
+                LOCAL_NODE_HOST_SYSTEM_NOTIFY_DELIVERY_MAX_CHARS,
+            )
+        })
+        .unwrap_or_else(|| "auto".to_owned());
+    let notification_id = next_local_node_notify_id();
+    local_node_command_ok(json!({
+        "ok": true,
+        "nodeId": node_id,
+        "notificationId": notification_id,
+        "title": title,
+        "body": body,
+        "level": level,
+        "priority": priority,
+        "delivery": delivery,
+        "deliveredAtMs": now_ms(),
+        "source": "local-host-runtime"
+    }))
+}
+
+fn next_local_node_notify_id() -> String {
+    let sequence = NODE_NOTIFY_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
+    format!("notify-{}-{sequence}", now_ms())
+}
+
+fn local_node_host_duration_ms_from_params(params: Option<&Value>, default: u64, max: u64) -> u64 {
+    let Some(object) = params.and_then(Value::as_object) else {
+        return default.clamp(1, max);
+    };
+    let duration_ms = object
+        .get("durationMs")
+        .or_else(|| object.get("duration_ms"))
+        .and_then(config_value_as_u64)
+        .or_else(|| {
+            object
+                .get("seconds")
+                .and_then(config_value_as_u64)
+                .map(|seconds| seconds.saturating_mul(1_000))
+        })
+        .unwrap_or(default);
+    duration_ms.clamp(1_000, max)
+}
+
+fn local_node_host_include_audio_from_params(params: Option<&Value>) -> bool {
+    let Some(object) = params.and_then(Value::as_object) else {
+        return true;
+    };
+    if let Some(include_audio) = object
+        .get("includeAudio")
+        .or_else(|| object.get("include_audio"))
+        .and_then(Value::as_bool)
+    {
+        return include_audio;
+    }
+    if let Some(no_audio) = object
+        .get("noAudio")
+        .or_else(|| object.get("no_audio"))
+        .and_then(Value::as_bool)
+    {
+        return !no_audio;
+    }
+    true
 }
 
 fn normalize_browser_node_key(value: &str) -> String {
@@ -30718,9 +31350,12 @@ mod tests {
                 "nodeId": "node-sensors-1",
                 "commands": [
                     "camera.snap",
+                    "camera.clip",
                     "screen.record",
                     "location.get",
-                    "system.run"
+                    "system.run",
+                    "system.which",
+                    "system.notify"
                 ]
             }),
         };
@@ -30744,12 +31379,29 @@ mod tests {
 
         for (idx, (command, params)) in [
             ("camera.snap", serde_json::json!({ "quality": "high" })),
+            (
+                "camera.clip",
+                serde_json::json!({ "durationMs": 1200, "includeAudio": false }),
+            ),
             ("screen.record", serde_json::json!({ "seconds": 1 })),
             ("location.get", serde_json::json!({})),
             (
                 "system.run",
                 serde_json::json!({
                     "command": "echo cp5"
+                }),
+            ),
+            (
+                "system.which",
+                serde_json::json!({
+                    "bins": [if cfg!(windows) { "cmd" } else { "sh" }]
+                }),
+            ),
+            (
+                "system.notify",
+                serde_json::json!({
+                    "title": "cp5",
+                    "body": "notify path"
                 }),
             ),
         ]
@@ -30809,7 +31461,14 @@ mod tests {
                 "nodeId": "local-node-runtime-1",
                 "displayName": "Local Host Runtime Node",
                 "caps": ["host.local"],
-                "commands": ["camera.snap", "location.get", "system.run"]
+                "commands": [
+                    "camera.snap",
+                    "camera.clip",
+                    "location.get",
+                    "system.run",
+                    "system.which",
+                    "system.notify"
+                ]
             }),
         };
         let request_id = match dispatcher.handle_request(&pair).await {
@@ -30887,6 +31546,178 @@ mod tests {
                         .pointer("/payload/result/source")
                         .and_then(Value::as_str),
                     Some("local-host-runtime")
+                );
+            }
+            _ => panic!("expected node.invoke handled"),
+        }
+
+        let invoke_camera_clip = RpcRequestFrame {
+            id: "req-local-node-runtime-camera-clip".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-runtime-1",
+                "command": "camera.clip",
+                "params": {
+                    "durationMs": 1500,
+                    "includeAudio": false
+                },
+                "idempotencyKey": "local-node-camera-clip"
+            }),
+        };
+        match dispatcher.handle_request(&invoke_camera_clip).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/format")
+                        .and_then(Value::as_str),
+                    Some("mp4")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/hasAudio")
+                        .and_then(Value::as_bool),
+                    Some(false)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/durationMs")
+                        .and_then(Value::as_u64),
+                    Some(1500)
+                );
+            }
+            _ => panic!("expected node.invoke handled"),
+        }
+
+        let invoke_which = RpcRequestFrame {
+            id: "req-local-node-runtime-system-which".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-runtime-1",
+                "command": "system.which",
+                "params": {
+                    "bins": [if cfg!(windows) { "cmd" } else { "sh" }]
+                },
+                "idempotencyKey": "local-node-system-which"
+            }),
+        };
+        match dispatcher.handle_request(&invoke_which).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                let resolved = if cfg!(windows) {
+                    payload.pointer("/payload/result/bins/cmd")
+                } else {
+                    payload.pointer("/payload/result/bins/sh")
+                };
+                assert!(
+                    resolved.and_then(Value::as_str).is_some(),
+                    "system.which should resolve a shell binary"
+                );
+            }
+            _ => panic!("expected node.invoke handled"),
+        }
+
+        let invoke_notify = RpcRequestFrame {
+            id: "req-local-node-runtime-system-notify".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-runtime-1",
+                "command": "system.notify",
+                "params": {
+                    "title": "Local Host Runtime",
+                    "body": "notification parity",
+                    "priority": "timeSensitive",
+                    "delivery": "overlay"
+                },
+                "idempotencyKey": "local-node-system-notify"
+            }),
+        };
+        match dispatcher.handle_request(&invoke_notify).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert!(payload
+                    .pointer("/payload/result/notificationId")
+                    .and_then(Value::as_str)
+                    .is_some());
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/title")
+                        .and_then(Value::as_str),
+                    Some("Local Host Runtime")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/priority")
+                        .and_then(Value::as_str),
+                    Some("timeSensitive")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/delivery")
+                        .and_then(Value::as_str),
+                    Some("overlay")
+                );
+            }
+            _ => panic!("expected node.invoke handled"),
+        }
+
+        let invoke_system_argv = RpcRequestFrame {
+            id: "req-local-node-runtime-system-run-argv".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: if cfg!(windows) {
+                serde_json::json!({
+                    "nodeId": "local-node-runtime-1",
+                    "command": "system.run",
+                    "params": {
+                        "command": ["cmd", "/C", "echo local-host-argv"],
+                        "rawCommand": "echo local-host-argv",
+                        "env": {
+                            "OPENCLAW_RS_TEST_ENV": "true",
+                            "PATH": "ignored"
+                        },
+                        "timeoutMs": 1000
+                    },
+                    "idempotencyKey": "local-node-system-run-argv"
+                })
+            } else {
+                serde_json::json!({
+                    "nodeId": "local-node-runtime-1",
+                    "command": "system.run",
+                    "params": {
+                        "command": ["sh", "-lc", "echo local-host-argv"],
+                        "rawCommand": "echo local-host-argv",
+                        "env": {
+                            "OPENCLAW_RS_TEST_ENV": "true",
+                            "PATH": "ignored"
+                        },
+                        "timeoutMs": 1000
+                    },
+                    "idempotencyKey": "local-node-system-run-argv"
+                })
+            },
+        };
+        match dispatcher.handle_request(&invoke_system_argv).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/command")
+                        .and_then(Value::as_str),
+                    Some("echo local-host-argv")
+                );
+                let stdout = payload
+                    .pointer("/payload/result/stdout")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                assert!(stdout.contains("local-host-argv"));
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/ignoredEnvKeys/0")
+                        .and_then(Value::as_str),
+                    Some("PATH")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/timeoutMs")
+                        .and_then(Value::as_u64),
+                    Some(1000)
                 );
             }
             _ => panic!("expected node.invoke handled"),
