@@ -931,6 +931,17 @@ impl RpcDispatcher {
         }
     }
 
+    pub async fn run_due_cron_jobs(&self, max_jobs: usize) -> usize {
+        let executions = self.cron.run_due_batch(max_jobs).await;
+        let mut executed = 0usize;
+        for execution in executions {
+            executed = executed.saturating_add(1);
+            self.apply_cron_execution_side_effects(&execution, CronRunMode::Due)
+                .await;
+        }
+        executed
+    }
+
     pub async fn handle_request(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
         match normalize(&req.method).as_str() {
             "connect" => self.handle_connect().await,
@@ -1038,6 +1049,41 @@ impl RpcDispatcher {
             "session.status" | "sessions.status" => self.handle_session_status(req).await,
             _ => RpcDispatchOutcome::NotHandled,
         }
+    }
+
+    async fn apply_cron_execution_side_effects(
+        &self,
+        execution: &CronRunExecution,
+        mode: CronRunMode,
+    ) {
+        if let Some(text) = execution.system_event_text.clone() {
+            self.system
+                .upsert_presence(SystemPresenceUpdate {
+                    text,
+                    device_id: None,
+                    instance_id: None,
+                    host: None,
+                    ip: None,
+                    mode: None,
+                    version: None,
+                    platform: None,
+                    device_family: None,
+                    model_identifier: None,
+                    last_input_seconds: None,
+                    reason: Some("cron".to_owned()),
+                    roles: Vec::new(),
+                    scopes: Vec::new(),
+                    tags: vec!["cron".to_owned()],
+                })
+                .await;
+        }
+        self.system
+            .log_line(format!(
+                "cron.run id={} mode={}",
+                execution.entry.job_id,
+                mode.as_str()
+            ))
+            .await;
     }
 
     pub async fn record_decision(&self, request: &ActionRequest, decision: &Decision) {
@@ -2035,28 +2081,7 @@ impl RpcDispatcher {
                 return RpcDispatchOutcome::bad_request(message);
             }
         };
-        if let Some(text) = run.system_event_text {
-            self.system
-                .upsert_presence(SystemPresenceUpdate {
-                    text,
-                    device_id: None,
-                    instance_id: None,
-                    host: None,
-                    ip: None,
-                    mode: None,
-                    version: None,
-                    platform: None,
-                    device_family: None,
-                    model_identifier: None,
-                    last_input_seconds: None,
-                    reason: Some("cron".to_owned()),
-                    roles: Vec::new(),
-                    scopes: Vec::new(),
-                    tags: vec!["cron".to_owned()],
-                })
-                .await;
-        }
-        self.system.log_line(format!("cron.run id={job_id}")).await;
+        self.apply_cron_execution_side_effects(&run, mode).await;
         RpcDispatchOutcome::Handled(json!(run.entry))
     }
 
@@ -6557,6 +6582,15 @@ enum CronRunMode {
     Force,
 }
 
+impl CronRunMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Due => "due",
+            Self::Force => "force",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CronRunExecution {
     entry: CronRunLogEntry,
@@ -6989,6 +7023,49 @@ impl CronRegistry {
             entry,
             system_event_text,
         })
+    }
+
+    async fn run_due_batch(&self, limit: usize) -> Vec<CronRunExecution> {
+        let max_jobs = limit.max(1);
+        let due_job_ids = self.due_job_ids(now_ms(), max_jobs).await;
+        let mut executions = Vec::with_capacity(due_job_ids.len());
+        for job_id in due_job_ids {
+            let Ok(execution) = self.run(&job_id, CronRunMode::Due).await else {
+                continue;
+            };
+            if matches!(
+                execution.entry.status.as_ref(),
+                Some(CronRunStatus::Skipped)
+            ) {
+                continue;
+            }
+            executions.push(execution);
+        }
+        executions
+    }
+
+    async fn due_job_ids(&self, now: u64, limit: usize) -> Vec<String> {
+        let max_jobs = limit.max(1);
+        let guard = self.state.lock().await;
+        let mut due_jobs = guard
+            .jobs
+            .values()
+            .filter(|job| job.enabled)
+            .filter_map(|job| {
+                job.state
+                    .next_run_at_ms
+                    .filter(|next_run_at_ms| *next_run_at_ms <= now)
+                    .map(|next_run_at_ms| (next_run_at_ms, job.id.clone()))
+            })
+            .collect::<Vec<_>>();
+        due_jobs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        if due_jobs.len() > max_jobs {
+            due_jobs.truncate(max_jobs);
+        }
+        due_jobs
+            .into_iter()
+            .map(|(_, job_id)| job_id)
+            .collect::<Vec<_>>()
     }
 
     async fn runs(
@@ -9026,7 +9103,32 @@ impl ChannelRuntimeRegistry {
             .collect::<Vec<_>>();
         let inferred_channel = infer_channel_from_event(event, &known_channels);
         let inferred_payload_channel = infer_channel_from_payload(payload);
+        let lifecycle_event = classify_channel_lifecycle_event(event);
         let mut guard = self.state.lock().await;
+
+        if let Some(lifecycle_event) = lifecycle_event {
+            if let Some(channel) = inferred_channel
+                .as_deref()
+                .or(inferred_payload_channel.as_deref())
+            {
+                let account_id = payload
+                    .as_object()
+                    .and_then(|map| {
+                        map.get("accountId")
+                            .or_else(|| map.get("account_id"))
+                            .or_else(|| map.get("account"))
+                    })
+                    .and_then(value_as_account_id)
+                    .unwrap_or_else(|| "default".to_owned());
+                apply_channel_lifecycle_event(
+                    &mut guard,
+                    channel,
+                    account_id.as_str(),
+                    lifecycle_event,
+                    payload,
+                );
+            }
+        }
 
         if event.ends_with(".message") {
             if let Some(channel) = inferred_channel
@@ -9379,6 +9481,85 @@ fn ingest_accounts_value(
 
 fn canonicalize_runtime_channel_id(channel: &str) -> String {
     normalize_channel_id(Some(channel)).unwrap_or_else(|| normalize(channel))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChannelLifecycleEvent {
+    Connected,
+    Disconnected,
+    Reconnecting,
+    Error,
+}
+
+fn classify_channel_lifecycle_event(event: &str) -> Option<ChannelLifecycleEvent> {
+    let normalized = normalize(event);
+    let suffix = normalized.rsplit('.').next().unwrap_or(normalized.as_str());
+    match suffix {
+        "connected" | "ready" | "started" | "online" => Some(ChannelLifecycleEvent::Connected),
+        "disconnected" | "stopped" | "offline" => Some(ChannelLifecycleEvent::Disconnected),
+        "reconnecting" | "reconnect" | "retrying" => Some(ChannelLifecycleEvent::Reconnecting),
+        "error" | "failed" | "failure" => Some(ChannelLifecycleEvent::Error),
+        _ => None,
+    }
+}
+
+fn apply_channel_lifecycle_event(
+    state: &mut ChannelRuntimeState,
+    channel: &str,
+    account_id: &str,
+    lifecycle: ChannelLifecycleEvent,
+    payload: &Value,
+) {
+    let account = state.account_mut(channel, account_id);
+    let ts = now_ms();
+    match lifecycle {
+        ChannelLifecycleEvent::Connected => {
+            account.connected = Some(true);
+            account.running = Some(true);
+            account.last_connected_at = Some(ts);
+            account.last_start_at = account.last_start_at.or(Some(ts));
+            account.last_error = None;
+        }
+        ChannelLifecycleEvent::Disconnected => {
+            account.connected = Some(false);
+            account.running = Some(false);
+            account.last_stop_at = Some(ts);
+        }
+        ChannelLifecycleEvent::Reconnecting => {
+            account.connected = Some(false);
+            account.running = Some(true);
+            account.reconnect_attempts = Some(account.reconnect_attempts.unwrap_or(0) + 1);
+            account.last_stop_at = Some(ts);
+            if let Some(last_error) = lifecycle_last_error(payload) {
+                account.last_error = Some(last_error);
+            }
+        }
+        ChannelLifecycleEvent::Error => {
+            account.connected = Some(false);
+            account.running = Some(false);
+            account.last_stop_at = Some(ts);
+            if let Some(last_error) = lifecycle_last_error(payload) {
+                account.last_error = Some(last_error);
+            }
+        }
+    }
+}
+
+fn lifecycle_last_error(payload: &Value) -> Option<String> {
+    let map = payload.as_object()?;
+    let value = map
+        .get("error")
+        .or_else(|| map.get("message"))
+        .or_else(|| map.get("reason"))
+        .or_else(|| map.get("details"))?;
+    match value {
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            (!trimmed.is_empty()).then_some(trimmed.to_owned())
+        }
+        Value::Null => None,
+        _ => Some(value.to_string()),
+    }
 }
 
 fn infer_channel_from_payload(payload: &Value) -> Option<String> {
@@ -19943,6 +20124,299 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_channels_status_tracks_lifecycle_event_suffixes() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "signal-cli.connected",
+                "payload": {
+                    "accountId": "ops"
+                }
+            }))
+            .await;
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "signal-cli.reconnecting",
+                "payload": {
+                    "accountId": "ops",
+                    "reason": "socket reset"
+                }
+            }))
+            .await;
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "signal-cli.error",
+                "payload": {
+                    "accountId": "ops",
+                    "error": "link dropped"
+                }
+            }))
+            .await;
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "signal-cli.disconnected",
+                "payload": {
+                    "accountId": "ops"
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-lifecycle-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/signal")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/lastConnectedAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/reconnectAttempts")
+                        .and_then(serde_json::Value::as_u64),
+                    Some(1)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/lastError")
+                        .and_then(serde_json::Value::as_str),
+                    Some("link dropped")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(false)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/running")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(false)
+                );
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/signal/0/lastStopAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channel_acceptance_canary_covers_wave_channels() {
+        let scenarios = [
+            ("telegram", "tg", "acct-telegram"),
+            ("whatsapp", "wa", "acct-whatsapp"),
+            ("discord", "discord", "acct-discord"),
+            ("slack", "slack", "acct-slack"),
+            ("signal", "signal-cli", "acct-signal"),
+            ("webchat", "web-chat", "default"),
+            ("bluebubbles", "bb", "acct-bluebubbles"),
+            ("googlechat", "gchat", "acct-googlechat"),
+            ("msteams", "teams", "acct-msteams"),
+            ("matrix", "matrix", "acct-matrix"),
+            ("zalo", "zl", "acct-zalo"),
+            ("zalouser", "zlu", "acct-zalouser"),
+            ("irc", "internet-relay-chat", "acct-irc"),
+            ("imessage", "imsg", "acct-imessage"),
+            ("feishu", "lark", "acct-feishu"),
+            ("mattermost", "mattermost", "acct-mattermost"),
+            ("line", "line", "acct-line"),
+            ("nextcloud-talk", "nc-talk", "acct-nextcloud"),
+            ("nostr", "nostr", "acct-nostr"),
+            ("tlon", "urbit", "acct-tlon"),
+        ];
+
+        for (index, (canonical, alias, account_id)) in scenarios.iter().enumerate() {
+            let dispatcher = RpcDispatcher::new();
+            dispatcher
+                .ingest_event_frame(&serde_json::json!({
+                    "type": "event",
+                    "event": format!("{alias}.connected"),
+                    "payload": {
+                        "accountId": account_id
+                    }
+                }))
+                .await;
+
+            let status_before_send = RpcRequestFrame {
+                id: format!("req-channels-acceptance-status-before-send-{canonical}"),
+                method: "channels.status".to_owned(),
+                params: serde_json::json!({
+                    "probe": false
+                }),
+            };
+            let payload = match dispatcher.handle_request(&status_before_send).await {
+                RpcDispatchOutcome::Handled(payload) => payload,
+                _ => panic!("expected channels.status handled"),
+            };
+            assert_eq!(
+                payload
+                    .pointer(&format!("/channelAccounts/{canonical}/0/accountId"))
+                    .and_then(serde_json::Value::as_str),
+                Some(*account_id),
+                "account id mismatch for channel={canonical} alias={alias}"
+            );
+            assert_eq!(
+                payload
+                    .pointer(&format!("/channels/{canonical}/connected"))
+                    .and_then(serde_json::Value::as_bool),
+                Some(true),
+                "connected lifecycle mismatch for channel={canonical} alias={alias}"
+            );
+            assert_eq!(
+                payload
+                    .pointer(&format!("/channels/{canonical}/running"))
+                    .and_then(serde_json::Value::as_bool),
+                Some(true),
+                "running lifecycle mismatch for channel={canonical} alias={alias}"
+            );
+
+            let send_outcome = if canonical.eq_ignore_ascii_case("webchat") {
+                let send = RpcRequestFrame {
+                    id: format!("req-channels-acceptance-chat-send-{canonical}"),
+                    method: "chat.send".to_owned(),
+                    params: serde_json::json!({
+                        "sessionKey": "main",
+                        "message": format!("cp4 canary {canonical}"),
+                        "idempotencyKey": format!("cp4-canary-chat-{index}")
+                    }),
+                };
+                dispatcher.handle_request(&send).await
+            } else {
+                let send = RpcRequestFrame {
+                    id: format!("req-channels-acceptance-send-{canonical}"),
+                    method: "send".to_owned(),
+                    params: serde_json::json!({
+                        "to": format!("peer-{canonical}"),
+                        "channel": alias,
+                        "accountId": account_id,
+                        "message": format!("cp4 canary {canonical}"),
+                        "idempotencyKey": format!("cp4-canary-send-{index}")
+                    }),
+                };
+                dispatcher.handle_request(&send).await
+            };
+
+            match send_outcome {
+                RpcDispatchOutcome::Handled(payload) => {
+                    if !canonical.eq_ignore_ascii_case("webchat") {
+                        assert_eq!(
+                            payload
+                                .pointer("/channel")
+                                .and_then(serde_json::Value::as_str),
+                            Some(*canonical),
+                            "send canonical channel mismatch for alias={alias}"
+                        );
+                    }
+                }
+                _ => panic!("expected send/chat.send handled"),
+            }
+
+            let status_after_send = RpcRequestFrame {
+                id: format!("req-channels-acceptance-status-after-send-{canonical}"),
+                method: "channels.status".to_owned(),
+                params: serde_json::json!({
+                    "probe": false
+                }),
+            };
+            let payload = match dispatcher.handle_request(&status_after_send).await {
+                RpcDispatchOutcome::Handled(payload) => payload,
+                _ => panic!("expected channels.status handled"),
+            };
+            assert!(
+                payload
+                    .pointer(&format!("/channelAccounts/{canonical}/0/lastOutboundAt"))
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0)
+                    > 0,
+                "lastOutboundAt missing for channel={canonical} alias={alias}"
+            );
+
+            let logout = RpcRequestFrame {
+                id: format!("req-channels-acceptance-logout-{canonical}"),
+                method: "channels.logout".to_owned(),
+                params: serde_json::json!({
+                    "channel": alias,
+                    "accountId": account_id
+                }),
+            };
+            match dispatcher.handle_request(&logout).await {
+                RpcDispatchOutcome::Handled(payload) => {
+                    assert_eq!(
+                        payload
+                            .pointer("/channel")
+                            .and_then(serde_json::Value::as_str),
+                        Some(*canonical),
+                        "logout canonical channel mismatch for alias={alias}"
+                    );
+                    assert_eq!(
+                        payload
+                            .pointer("/loggedOut")
+                            .and_then(serde_json::Value::as_bool),
+                        Some(true),
+                        "logout activity mismatch for channel={canonical}"
+                    );
+                }
+                _ => panic!("expected channels.logout handled"),
+            }
+
+            let status_after_logout = RpcRequestFrame {
+                id: format!("req-channels-acceptance-status-after-logout-{canonical}"),
+                method: "channels.status".to_owned(),
+                params: serde_json::json!({
+                    "probe": false
+                }),
+            };
+            let payload = match dispatcher.handle_request(&status_after_logout).await {
+                RpcDispatchOutcome::Handled(payload) => payload,
+                _ => panic!("expected channels.status handled"),
+            };
+            assert_eq!(
+                payload
+                    .pointer(&format!("/channels/{canonical}/connected"))
+                    .and_then(serde_json::Value::as_bool),
+                Some(false),
+                "connected after logout mismatch for channel={canonical}"
+            );
+            assert_eq!(
+                payload
+                    .pointer(&format!("/channels/{canonical}/running"))
+                    .and_then(serde_json::Value::as_bool),
+                Some(false),
+                "running after logout mismatch for channel={canonical}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn dispatcher_channels_status_ingests_snake_case_runtime_maps() {
         let dispatcher = RpcDispatcher::new();
         dispatcher
@@ -24611,6 +25085,87 @@ mod tests {
         };
         let out = dispatcher.handle_request(&invalid_webhook).await;
         assert!(matches!(out, RpcDispatchOutcome::Error { code: 400, .. }));
+    }
+
+    #[tokio::test]
+    async fn dispatcher_runs_due_cron_jobs_without_manual_cron_run_calls() {
+        let dispatcher = RpcDispatcher::new();
+
+        let add = RpcRequestFrame {
+            id: "req-cron-due-add".to_owned(),
+            method: "cron.add".to_owned(),
+            params: serde_json::json!({
+                "name": "Due system event",
+                "enabled": true,
+                "schedule": {
+                    "kind": "every",
+                    "everyMs": 60_000
+                },
+                "sessionTarget": "main",
+                "wakeMode": "next-heartbeat",
+                "payload": {
+                    "kind": "systemEvent",
+                    "text": "cron due event"
+                }
+            }),
+        };
+
+        let job_id = match dispatcher.handle_request(&add).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/id")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("cron job id"),
+            _ => panic!("expected cron.add handled"),
+        };
+
+        assert_eq!(dispatcher.run_due_cron_jobs(4).await, 1);
+        assert_eq!(dispatcher.run_due_cron_jobs(4).await, 0);
+
+        let runs = RpcRequestFrame {
+            id: "req-cron-due-runs".to_owned(),
+            method: "cron.runs".to_owned(),
+            params: serde_json::json!({
+                "id": job_id,
+                "limit": 10
+            }),
+        };
+        let out = dispatcher.handle_request(&runs).await;
+        match out {
+            RpcDispatchOutcome::Handled(payload) => {
+                let entries = payload
+                    .pointer("/entries")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                assert_eq!(entries.len(), 1);
+                assert_eq!(
+                    entries[0]
+                        .pointer("/status")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ok")
+                );
+            }
+            _ => panic!("expected cron.runs handled"),
+        }
+
+        let presence = RpcRequestFrame {
+            id: "req-cron-due-presence".to_owned(),
+            method: "system-presence".to_owned(),
+            params: serde_json::json!({}),
+        };
+        let out = dispatcher.handle_request(&presence).await;
+        match out {
+            RpcDispatchOutcome::Handled(payload) => {
+                let entries = payload.as_array().cloned().unwrap_or_default();
+                assert!(entries.iter().any(|entry| {
+                    entry.pointer("/reason").and_then(serde_json::Value::as_str) == Some("cron")
+                        && entry.pointer("/text").and_then(serde_json::Value::as_str)
+                            == Some("cron due event")
+                }));
+            }
+            _ => panic!("expected system-presence handled"),
+        }
     }
 
     #[tokio::test]

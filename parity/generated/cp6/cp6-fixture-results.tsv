@@ -1,9 +1,9 @@
 test	duration_ms	status
-gateway::tests::dispatcher_models_list_returns_catalog_and_rejects_unknown_params	591	pass
-gateway::tests::dispatcher_patch_model_normalizes_provider_aliases_and_failover_provider_rules	549	pass
-gateway::tests::dispatcher_patch_model_clears_auth_profile_override_fields	523	pass
-gateway::tests::dispatcher_agent_runtime_failover_uses_fallback_provider_on_profile_cooldown	568	pass
-gateway::tests::dispatcher_compact_rotates_auto_auth_profile_override	514	pass
-gateway::tests::model_provider_failover_chain_normalizes_aliases	581	pass
-security::tool_policy::tests::provider_specific_rule_is_applied_after_global_policy	536	pass
-security::tool_policy::tests::provider_model_specific_rule_beats_provider_fallback	538	pass
+gateway::tests::dispatcher_models_list_returns_catalog_and_rejects_unknown_params	475	pass
+gateway::tests::dispatcher_patch_model_normalizes_provider_aliases_and_failover_provider_rules	455	pass
+gateway::tests::dispatcher_patch_model_clears_auth_profile_override_fields	369	pass
+gateway::tests::dispatcher_agent_runtime_failover_uses_fallback_provider_on_profile_cooldown	381	pass
+gateway::tests::dispatcher_compact_rotates_auto_auth_profile_override	409	pass
+gateway::tests::model_provider_failover_chain_normalizes_aliases	376	pass
+security::tool_policy::tests::provider_specific_rule_is_applied_after_global_policy	385	pass
+security::tool_policy::tests::provider_model_specific_rule_beats_provider_fallback	441	pass

@@ -63,9 +63,11 @@ $tests = @(
   "gateway::tests::dispatcher_channels_status_ingests_runtime_display_name_alias",
   "gateway::tests::dispatcher_channels_status_ingests_snake_case_extended_metadata_fields",
   "gateway::tests::dispatcher_channels_status_parses_allow_from_string_list",
+  "gateway::tests::dispatcher_channels_status_tracks_lifecycle_event_suffixes",
   "gateway::tests::dispatcher_send_accepts_wave2_channel_aliases",
   "gateway::tests::dispatcher_send_accepts_wave3_channel_aliases",
   "gateway::tests::dispatcher_send_accepts_wave4_channel_aliases",
+  "gateway::tests::dispatcher_channel_acceptance_canary_covers_wave_channels",
   "gateway::tests::dispatcher_channels_status_accepts_numeric_channel_default_account_id_map_values",
   "gateway::tests::dispatcher_channels_status_accepts_numeric_payload_default_account_id",
   "gateway::tests::dispatcher_channels_status_accepts_numeric_nested_default_account_id",
@@ -144,7 +146,7 @@ $metrics = [ordered]@{
 $metrics | ConvertTo-Json -Depth 5 | Set-Content -Path $metricsFile -Encoding utf8
 
 $summary = @(
-  "## CP4 Channel Runtime Wave-1/Wave-2/Wave-3/Wave-4 Foundation Gate",
+  "## CP4 Channel Runtime Wave-1/Wave-2/Wave-3/Wave-4 Acceptance + Canary Gate",
   "",
   "- Fixtures passed: $passed/$totalFixtures",
   "- Total duration: $totalDurationMs ms",

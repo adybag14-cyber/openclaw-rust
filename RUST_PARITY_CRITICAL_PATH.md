@@ -1,21 +1,22 @@
 # Rust End-to-End Parity Critical Path
 
-Date: February 19, 2026
+Date: February 20, 2026
 Repo: `adybag14-cyber/openclaw-rust`
 
 ## Current Baseline (Evidence-Based)
 
-- Overall completion estimate toward true end-to-end Rust replacement: **~56%**
-- Remaining gap: **~44%**
+- Overall completion estimate toward true end-to-end Rust replacement: **~68%**
+- Remaining gap: **~32%**
 - Rust feature-audit status counts:
-  - `Implemented`: 9
-  - `Partial`: 9
-  - `Deferred`: 3
+  - `Implemented`: 11
+  - `Partial`: 11
+  - `Deferred`: 0
   - Source: `OPENCLAW_FEATURE_AUDIT.md`
-- Rust gateway method surface: **101** supported RPC methods
+- Rust gateway method surface: **103** supported RPC methods
   - Source: `src/gateway.rs` (`SUPPORTED_RPC_METHODS`)
 - Current validation depth:
-  - 139 tests pass with `sqlite-state`
+  - 239 tests pass (default)
+  - 242 tests pass with `sqlite-state`
   - Full matrix passing (`fmt`, `test`, `clippy`, `release`, `sqlite-state` variants)
 
 ## Definition of Done (100%)
@@ -133,7 +134,7 @@ Exit gates:
 - Channel acceptance suite green per migrated channel.
 - Canary chat behavior matches TS reference runs.
 
-Status: **Partial (Wave-1 foundations + runtime lifecycle snapshot ingestion implemented, Wave-2 channel registry/canonicalization foundations for `bluebubbles`, `googlechat`, `msteams`, `matrix`, `zalo`, and `zalouser`, Wave-3 core registry/canonicalization foundations for `irc` + `imessage`, and Wave-3 extension tranche foundations for `feishu`, `mattermost`, `line`, `nextcloud-talk`, `nostr`, and `tlon`; channel acceptance/canary parity pending)**
+Status: **Completed (Gate Achieved: wave-1/wave-2/wave-3/wave-4 channel acceptance + canary fixtures now validate alias canonicalization, lifecycle event suffix ingestion, outbound activity updates, and logout transitions across all migrated channels)**
 
 ## CP5: Nodes, Browser, Canvas, Device Flows
 
@@ -196,7 +197,7 @@ Exit gates:
 - Security suite has no critical findings.
 - Rust is default runtime in production; TS path decommissioned.
 
-Status: **Completed (Gate Achieved: reliability/security fixtures, benchmark artifact metrics, and cutover runbook validation)**
+Status: **Completed (Gate Achieved: reliability/security fixtures, benchmark artifact metrics, cutover runbook validation, and standalone bounded auto due-cron execution)**
 
 ## Progress Scorecard Template
 
@@ -206,9 +207,9 @@ Use this checklist for active tracking:
 - [x] CP1 complete
 - [x] CP2 complete
 - [x] CP3 complete
-- [ ] CP4 complete (Wave 1)
-- [ ] CP4 complete (Wave 2)
-- [ ] CP4 complete (Wave 3)
+- [x] CP4 complete (Wave 1)
+- [x] CP4 complete (Wave 2)
+- [x] CP4 complete (Wave 3)
 - [x] CP5 complete
 - [x] CP6 complete
 - [x] CP7 complete
@@ -230,6 +231,6 @@ Use this checklist for active tracking:
 
 ## Immediate Next Actions (Start Here)
 
-1. Complete CP4 Wave-1 transport lifecycle + webhook ingress acceptance/canary parity on Telegram, WhatsApp, Discord, Slack, Signal, and WebChat.
-2. Expand CP4 Wave-2 runtime behavior parity beyond registry/canonicalization into transport/webhook acceptance fixtures for BlueBubbles, Google Chat, Teams, Matrix, Zalo, and Zalo Personal.
-3. Advance CP4 Wave-3 extension channel adapters toward parity and validate against canary behavior baselines.
+1. Close the remaining `Partial` subsystem depth in `OPENCLAW_FEATURE_AUDIT.md` (durable gateway replacement semantics, tool runtime breadth, node/device host runtime coverage, and voice I/O runtime depth).
+2. Expand differential replay coverage so each remaining partial subsystem has corpus-backed side-effect assertions (not only payload-shape parity).
+3. Extend dockerized validation from parity-smoke into a broader multi-service/multi-event matrix with failure-injection scenarios and artifact trend tracking.

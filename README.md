@@ -90,6 +90,7 @@ systemctl --user status openclaw-agent-rs.service
 - Applies the same strict label-length validation to `sessions.list` and `sessions.resolve` filters.
 - Responds to gateway introspection RPCs (`health`, `status`) with runtime/session metadata.
 - Responds to usage RPCs (`usage.status`, `usage.cost`) with Rust-side aggregate usage/cost placeholder summaries.
+- Runs due cron jobs automatically in standalone mode with a bounded in-process tick worker (no explicit `cron.run` call required for due schedules).
 - Tracks session metadata (`label`, `spawnedBy`) via `sessions.patch` and uses it for filtered `sessions.resolve` lookups.
 - Supports `sessions.usage` range inputs (`startDate`, `endDate`) and optional `includeContextWeight` output hints.
 - Extends `sessions.usage` response parity with `updatedAt`, `startDate`/`endDate`, totals, action rollups, and aggregate placeholder sections (`messages`, `tools`, `byAgent`, `byChannel`).
@@ -234,7 +235,7 @@ CP3 tool-runtime parity gate (`profile/allow/deny/byProvider` + loop guard + tra
 .\scripts\parity\run-cp3-gate.ps1
 ```
 
-CP4 channel-runtime wave-1/wave-2/wave-3/wave-4 foundation gate (registry + normalization + mention/chunk/retry parity helpers):
+CP4 channel-runtime wave-1/wave-2/wave-3/wave-4 acceptance + canary gate (registry + normalization + mention/chunk/retry + lifecycle/event parity helpers):
 
 ```powershell
 .\scripts\parity\run-cp4-gate.ps1

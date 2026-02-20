@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
-use tokio::time::timeout;
+use tokio::time::{timeout, MissedTickBehavior};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
@@ -108,6 +108,8 @@ const EVENT_SCOPE_PAIRING: &[&str] = &[
     "node.pair.requested",
     "node.pair.resolved",
 ];
+const CRON_DUE_TICK_INTERVAL_MS: u64 = 250;
+const CRON_DUE_MAX_BATCH: usize = 32;
 
 #[derive(Clone)]
 pub struct GatewayServer {
@@ -246,6 +248,7 @@ impl GatewayServer {
             evaluator,
             broadcaster: GatewayBroadcaster::new(),
         });
+        let cron_due_task = self.spawn_cron_due_task(state.rpc.clone());
 
         tokio::pin!(shutdown);
         loop {
@@ -276,6 +279,8 @@ impl GatewayServer {
             task.abort();
             let _ = task.await;
         }
+        cron_due_task.abort();
+        let _ = cron_due_task.await;
         Ok(())
     }
 
@@ -311,6 +316,21 @@ impl GatewayServer {
                 }
             }
         }))
+    }
+
+    fn spawn_cron_due_task(&self, rpc: Arc<RpcDispatcher>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_millis(CRON_DUE_TICK_INTERVAL_MS));
+            interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                let executed = rpc.run_due_cron_jobs(CRON_DUE_MAX_BATCH).await;
+                if executed > 0 {
+                    debug!("standalone gateway auto-ran {executed} due cron jobs");
+                }
+            }
+        })
     }
 }
 
@@ -1147,6 +1167,99 @@ mod tests {
         assert_eq!(
             node_allowed_json.pointer("/id").and_then(Value::as_str),
             Some("node-bins")
+        );
+
+        let _ = shutdown_tx.send(());
+        task.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn standalone_gateway_runs_due_cron_jobs_automatically() -> Result<()> {
+        let bind = reserve_bind()?;
+        let gateway = test_gateway(bind.clone());
+        let server = GatewayServer::new(
+            gateway,
+            "security.decision".to_owned(),
+            64,
+            SessionQueueMode::Followup,
+            GroupActivationMode::Always,
+        );
+        let evaluator: Arc<dyn ActionEvaluator> = Arc::new(AllowEvaluator);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            server
+                .run_until(evaluator, None, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let url = format!("ws://{bind}");
+        let mut ws = ws_connect(&url, "operator", &["operator.admin"], "cp1-token").await?;
+
+        let add_req = json!({
+            "type": "req",
+            "id": "cron-add-auto-1",
+            "method": "cron.add",
+            "params": {
+                "name": "Auto due cron",
+                "schedule": {
+                    "kind": "every",
+                    "everyMs": 60_000
+                },
+                "sessionTarget": "main",
+                "wakeMode": "next-heartbeat",
+                "payload": {
+                    "kind": "systemEvent",
+                    "text": "cron auto due"
+                }
+            }
+        });
+        ws.send(Message::Text(add_req.to_string())).await?;
+        let add_resp = ws
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("missing cron.add response"))??;
+        let add_json: Value = serde_json::from_str(add_resp.to_text()?)?;
+        let job_id = add_json
+            .pointer("/result/id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("missing cron job id"))?;
+
+        let mut observed = false;
+        for _ in 0..20 {
+            let runs_req = json!({
+                "type": "req",
+                "id": "cron-runs-auto-1",
+                "method": "cron.runs",
+                "params": {
+                    "id": job_id.clone(),
+                    "limit": 5
+                }
+            });
+            ws.send(Message::Text(runs_req.to_string())).await?;
+            let runs_resp = ws
+                .next()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("missing cron.runs response"))??;
+            let runs_json: Value = serde_json::from_str(runs_resp.to_text()?)?;
+            let entries = runs_json
+                .pointer("/result/entries")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if !entries.is_empty() {
+                observed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            observed,
+            "expected due cron job to run automatically in standalone mode"
         );
 
         let _ = shutdown_tx.send(());

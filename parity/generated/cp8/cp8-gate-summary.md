@@ -4,9 +4,9 @@
 - Reliability fixtures: 6
 - Security fixtures: 4
 - Benchmark fixtures: 1
-- Total duration: 13822 ms
-- Avg fixture duration: 1256 ms
-- Benchmark latency(us): p50=31, p95=55, p99=102, throughput=21931.14 ops/s, rssKiB=None
+- Total duration: 8847 ms
+- Avg fixture duration: 804 ms
+- Benchmark latency(us): p50=19, p95=61, p99=81, throughput=27968.97 ops/s, rssKiB=null
 - Cutover runbook validated: parity/CP8_CUTOVER_RUNBOOK.md
 - Artifact log: cp8-gate.log
 - Artifact metrics: cp8-metrics.json
