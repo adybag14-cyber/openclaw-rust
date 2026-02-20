@@ -1,0 +1,4 @@
+parity/generated/**
+parity/manifest/**
+parity/method-surface-report.md
+tests/parity/*.json

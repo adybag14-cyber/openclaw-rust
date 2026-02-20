@@ -17,7 +17,7 @@ What is implemented now:
 - Typed session-key parsing (`main`, `direct`, `group`, `channel`, `cron`, `hook`, `node`).
 - Typed protocol frame foundation (`req`/`resp`/`event` classification).
 - Gateway RPC parity scaffold for `sessions.list`, `sessions.preview`, `sessions.patch`, `sessions.resolve`, `sessions.reset`, `sessions.delete`, `sessions.compact`, `sessions.usage`, `sessions.usage.timeseries`, `sessions.usage.logs`, `sessions.history`, `sessions.send`, and `session.status`.
-- Channel adapter scaffold (`telegram`, `whatsapp`, `discord`, `irc`, `slack`, `signal`, `imessage`, `webchat`, `bluebubbles`, `googlechat`, `msteams`, `matrix`, `zalo`, `zalouser`, generic) with wave-1/wave-2/wave-3 channel-runtime helpers (chat-type normalization, mention gating, chunking, retry/backoff, alias canonicalization) and event-driven runtime snapshot ingestion for `channels.status`.
+- Channel adapter scaffold (`telegram`, `whatsapp`, `discord`, `irc`, `slack`, `signal`, `imessage`, `webchat`, `bluebubbles`, `googlechat`, `msteams`, `matrix`, `zalo`, `zalouser`, `feishu`, `mattermost`, `line`, `nextcloud-talk`, `nostr`, `tlon`, generic) with wave-1/wave-2/wave-3/wave-4 channel-runtime helpers (chat-type normalization, mention gating, chunking, retry/backoff, alias canonicalization) and event-driven runtime snapshot ingestion for `channels.status`.
 
 This is intentionally phase 1: it keeps feature coverage by integrating with the
 existing Gateway protocol while replacing high-risk runtime and guardrail logic
@@ -234,7 +234,7 @@ CP3 tool-runtime parity gate (`profile/allow/deny/byProvider` + loop guard + tra
 .\scripts\parity\run-cp3-gate.ps1
 ```
 
-CP4 channel-runtime wave-1/wave-2/wave-3 foundation gate (registry + normalization + mention/chunk/retry parity helpers):
+CP4 channel-runtime wave-1/wave-2/wave-3/wave-4 foundation gate (registry + normalization + mention/chunk/retry parity helpers):
 
 ```powershell
 .\scripts\parity\run-cp4-gate.ps1

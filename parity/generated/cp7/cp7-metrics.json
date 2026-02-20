@@ -2,7 +2,7 @@
   "gate": "cp7",
   "passed": 9,
   "totalFixtures": 9,
-  "totalDurationMs": 5865,
-  "avgFixtureDurationMs": 652,
+  "totalDurationMs": 5003,
+  "avgFixtureDurationMs": 556,
   "resultsTsv": "cp7-fixture-results.tsv"
 }

@@ -1,7 +1,7 @@
-## CP4 Channel Runtime Wave-1/Wave-2/Wave-3 Foundation Gate
+## CP4 Channel Runtime Wave-1/Wave-2/Wave-3/Wave-4 Foundation Gate
 
-- Fixtures passed: 56/56
-- Total duration: 64435 ms
-- Avg fixture duration: 1151 ms
+- Fixtures passed: 62/62
+- Total duration: 46183 ms
+- Avg fixture duration: 744 ms
 - Artifact log: cp4-gate.log
 - Artifact metrics: cp4-metrics.json

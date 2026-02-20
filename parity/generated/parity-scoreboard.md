@@ -1,13 +1,13 @@
 # Parity Scoreboard
 
-Generated (UTC): 2026-02-19T21:52:49.8748797Z
+Generated (UTC): deterministic
 
 ## Current Snapshot
 
 | Metric | Value |
 | --- | ---: |
-| Audit Implemented | 9 |
-| Audit Partial | 12 |
+| Audit Implemented | 11 |
+| Audit Partial | 11 |
 | Audit Deferred | 0 |
 | Audit Not Started | 0 |
 | Rust RPC Methods | 103 |
@@ -20,8 +20,8 @@ Generated (UTC): 2026-02-19T21:52:49.8748797Z
 
 | Metric | Delta |
 | --- | ---: |
-| Implemented | 0 |
-| Partial | +3 |
+| Implemented | +2 |
+| Partial | +2 |
 | Deferred | -3 |
 | Not Started | 0 |
 | Rust RPC Methods | +2 |
@@ -32,7 +32,8 @@ Generated (UTC): 2026-02-19T21:52:49.8748797Z
 
 ## Subsystem Status Deltas
 
-- Model/provider layer: Deferred -> Partial
+- CLI + control surface:  -> Implemented
+- Model/provider layer: Deferred -> Implemented
 - Nodes + device features: Deferred -> Partial
 - Tool execution layer: Deferred -> Partial
 

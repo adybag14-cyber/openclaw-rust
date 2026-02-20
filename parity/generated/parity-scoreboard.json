@@ -22,9 +22,9 @@
     },
     "audit": {
       "counts": {
-        "total": 21,
-        "implemented": 9,
-        "partial": 12,
+        "total": 22,
+        "implemented": 11,
+        "partial": 11,
         "deferred": 0,
         "notStarted": 0,
         "unknown": 0
@@ -38,7 +38,8 @@
         "Tool execution layer": "Partial",
         "Nodes + device features": "Partial",
         "Voice stack": "Partial",
-        "Model/provider layer": "Partial",
+        "Model/provider layer": "Implemented",
+        "CLI + control surface": "Implemented",
         "Prompt-injection defense": "Implemented",
         "Command safety defense": "Implemented",
         "Host integrity defense": "Implemented",
@@ -52,14 +53,13 @@
         "Test coverage (Rust)": "Partial",
         "Dockerized validation": "Partial"
       }
-    },
-    "generatedAtUtc": "2026-02-19T21:52:49.8748797Z"
+    }
   },
   "baselinePresent": true,
   "delta": {
     "audit": {
-      "implemented": 0,
-      "partial": 3,
+      "implemented": 2,
+      "partial": 2,
       "deferred": -3,
       "notStarted": 0
     },
@@ -72,9 +72,14 @@
     },
     "changedSubsystems": [
       {
+        "subsystem": "CLI + control surface",
+        "baseline": null,
+        "current": "Implemented"
+      },
+      {
         "subsystem": "Model/provider layer",
         "baseline": "Deferred",
-        "current": "Partial"
+        "current": "Implemented"
       },
       {
         "subsystem": "Nodes + device features",

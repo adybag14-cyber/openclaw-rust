@@ -21,6 +21,15 @@ pub const WAVE2_CHANNEL_ORDER: &[&str] = &[
 ];
 #[cfg(test)]
 pub const WAVE3_CHANNEL_ORDER: &[&str] = &["irc", "imessage"];
+#[cfg(test)]
+pub const WAVE4_CHANNEL_ORDER: &[&str] = &[
+    "feishu",
+    "mattermost",
+    "line",
+    "nextcloud-talk",
+    "nostr",
+    "tlon",
+];
 pub const CHANNEL_RUNTIME_ORDER: &[&str] = &[
     "telegram",
     "whatsapp",
@@ -36,6 +45,12 @@ pub const CHANNEL_RUNTIME_ORDER: &[&str] = &[
     "matrix",
     "zalouser",
     "zalo",
+    "feishu",
+    "mattermost",
+    "line",
+    "nextcloud-talk",
+    "nostr",
+    "tlon",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,9 +199,12 @@ pub fn normalize_channel_id(raw: Option<&str>) -> Option<String> {
         "bb" => "bluebubbles",
         "internet-relay-chat" => "irc",
         "imsg" => "imessage",
+        "lark" => "feishu",
         "google-chat" | "gchat" => "googlechat",
         "teams" | "ms-teams" => "msteams",
         "signal-cli" => "signal",
+        "nc" | "nc-talk" | "nc_talk" | "nextcloudtalk" => "nextcloud-talk",
+        "urbit" => "tlon",
         "zl" => "zalo",
         "zlu" | "zalo-personal" | "zalo_personal" => "zalouser",
         "web-chat" | "web_chat" | "webchat-ui" => "webchat",
@@ -421,6 +439,12 @@ fn driver_for_channel(channel: &str) -> Option<Box<dyn ChannelDriver>> {
         "matrix" => Some(Box::new(MatrixDriver)),
         "zalo" => Some(Box::new(ZaloDriver)),
         "zalouser" => Some(Box::new(ZaloUserDriver)),
+        "feishu" => Some(Box::new(FeishuDriver)),
+        "mattermost" => Some(Box::new(MattermostDriver)),
+        "line" => Some(Box::new(LineDriver)),
+        "nextcloud-talk" => Some(Box::new(NextcloudTalkDriver)),
+        "nostr" => Some(Box::new(NostrDriver)),
+        "tlon" => Some(Box::new(TlonDriver)),
         _ => None,
     }
 }
@@ -744,6 +768,136 @@ impl ChannelDriver for ZaloUserDriver {
     }
 }
 
+struct FeishuDriver;
+
+impl ChannelDriver for FeishuDriver {
+    fn extract(&self, frame: &Value) -> Option<ActionRequest> {
+        extract_with_hints(frame, "feishu", &["feishu", "lark"])
+    }
+
+    fn capabilities(&self) -> ChannelCapabilities {
+        ChannelCapabilities {
+            name: "feishu",
+            supports_edit: true,
+            supports_delete: false,
+            supports_reactions: true,
+            supports_threads: true,
+            supports_polls: false,
+            supports_media: true,
+            default_dm_pairing: true,
+        }
+    }
+}
+
+struct MattermostDriver;
+
+impl ChannelDriver for MattermostDriver {
+    fn extract(&self, frame: &Value) -> Option<ActionRequest> {
+        extract_with_hints(frame, "mattermost", &["mattermost"])
+    }
+
+    fn capabilities(&self) -> ChannelCapabilities {
+        ChannelCapabilities {
+            name: "mattermost",
+            supports_edit: false,
+            supports_delete: false,
+            supports_reactions: true,
+            supports_threads: true,
+            supports_polls: false,
+            supports_media: true,
+            default_dm_pairing: true,
+        }
+    }
+}
+
+struct LineDriver;
+
+impl ChannelDriver for LineDriver {
+    fn extract(&self, frame: &Value) -> Option<ActionRequest> {
+        extract_with_hints(frame, "line", &["line"])
+    }
+
+    fn capabilities(&self) -> ChannelCapabilities {
+        ChannelCapabilities {
+            name: "line",
+            supports_edit: false,
+            supports_delete: false,
+            supports_reactions: false,
+            supports_threads: false,
+            supports_polls: false,
+            supports_media: true,
+            default_dm_pairing: true,
+        }
+    }
+}
+
+struct NextcloudTalkDriver;
+
+impl ChannelDriver for NextcloudTalkDriver {
+    fn extract(&self, frame: &Value) -> Option<ActionRequest> {
+        extract_with_hints(
+            frame,
+            "nextcloud-talk",
+            &["nextcloud-talk", "nextcloud_talk", "nc-talk", "nc"],
+        )
+    }
+
+    fn capabilities(&self) -> ChannelCapabilities {
+        ChannelCapabilities {
+            name: "nextcloud-talk",
+            supports_edit: false,
+            supports_delete: false,
+            supports_reactions: true,
+            supports_threads: false,
+            supports_polls: false,
+            supports_media: true,
+            default_dm_pairing: true,
+        }
+    }
+}
+
+struct NostrDriver;
+
+impl ChannelDriver for NostrDriver {
+    fn extract(&self, frame: &Value) -> Option<ActionRequest> {
+        extract_with_hints(frame, "nostr", &["nostr"])
+    }
+
+    fn capabilities(&self) -> ChannelCapabilities {
+        ChannelCapabilities {
+            name: "nostr",
+            supports_edit: false,
+            supports_delete: false,
+            supports_reactions: false,
+            supports_threads: false,
+            supports_polls: false,
+            supports_media: false,
+            default_dm_pairing: true,
+        }
+    }
+}
+
+struct TlonDriver;
+
+impl ChannelDriver for TlonDriver {
+    fn extract(&self, frame: &Value) -> Option<ActionRequest> {
+        extract_with_hints(frame, "tlon", &["tlon", "urbit"])
+    }
+
+    fn capabilities(&self) -> ChannelCapabilities {
+        ChannelCapabilities {
+            name: "tlon",
+            supports_edit: false,
+            supports_delete: false,
+            supports_reactions: false,
+            supports_threads: true,
+            supports_polls: false,
+            supports_media: false,
+            default_dm_pairing: true,
+        }
+    }
+}
+
 fn normalize(input: &str) -> String {
     input.trim().to_ascii_lowercase()
 }
@@ -792,7 +946,7 @@ mod tests {
         default_chunk_mode, default_text_chunk_limit, normalize_channel_id, normalize_chat_type,
         resolve_mention_gating, resolve_mention_gating_with_bypass, ChatType, ChunkMode,
         DriverRegistry, MentionGateParams, MentionGateWithBypassParams, RetryBackoffPolicy,
-        WAVE1_CHANNEL_ORDER, WAVE2_CHANNEL_ORDER, WAVE3_CHANNEL_ORDER,
+        WAVE1_CHANNEL_ORDER, WAVE2_CHANNEL_ORDER, WAVE3_CHANNEL_ORDER, WAVE4_CHANNEL_ORDER,
     };
 
     #[test]
@@ -922,6 +1076,9 @@ mod tests {
         for channel in WAVE3_CHANNEL_ORDER {
             assert!(names.contains(channel), "missing wave3 channel: {channel}");
         }
+        for channel in WAVE4_CHANNEL_ORDER {
+            assert!(names.contains(channel), "missing wave4 channel: {channel}");
+        }
         assert!(caps
             .iter()
             .any(|c| c.name == "discord" && c.supports_threads));
@@ -942,6 +1099,20 @@ mod tests {
         assert!(caps
             .iter()
             .any(|c| c.name == "imessage" && c.supports_media));
+        assert!(caps
+            .iter()
+            .any(|c| c.name == "feishu" && c.supports_threads && c.supports_edit));
+        assert!(caps
+            .iter()
+            .any(|c| c.name == "mattermost" && c.supports_threads && c.supports_reactions));
+        assert!(caps.iter().any(|c| c.name == "line" && c.supports_media));
+        assert!(caps
+            .iter()
+            .any(|c| c.name == "nextcloud-talk" && c.supports_reactions));
+        assert!(caps.iter().any(|c| c.name == "nostr" && !c.supports_media));
+        assert!(caps
+            .iter()
+            .any(|c| c.name == "tlon" && c.supports_threads && !c.supports_media));
     }
 
     #[test]
@@ -1027,6 +1198,49 @@ mod tests {
             normalize_channel_id(Some("imsg")).as_deref(),
             Some("imessage")
         );
+    }
+
+    #[test]
+    fn wave4_drivers_detect_source_aliases() {
+        let registry = DriverRegistry::default_registry();
+        let cases = vec![
+            ("feishu", "lark.message", "feishu"),
+            ("mattermost", "mattermost.message", "mattermost"),
+            ("line", "line.message", "line"),
+            ("nextcloud-talk", "nc-talk.message", "nextcloud-talk"),
+            ("nostr", "nostr.message", "nostr"),
+            ("tlon", "urbit.message", "tlon"),
+        ];
+        for (id, event, expected_channel) in cases {
+            let frame = json!({
+                "type": "event",
+                "event": event,
+                "payload": {
+                    "id": format!("req-{id}"),
+                    "tool": "exec",
+                    "command": "git status"
+                }
+            });
+            let request = registry.extract(&frame).expect("request");
+            assert_eq!(request.channel.as_deref(), Some(expected_channel), "{id}");
+        }
+    }
+
+    #[test]
+    fn normalize_channel_id_supports_wave4_aliases() {
+        assert_eq!(
+            normalize_channel_id(Some("lark")).as_deref(),
+            Some("feishu")
+        );
+        assert_eq!(
+            normalize_channel_id(Some("nc-talk")).as_deref(),
+            Some("nextcloud-talk")
+        );
+        assert_eq!(
+            normalize_channel_id(Some("nc")).as_deref(),
+            Some("nextcloud-talk")
+        );
+        assert_eq!(normalize_channel_id(Some("urbit")).as_deref(), Some("tlon"));
     }
 
     #[test]

@@ -1,154 +1,154 @@
 [parity] running CP2 default fixture: bridge::tests::steer_mode_keeps_latest_pending_at_bridge_level
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.52s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test bridge::tests::steer_mode_keeps_latest_pending_at_bridge_level ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 220 filtered out; finished in 0.26s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.26s
 
 [parity] running CP2 default fixture: bridge::tests::followup_queue_pressure_preserves_order_without_duplicates
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test bridge::tests::followup_queue_pressure_preserves_order_without_duplicates ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 220 filtered out; finished in 2.59s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 2.61s
 
 [parity] running CP2 default fixture: bridge::tests::session_routing_corpus_matches_expected_delivery_order
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.47s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test bridge::tests::session_routing_corpus_matches_expected_delivery_order ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 220 filtered out; finished in 4.68s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 4.67s
 
 [parity] running CP2 default fixture: bridge::tests::multi_session_soak_preserves_per_session_fifo_without_duplicates
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.40s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test bridge::tests::multi_session_soak_preserves_per_session_fifo_without_duplicates ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 220 filtered out; finished in 1.52s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 1.52s
 
 [parity] running CP2 default fixture: bridge::tests::reply_back_payload_preserves_group_and_direct_delivery_context
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test bridge::tests::reply_back_payload_preserves_group_and_direct_delivery_context ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 220 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.01s
 
 [parity] running CP2 default fixture: gateway::tests::dispatcher_list_supports_label_spawn_filters_and_message_hints
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.41s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_list_supports_label_spawn_filters_and_message_hints ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 220 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.00s
 
 [parity] running CP2 default fixture: gateway::tests::dispatcher_list_route_selectors_disambiguate_shared_peer_by_account_and_channel
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.46s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.37s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_list_route_selectors_disambiguate_shared_peer_by_account_and_channel ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 220 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.00s
 
 [parity] running CP2 default fixture: gateway::tests::dispatcher_resolve_supports_label_agent_and_spawn_filters
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.38s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_resolve_supports_label_agent_and_spawn_filters ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 220 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.00s
 
 [parity] running CP2 default fixture: gateway::tests::dispatcher_resolve_route_selectors_disambiguate_shared_peer_by_account_and_channel
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.48s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.37s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_resolve_route_selectors_disambiguate_shared_peer_by_account_and_channel ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 220 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.00s
 
 [parity] running CP2 default fixture: gateway::tests::dispatcher_resolve_prefers_explicit_session_key_over_route_selectors
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.46s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.37s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_resolve_prefers_explicit_session_key_over_route_selectors ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 220 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.00s
 
 [parity] running CP2 default fixture: gateway::tests::dispatcher_resolve_prefers_session_id_over_label_and_route_selectors
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_resolve_prefers_session_id_over_label_and_route_selectors ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 220 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.00s
 
 [parity] running CP2 default fixture: gateway::tests::dispatcher_resolve_supports_label_plus_route_selectors
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_resolve_supports_label_plus_route_selectors ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 220 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.00s
 
 [parity] running CP2 default fixture: gateway::tests::dispatcher_resolve_accepts_partial_route_selectors_without_account_id
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_resolve_accepts_partial_route_selectors_without_account_id ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 220 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.00s
 
 [parity] running CP2 default fixture: gateway::tests::dispatcher_resolve_partial_route_collision_prefers_most_recent_update
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_resolve_partial_route_collision_prefers_most_recent_update ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 220 filtered out; finished in 0.02s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.02s
 
 [parity] running CP2 default fixture: gateway::tests::dispatcher_resolve_partial_route_collision_uses_key_tiebreak_when_timestamps_match
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_resolve_partial_route_collision_uses_key_tiebreak_when_timestamps_match ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 220 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.00s
 
 [parity] running CP2 sqlite-feature fixture: state::tests::sqlite_state_survives_restart_and_continues_counters
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.48s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.40s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-23624cb3167425d7.exe)
 
 running 1 test
 test state::tests::sqlite_state_survives_restart_and_continues_counters ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 223 filtered out; finished in 0.05s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 241 filtered out; finished in 0.04s
 
 [parity] running CP2 sqlite-feature fixture: state::tests::sqlite_state_recovers_multiple_sessions_after_restart
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-23624cb3167425d7.exe)
 
 running 1 test
 test state::tests::sqlite_state_recovers_multiple_sessions_after_restart ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 223 filtered out; finished in 0.04s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 241 filtered out; finished in 0.04s
 
 [parity] CP2 gate passed

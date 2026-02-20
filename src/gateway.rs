@@ -13762,6 +13762,12 @@ fn channel_label(id: &str) -> String {
         "irc" => "IRC".to_owned(),
         "signal" => "Signal".to_owned(),
         "imessage" => "iMessage".to_owned(),
+        "feishu" => "Feishu".to_owned(),
+        "mattermost" => "Mattermost".to_owned(),
+        "line" => "LINE".to_owned(),
+        "nextcloud-talk" => "Nextcloud Talk".to_owned(),
+        "nostr" => "Nostr".to_owned(),
+        "tlon" => "Tlon".to_owned(),
         "webchat" => "WebChat".to_owned(),
         "bluebubbles" => "BlueBubbles".to_owned(),
         "googlechat" => "Google Chat".to_owned(),
@@ -13790,6 +13796,12 @@ fn channel_system_image(id: &str) -> &'static str {
         "irc" => "network",
         "signal" => "lock.bubble.right",
         "imessage" => "message.fill",
+        "feishu" => "message.badge",
+        "mattermost" => "bubble.left.and.bubble.right",
+        "line" => "message.fill",
+        "nextcloud-talk" => "bubble.left.and.bubble.right",
+        "nostr" => "antenna.radiowaves.left.and.right",
+        "tlon" => "bubble.left",
         "webchat" => "rectangle.and.pencil.and.ellipsis",
         "bluebubbles" => "bubble.left.and.text.bubble.right",
         "googlechat" => "message.badge",
@@ -15666,6 +15678,40 @@ mod tests {
     async fn dispatcher_send_accepts_wave3_channel_aliases() {
         let dispatcher = RpcDispatcher::new();
         let cases = vec![("internet-relay-chat", "irc"), ("imsg", "imessage")];
+        for (channel, expected) in cases {
+            let req = RpcRequestFrame {
+                id: format!("req-send-{channel}"),
+                method: "send".to_owned(),
+                params: serde_json::json!({
+                    "to": "target:demo",
+                    "message": "hello alias",
+                    "channel": channel,
+                    "idempotencyKey": format!("send-{channel}")
+                }),
+            };
+            match dispatcher.handle_request(&req).await {
+                RpcDispatchOutcome::Handled(payload) => {
+                    assert_eq!(
+                        payload
+                            .pointer("/channel")
+                            .and_then(serde_json::Value::as_str),
+                        Some(expected),
+                        "{channel}"
+                    );
+                }
+                _ => panic!("expected send handled for alias channel"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_send_accepts_wave4_channel_aliases() {
+        let dispatcher = RpcDispatcher::new();
+        let cases = vec![
+            ("lark", "feishu"),
+            ("nc-talk", "nextcloud-talk"),
+            ("urbit", "tlon"),
+        ];
         for (channel, expected) in cases {
             let req = RpcRequestFrame {
                 id: format!("req-send-{channel}"),
@@ -19101,6 +19147,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_channels_status_tracks_wave4_payload_channel_alias_runtime() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.message",
+                "payload": {
+                    "channel": "lark",
+                    "accountId": "enterprise"
+                }
+            }))
+            .await;
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.message",
+                "payload": {
+                    "channel": "nc-talk",
+                    "accountId": "selfhosted"
+                }
+            }))
+            .await;
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.message",
+                "payload": {
+                    "channel": "urbit",
+                    "accountId": "ship"
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-wave4-payload-alias-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/feishu")
+                        .and_then(serde_json::Value::as_str),
+                    Some("enterprise")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/nextcloud-talk")
+                        .and_then(serde_json::Value::as_str),
+                    Some("selfhosted")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/tlon")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ship")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
     async fn dispatcher_channels_status_honors_default_account_hints_from_runtime_payload() {
         let dispatcher = RpcDispatcher::new();
         dispatcher
@@ -19497,6 +19609,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_channels_status_includes_wave4_channel_catalog_entries() {
+        let dispatcher = RpcDispatcher::new();
+        let status = RpcRequestFrame {
+            id: "req-channels-wave4-catalog".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                let order = payload
+                    .pointer("/channelOrder")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let names = order
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<Vec<_>>();
+                for expected in [
+                    "feishu",
+                    "mattermost",
+                    "line",
+                    "nextcloud-talk",
+                    "nostr",
+                    "tlon",
+                ] {
+                    assert!(names.contains(&expected), "{expected}");
+                }
+                assert_eq!(
+                    payload
+                        .pointer("/channelLabels/line")
+                        .and_then(serde_json::Value::as_str),
+                    Some("LINE")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelLabels/nextcloud-talk")
+                        .and_then(serde_json::Value::as_str),
+                    Some("Nextcloud Talk")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelSystemImages/mattermost")
+                        .and_then(serde_json::Value::as_str),
+                    Some("bubble.left.and.bubble.right")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelSystemImages/nostr")
+                        .and_then(serde_json::Value::as_str),
+                    Some("antenna.radiowaves.left.and.right")
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
     async fn dispatcher_channels_status_ingests_wave2_alias_channel_ids_in_runtime_maps() {
         let dispatcher = RpcDispatcher::new();
         dispatcher
@@ -19674,6 +19846,96 @@ mod tests {
                         .pointer("/channels/imessage/connected")
                         .and_then(serde_json::Value::as_bool),
                     Some(true)
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_ingests_wave4_alias_channel_ids_in_runtime_maps() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.channels.runtime",
+                "payload": {
+                    "channelAccounts": {
+                        "lark": {
+                            "enterprise": {
+                                "running": true,
+                                "connected": true,
+                                "mode": "webhook"
+                            }
+                        },
+                        "nc-talk": {
+                            "selfhosted": {
+                                "running": true,
+                                "connected": true,
+                                "mode": "webhook"
+                            }
+                        },
+                        "urbit": {
+                            "ship": {
+                                "running": true,
+                                "connected": true,
+                                "mode": "stream"
+                            }
+                        }
+                    },
+                    "channelDefaultAccountId": {
+                        "lark": "enterprise",
+                        "nc-talk": "selfhosted",
+                        "urbit": "ship"
+                    }
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-wave4-alias-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/feishu")
+                        .and_then(serde_json::Value::as_str),
+                    Some("enterprise")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/feishu/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("enterprise")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/nextcloud-talk")
+                        .and_then(serde_json::Value::as_str),
+                    Some("selfhosted")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/nextcloud-talk/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("selfhosted")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/tlon")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ship")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/tlon/0/accountId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ship")
                 );
             }
             _ => panic!("expected channels.status handled"),

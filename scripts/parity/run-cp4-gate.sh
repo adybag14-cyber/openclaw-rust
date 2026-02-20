@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+CARGO_BIN="${CARGO_BIN:-cargo}"
+TOOLCHAIN="${TOOLCHAIN:-}"
 artifact_dir="${PARITY_ARTIFACT_DIR:-parity/generated/cp4}"
 mkdir -p "${artifact_dir}"
 
@@ -23,6 +25,8 @@ tests=(
   "channels::tests::normalize_channel_id_supports_wave2_aliases"
   "channels::tests::wave3_drivers_detect_source_aliases"
   "channels::tests::normalize_channel_id_supports_wave3_aliases"
+  "channels::tests::wave4_drivers_detect_source_aliases"
+  "channels::tests::normalize_channel_id_supports_wave4_aliases"
   "scheduler::tests::mention_activation_accepts_group_message_when_detection_unavailable"
   "scheduler::tests::mention_activation_bypasses_for_authorized_control_command"
   "gateway::tests::dispatcher_channels_methods_report_status_and_validate_logout"
@@ -33,6 +37,7 @@ tests=(
   "gateway::tests::dispatcher_channels_status_reflects_runtime_event_snapshots"
   "gateway::tests::dispatcher_channels_status_tracks_payload_channel_alias_runtime"
   "gateway::tests::dispatcher_channels_status_tracks_wave3_payload_channel_alias_runtime"
+  "gateway::tests::dispatcher_channels_status_tracks_wave4_payload_channel_alias_runtime"
   "gateway::tests::dispatcher_channels_logout_marks_runtime_offline"
   "gateway::tests::dispatcher_channels_logout_without_runtime_account_does_not_create_account"
   "gateway::tests::dispatcher_channels_status_ingests_channel_accounts_runtime_map"
@@ -44,6 +49,8 @@ tests=(
   "gateway::tests::dispatcher_channels_status_ingests_wave2_alias_channel_ids_in_runtime_maps"
   "gateway::tests::dispatcher_channels_status_includes_wave3_channel_catalog_entries"
   "gateway::tests::dispatcher_channels_status_ingests_wave3_alias_channel_ids_in_runtime_maps"
+  "gateway::tests::dispatcher_channels_status_includes_wave4_channel_catalog_entries"
+  "gateway::tests::dispatcher_channels_status_ingests_wave4_alias_channel_ids_in_runtime_maps"
   "gateway::tests::dispatcher_channels_status_ingests_snake_case_runtime_maps"
   "gateway::tests::dispatcher_channels_status_tracks_inbound_when_channel_is_only_in_payload"
   "gateway::tests::dispatcher_chat_send_updates_webchat_runtime_outbound_activity"
@@ -62,6 +69,7 @@ tests=(
   "gateway::tests::dispatcher_channels_status_parses_allow_from_string_list"
   "gateway::tests::dispatcher_send_accepts_wave2_channel_aliases"
   "gateway::tests::dispatcher_send_accepts_wave3_channel_aliases"
+  "gateway::tests::dispatcher_send_accepts_wave4_channel_aliases"
   "gateway::tests::dispatcher_channels_status_accepts_numeric_channel_default_account_id_map_values"
   "gateway::tests::dispatcher_channels_status_accepts_numeric_payload_default_account_id"
   "gateway::tests::dispatcher_channels_status_accepts_numeric_nested_default_account_id"
@@ -87,7 +95,12 @@ total_duration_ms=0
 for test_name in "${tests[@]}"; do
   start_ms="$(now_ms)"
   echo "[parity] running CP4 fixture: ${test_name}" | tee -a "${log_file}"
-  if cargo test "${test_name}" -- --nocapture 2>&1 | tee -a "${log_file}"; then
+  cmd=("${CARGO_BIN}")
+  if [[ -n "${TOOLCHAIN}" ]]; then
+    cmd+=("+${TOOLCHAIN}")
+  fi
+  cmd+=(test "${test_name}" -- --nocapture)
+  if "${cmd[@]}" 2>&1 | tee -a "${log_file}"; then
     end_ms="$(now_ms)"
     duration_ms="$(( end_ms - start_ms ))"
     total_duration_ms="$(( total_duration_ms + duration_ms ))"
@@ -120,7 +133,7 @@ cat > "${metrics_file}" <<EOF
 EOF
 
 cat > "${summary_file}" <<EOF
-## CP4 Channel Runtime Wave-1/Wave-2/Wave-3 Foundation Gate
+## CP4 Channel Runtime Wave-1/Wave-2/Wave-3/Wave-4 Foundation Gate
 
 - Fixtures passed: ${passed}/${total_fixtures}
 - Total duration: ${total_duration_ms} ms

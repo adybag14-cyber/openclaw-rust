@@ -1,79 +1,73 @@
 [parity] running CP6 fixture: gateway::tests::dispatcher_models_list_returns_catalog_and_rejects_unknown_params
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on package cache
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.72s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.37s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_models_list_returns_catalog_and_rejects_unknown_params ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.00s
 
 [parity] running CP6 fixture: gateway::tests::dispatcher_patch_model_normalizes_provider_aliases_and_failover_provider_rules
-    Blocking waiting for file lock on package cache
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.56s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.38s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_patch_model_normalizes_provider_aliases_and_failover_provider_rules ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.00s
 
 [parity] running CP6 fixture: gateway::tests::dispatcher_patch_model_clears_auth_profile_override_fields
-    Blocking waiting for file lock on package cache
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.55s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.37s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_patch_model_clears_auth_profile_override_fields ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.00s
 
 [parity] running CP6 fixture: gateway::tests::dispatcher_agent_runtime_failover_uses_fallback_provider_on_profile_cooldown
-    Blocking waiting for file lock on package cache
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.53s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_agent_runtime_failover_uses_fallback_provider_on_profile_cooldown ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.00s
 
 [parity] running CP6 fixture: gateway::tests::dispatcher_compact_rotates_auto_auth_profile_override
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.47s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::dispatcher_compact_rotates_auto_auth_profile_override ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.01s
 
 [parity] running CP6 fixture: gateway::tests::model_provider_failover_chain_normalizes_aliases
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.47s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test gateway::tests::model_provider_failover_chain_normalizes_aliases ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.00s
 
 [parity] running CP6 fixture: security::tool_policy::tests::provider_specific_rule_is_applied_after_global_policy
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.47s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.38s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test security::tool_policy::tests::provider_specific_rule_is_applied_after_global_policy ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.00s
 
 [parity] running CP6 fixture: security::tool_policy::tests::provider_model_specific_rule_beats_provider_fallback
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.48s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test security::tool_policy::tests::provider_model_specific_rule_beats_provider_fallback ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 238 filtered out; finished in 0.00s
 
 [parity] CP6 gate passed
