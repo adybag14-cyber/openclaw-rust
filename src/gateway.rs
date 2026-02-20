@@ -760,6 +760,7 @@ const CHAT_RUN_COMPLETE_DELAY_MS: u64 = 25;
 const MAX_SEND_CACHE_ENTRIES: usize = 4_096;
 const SEND_CACHE_STORE_PATH: &str = "memory://idempotency/send-cache.json";
 const DEFAULT_SEND_CACHE_TTL_MS: u64 = 300_000;
+const CHANNEL_RUNTIME_STORE_PATH: &str = "memory://channels/runtime.json";
 const DEVICE_PAIR_STORE_PATH: &str = "memory://devices/pairs.json";
 const NODE_PAIR_STORE_PATH: &str = "memory://nodes/pairs.json";
 const DEFAULT_SEND_CHANNEL: &str = "whatsapp";
@@ -984,6 +985,11 @@ impl RpcDispatcher {
             .map_err(|err| match err {
                 SessionRegistryError::Invalid(message) => message,
             })
+    }
+
+    async fn sync_channel_runtime_from_config(&self) -> Result<(), String> {
+        let runtime = self.config.channel_runtime_config().await;
+        self.channel_runtime.apply_runtime_config(runtime).await
     }
 
     async fn sync_device_pair_runtime_from_config(&self) -> Result<(), String> {
@@ -1242,6 +1248,12 @@ impl RpcDispatcher {
                 self.nodes.ingest_pair_resolved(payload.clone()).await;
             }
             _ => {}
+        }
+        if let Err(err) = self.sync_channel_runtime_from_config().await {
+            self.system
+                .log_line(format!("channel.runtime sync failed: {err}"))
+                .await;
+            return;
         }
         self.channel_runtime
             .ingest_event(
@@ -2288,6 +2300,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_channels_status(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_channel_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "channel runtime unavailable: {err}"
+            ));
+        }
         let params = match decode_params::<ChannelsStatusParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -2475,6 +2492,11 @@ impl RpcDispatcher {
     }
 
     async fn handle_channels_logout(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_channel_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "channel runtime unavailable: {err}"
+            ));
+        }
         let params = match decode_params::<ChannelsLogoutParams>(&req.params) {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
@@ -4022,6 +4044,12 @@ impl RpcDispatcher {
                 .await;
             return RpcDispatchOutcome::internal_error("session runtime unavailable");
         }
+        if let Err(err) = self.sync_channel_runtime_from_config().await {
+            self.system
+                .log_line(format!("channel.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("channel runtime unavailable");
+        }
         let params = match decode_params::<GatewaySendParams>(&req.params) {
             Ok(value) => value,
             Err(err) => {
@@ -4157,6 +4185,12 @@ impl RpcDispatcher {
                 .log_line(format!("session.runtime sync failed: {err}"))
                 .await;
             return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
+        if let Err(err) = self.sync_channel_runtime_from_config().await {
+            self.system
+                .log_line(format!("channel.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("channel runtime unavailable");
         }
         let params = match decode_params::<GatewayPollParams>(&req.params) {
             Ok(value) => value,
@@ -4310,6 +4344,12 @@ impl RpcDispatcher {
                 .await;
             return RpcDispatchOutcome::internal_error("session runtime unavailable");
         }
+        if let Err(err) = self.sync_channel_runtime_from_config().await {
+            self.system
+                .log_line(format!("channel.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("channel runtime unavailable");
+        }
         let params = match decode_params::<ChatSendParams>(&req.params) {
             Ok(value) => value,
             Err(err) => {
@@ -4440,6 +4480,12 @@ impl RpcDispatcher {
                 .log_line(format!("session.runtime sync failed: {err}"))
                 .await;
             return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
+        if let Err(err) = self.sync_channel_runtime_from_config().await {
+            self.system
+                .log_line(format!("channel.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("channel runtime unavailable");
         }
         let params = match decode_params::<ChatInjectParams>(&req.params) {
             Ok(value) => value,
@@ -5321,6 +5367,12 @@ impl RpcDispatcher {
                 .log_line(format!("session.runtime sync failed: {err}"))
                 .await;
             return RpcDispatchOutcome::internal_error("session runtime unavailable");
+        }
+        if let Err(err) = self.sync_channel_runtime_from_config().await {
+            self.system
+                .log_line(format!("channel.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("channel runtime unavailable");
         }
         let params = match decode_params::<SessionsSendParams>(&req.params) {
             Ok(v) => v,
@@ -7044,6 +7096,11 @@ struct SendRuntimeConfig {
 
 #[derive(Debug, Clone, Default)]
 struct SessionRuntimeConfig {
+    store_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ChannelRuntimeConfig {
     store_path: Option<String>,
 }
 
@@ -9730,15 +9787,16 @@ fn prune_send_cache_for_limits(state: &mut SendState, now: u64) {
 
 struct ChannelRuntimeRegistry {
     state: Mutex<ChannelRuntimeState>,
+    runtime: Mutex<ChannelRuntimeRuntimeState>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 struct ChannelRuntimeState {
     by_channel: HashMap<String, HashMap<String, ChannelAccountRuntime>>,
     default_account_by_channel: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 struct ChannelAccountRuntime {
     name: Option<String>,
     enabled: Option<bool>,
@@ -9770,11 +9828,65 @@ struct ChannelAccountRuntime {
     application: Option<Value>,
 }
 
+#[derive(Debug, Clone)]
+struct ChannelRuntimeRuntimeState {
+    store_path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ChannelRuntimeStoreDiskState {
+    version: u32,
+    state: ChannelRuntimeState,
+}
+
+impl Default for ChannelRuntimeStoreDiskState {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            state: ChannelRuntimeState::default(),
+        }
+    }
+}
+
 impl ChannelRuntimeRegistry {
     fn new() -> Self {
         Self {
             state: Mutex::new(ChannelRuntimeState::default()),
+            runtime: Mutex::new(ChannelRuntimeRuntimeState {
+                store_path: CHANNEL_RUNTIME_STORE_PATH.to_owned(),
+            }),
         }
+    }
+
+    async fn apply_runtime_config(&self, runtime: ChannelRuntimeConfig) -> Result<(), String> {
+        let target_store_path = runtime
+            .store_path
+            .and_then(|value| normalize_optional_text(Some(value), 2048))
+            .unwrap_or_else(|| CHANNEL_RUNTIME_STORE_PATH.to_owned());
+
+        let current_store_path = { self.runtime.lock().await.store_path.clone() };
+        if current_store_path == target_store_path {
+            return Ok(());
+        }
+
+        let loaded = load_channel_runtime_store_disk_state(&target_store_path)?;
+        let normalized_state = normalize_channel_runtime_state(loaded.state);
+
+        {
+            let mut guard = self.state.lock().await;
+            *guard = normalized_state.clone();
+        }
+        {
+            let mut runtime_guard = self.runtime.lock().await;
+            runtime_guard.store_path = target_store_path.clone();
+        }
+        persist_channel_runtime_store_disk_state(&target_store_path, &normalized_state)?;
+        Ok(())
+    }
+
+    async fn persist_state_snapshot(&self, state: ChannelRuntimeState) -> Result<(), String> {
+        let store_path = { self.runtime.lock().await.store_path.clone() };
+        persist_channel_runtime_store_disk_state(&store_path, &state)
     }
 
     async fn accounts_for_channel(&self, channel: &str) -> Vec<(String, ChannelAccountRuntime)> {
@@ -9804,6 +9916,9 @@ impl ChannelRuntimeRegistry {
         let mut guard = self.state.lock().await;
         let account = guard.account_mut(channel, account_id);
         account.last_outbound_at = Some(ts);
+        let snapshot = guard.clone();
+        drop(guard);
+        let _ = self.persist_state_snapshot(snapshot).await;
     }
 
     async fn mark_logout(&self, channel: &str, account_id: &str, ts: u64) -> bool {
@@ -9831,6 +9946,9 @@ impl ChannelRuntimeRegistry {
         account.connected = Some(false);
         account.running = Some(false);
         account.last_stop_at = Some(ts);
+        let snapshot = guard.clone();
+        drop(guard);
+        let _ = self.persist_state_snapshot(snapshot).await;
         was_active
     }
 
@@ -9942,6 +10060,9 @@ impl ChannelRuntimeRegistry {
                 ingest_runtime_entry(&mut guard, channel.as_str(), payload, None);
             }
         }
+        let snapshot = guard.clone();
+        drop(guard);
+        let _ = self.persist_state_snapshot(snapshot).await;
     }
 }
 
@@ -9962,6 +10083,38 @@ impl ChannelRuntimeState {
         self.default_account_by_channel
             .insert(channel_id, account_id);
     }
+}
+
+fn normalize_channel_runtime_state(state: ChannelRuntimeState) -> ChannelRuntimeState {
+    let mut normalized = ChannelRuntimeState::default();
+    let mut channels = state.by_channel.into_iter().collect::<Vec<_>>();
+    channels.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    for (channel_id, accounts) in channels {
+        let canonical_channel = canonicalize_runtime_channel_id(channel_id.as_str());
+        let entry = normalized.by_channel.entry(canonical_channel).or_default();
+        let mut account_entries = accounts.into_iter().collect::<Vec<_>>();
+        account_entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+        for (account_id, runtime) in account_entries {
+            entry.insert(normalize_account_id(account_id.as_str()), runtime);
+        }
+    }
+
+    let mut defaults = state
+        .default_account_by_channel
+        .into_iter()
+        .collect::<Vec<_>>();
+    defaults.sort_by(|(left, _), (right, _)| left.cmp(right));
+    for (channel_id, account_id) in defaults {
+        let canonical_channel = canonicalize_runtime_channel_id(channel_id.as_str());
+        if normalized.by_channel.contains_key(&canonical_channel) {
+            normalized
+                .default_account_by_channel
+                .insert(canonical_channel, normalize_account_id(account_id.as_str()));
+        }
+    }
+
+    normalized
 }
 
 fn ingest_runtime_entry(
@@ -12065,6 +12218,11 @@ impl ConfigRegistry {
         session_runtime_config_from_config(&guard.config)
     }
 
+    async fn channel_runtime_config(&self) -> ChannelRuntimeConfig {
+        let guard = self.state.lock().await;
+        channel_runtime_config_from_config(&guard.config)
+    }
+
     async fn device_pair_runtime_config(&self) -> DevicePairRuntimeConfig {
         let guard = self.state.lock().await;
         device_pair_runtime_config_from_config(&guard.config)
@@ -12224,6 +12382,55 @@ fn session_runtime_config_from_config(config: &Value) -> SessionRuntimeConfig {
         )
     });
     SessionRuntimeConfig { store_path }
+}
+
+fn channel_runtime_config_from_config(config: &Value) -> ChannelRuntimeConfig {
+    let runtime = config.get("runtime").and_then(Value::as_object);
+    let channels = config.get("channels").and_then(Value::as_object);
+    let channel_runtime = config.get("channelRuntime").and_then(Value::as_object);
+
+    let store_path = channel_runtime
+        .and_then(|obj| {
+            read_config_string(
+                obj,
+                &[
+                    "storePath",
+                    "store_path",
+                    "statePath",
+                    "state_path",
+                    "runtimeStorePath",
+                    "runtime_store_path",
+                ],
+                2048,
+            )
+        })
+        .or_else(|| {
+            channels.and_then(|obj| {
+                read_config_string(
+                    obj,
+                    &[
+                        "runtimeStorePath",
+                        "runtime_store_path",
+                        "storePath",
+                        "store_path",
+                        "statePath",
+                        "state_path",
+                    ],
+                    2048,
+                )
+            })
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string(
+                    obj,
+                    &["channelRuntimeStorePath", "channel_runtime_store_path"],
+                    2048,
+                )
+            })
+        });
+
+    ChannelRuntimeConfig { store_path }
 }
 
 fn device_pair_runtime_config_from_config(config: &Value) -> DevicePairRuntimeConfig {
@@ -12618,6 +12825,90 @@ fn persist_session_store_disk_state(
             "failed moving session store temp file into place {}: {err}",
             store_path.display()
         ))
+    })?;
+    Ok(())
+}
+
+fn channel_runtime_store_path_is_memory(path: &str) -> bool {
+    path.trim().to_ascii_lowercase().starts_with("memory://")
+}
+
+fn load_channel_runtime_store_disk_state(
+    path: &str,
+) -> Result<ChannelRuntimeStoreDiskState, String> {
+    if channel_runtime_store_path_is_memory(path) {
+        return Ok(ChannelRuntimeStoreDiskState::default());
+    }
+    let store_path = PathBuf::from(path);
+    if !store_path.exists() {
+        return Ok(ChannelRuntimeStoreDiskState::default());
+    }
+    let raw = std::fs::read_to_string(&store_path).map_err(|err| {
+        format!(
+            "failed reading channel runtime store {}: {err}",
+            store_path.display()
+        )
+    })?;
+    serde_json::from_str::<ChannelRuntimeStoreDiskState>(&raw).map_err(|err| {
+        format!(
+            "failed parsing channel runtime store {}: {err}",
+            store_path.display()
+        )
+    })
+}
+
+fn persist_channel_runtime_store_disk_state(
+    path: &str,
+    state: &ChannelRuntimeState,
+) -> Result<(), String> {
+    if channel_runtime_store_path_is_memory(path) {
+        return Ok(());
+    }
+    let snapshot = ChannelRuntimeStoreDiskState {
+        version: 1,
+        state: normalize_channel_runtime_state(state.clone()),
+    };
+    let payload = serde_json::to_string_pretty(&snapshot)
+        .map_err(|err| format!("failed serializing channel runtime store: {err}"))?;
+
+    let store_path = PathBuf::from(path);
+    if let Some(parent) = store_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|err| {
+                format!(
+                    "failed creating channel runtime store parent directory {}: {err}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
+
+    let mut temp_path = store_path.clone();
+    let temp_extension = format!(
+        "{}.tmp.{}",
+        store_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("json"),
+        now_ms()
+    );
+    temp_path.set_extension(temp_extension);
+
+    std::fs::write(&temp_path, payload).map_err(|err| {
+        format!(
+            "failed writing channel runtime store temp file {}: {err}",
+            temp_path.display()
+        )
+    })?;
+
+    if store_path.exists() {
+        let _ = std::fs::remove_file(&store_path);
+    }
+    std::fs::rename(&temp_path, &store_path).map_err(|err| {
+        format!(
+            "failed moving channel runtime store temp file into place {}: {err}",
+            store_path.display()
+        )
     })?;
     Ok(())
 }
@@ -17835,6 +18126,179 @@ mod tests {
                 );
             }
             _ => panic!("expected persisted send replay"),
+        }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channel_runtime_store_path_persists_and_recovers_across_dispatchers() {
+        let root = std::env::temp_dir().join(format!("openclaw-rs-channel-runtime-{}", now_ms()));
+        fs::create_dir_all(&root).expect("create temp channel runtime root");
+        let store_path = root.join("channels").join("runtime.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "channels": {
+                    "runtimeStorePath": store_path_text
+                }
+            }),
+        )
+        .await;
+
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "event": "telegram.connected",
+                "payload": {
+                    "channel": "telegram",
+                    "accountId": "acct-1"
+                }
+            }))
+            .await;
+
+        let sessions_send = RpcRequestFrame {
+            id: "req-channel-runtime-store-send".to_owned(),
+            method: "sessions.send".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": "main",
+                "message": "runtime outbound persisted",
+                "channel": "telegram",
+                "to": "chat:12345",
+                "accountId": "acct-1",
+                "source": "parity-test"
+            }),
+        };
+        match dispatcher.handle_request(&sessions_send).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/accepted").and_then(Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected sessions.send handled"),
+        }
+
+        assert!(
+            store_path.exists(),
+            "channel runtime store should be created on disk"
+        );
+        let disk_snapshot = fs::read_to_string(&store_path).expect("read channel runtime store");
+        assert!(
+            disk_snapshot.contains("telegram"),
+            "channel runtime store should include channel id"
+        );
+        assert!(
+            disk_snapshot.contains("acct-1"),
+            "channel runtime store should include account id"
+        );
+
+        let restarted = RpcDispatcher::new();
+        patch_config(
+            &restarted,
+            json!({
+                "runtime": {
+                    "channelRuntimeStorePath": store_path.to_string_lossy().to_string()
+                }
+            }),
+        )
+        .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channel-runtime-store-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match restarted.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/accountId")
+                        .and_then(Value::as_str),
+                    Some("acct-1")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/connected")
+                        .and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/running")
+                        .and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/lastOutboundAt")
+                        .and_then(Value::as_u64)
+                        .is_some(),
+                    "expected outbound activity recovered from runtime store"
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+
+        let logout = RpcRequestFrame {
+            id: "req-channel-runtime-store-logout".to_owned(),
+            method: "channels.logout".to_owned(),
+            params: serde_json::json!({
+                "channel": "telegram",
+                "accountId": "acct-1"
+            }),
+        };
+        match restarted.handle_request(&logout).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/loggedOut").and_then(Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected channels.logout handled"),
+        }
+
+        let restarted_again = RpcDispatcher::new();
+        patch_config(
+            &restarted_again,
+            json!({
+                "channelRuntime": {
+                    "storePath": store_path.to_string_lossy().to_string()
+                }
+            }),
+        )
+        .await;
+        match restarted_again.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/accountId")
+                        .and_then(Value::as_str),
+                    Some("acct-1")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/connected")
+                        .and_then(Value::as_bool),
+                    Some(false)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/running")
+                        .and_then(Value::as_bool),
+                    Some(false)
+                );
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/lastStopAt")
+                        .and_then(Value::as_u64)
+                        .is_some(),
+                    "expected logout state recovered from runtime store"
+                );
+            }
+            _ => panic!("expected channels.status handled"),
         }
 
         let _ = fs::remove_dir_all(&root);
