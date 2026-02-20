@@ -19,7 +19,7 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
 
-use crate::channels::DriverRegistry;
+use crate::channels::{normalize_channel_id, DriverRegistry};
 use crate::config::{
     Config, GatewayAuthMode, GatewayConfig, GroupActivationMode, SessionQueueMode,
 };
@@ -302,7 +302,7 @@ impl GatewayServer {
         });
         let cron_due_task = self.spawn_cron_due_task(state.rpc.clone());
         let tick_task = self.spawn_tick_task(state.broadcaster.clone());
-        let http_task = self.spawn_control_http_task(state.rpc.clone());
+        let http_task = self.spawn_control_http_task(state.clone());
 
         tokio::pin!(shutdown);
         loop {
@@ -420,7 +420,7 @@ impl GatewayServer {
 
     fn spawn_control_http_task(
         &self,
-        rpc: Arc<RpcDispatcher>,
+        state: Arc<ServerState>,
     ) -> Option<tokio::task::JoinHandle<()>> {
         let bind = self.gateway.server.http_bind.clone()?;
         if bind.trim().is_empty() {
@@ -442,9 +442,9 @@ impl GatewayServer {
             loop {
                 match listener.accept().await {
                     Ok((stream, remote_addr)) => {
-                        let rpc = rpc.clone();
+                        let state = state.clone();
                         tokio::spawn(async move {
-                            if let Err(err) = handle_control_http_connection(stream, rpc).await {
+                            if let Err(err) = handle_control_http_connection(stream, state).await {
                                 warn!(
                                     "standalone gateway control-http connection {} failed: {err}",
                                     remote_addr
@@ -538,11 +538,18 @@ impl GatewayBroadcaster {
 
 async fn handle_control_http_connection(
     mut stream: tokio::net::TcpStream,
-    rpc: Arc<RpcDispatcher>,
+    state: Arc<ServerState>,
 ) -> Result<()> {
     let Some(request) = read_control_http_request(&mut stream).await? else {
         return Ok(());
     };
+
+    if request.method == "POST" {
+        if let Some(route) = parse_channel_webhook_route(&request.path) {
+            return handle_channel_webhook_http(&mut stream, state.clone(), route, &request.body)
+                .await;
+        }
+    }
 
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/" | "/ui" | "/control") => {
@@ -554,7 +561,7 @@ async fn handle_control_http_connection(
                 method: "health".to_owned(),
                 params: json!({}),
             };
-            let payload = dispatch_http_rpc(&rpc, req).await;
+            let payload = dispatch_http_rpc(&state.rpc, req).await;
             write_http_json_response(&mut stream, 200, &payload).await
         }
         ("GET", "/status") => {
@@ -563,7 +570,7 @@ async fn handle_control_http_connection(
                 method: "status".to_owned(),
                 params: json!({}),
             };
-            let payload = dispatch_http_rpc(&rpc, req).await;
+            let payload = dispatch_http_rpc(&state.rpc, req).await;
             write_http_json_response(&mut stream, 200, &payload).await
         }
         ("GET", "/rpc/methods") => {
@@ -580,7 +587,7 @@ async fn handle_control_http_connection(
         }
         ("POST", "/rpc") => match parse_control_http_rpc_request(&request.body) {
             Ok(req) => {
-                let payload = dispatch_http_rpc(&rpc, req).await;
+                let payload = dispatch_http_rpc(&state.rpc, req).await;
                 write_http_json_response(&mut stream, 200, &payload).await
             }
             Err(err) => {
@@ -617,6 +624,187 @@ struct ControlHttpRequest {
     method: String,
     path: String,
     body: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+struct ChannelWebhookRoute {
+    channel: String,
+    account_id: Option<String>,
+}
+
+fn parse_channel_webhook_route(path: &str) -> Option<ChannelWebhookRoute> {
+    let segments = path
+        .trim_matches('/')
+        .split('/')
+        .filter(|segment| !segment.trim().is_empty())
+        .collect::<Vec<_>>();
+    let (channel_raw, account_id_raw) = match segments.as_slice() {
+        ["webhook", channel] => (*channel, None),
+        ["webhook", channel, account_id] => (*channel, Some(*account_id)),
+        ["webhooks", channel] => (*channel, None),
+        ["webhooks", channel, account_id] => (*channel, Some(*account_id)),
+        ["channel", channel, "webhook"] => (*channel, None),
+        ["channels", channel, "webhook"] => (*channel, None),
+        ["channels", channel, "account", account_id, "webhook"] => (*channel, Some(*account_id)),
+        ["channels", channel, "accounts", account_id, "webhook"] => (*channel, Some(*account_id)),
+        _ => return None,
+    };
+    let channel = normalize_channel_id(Some(channel_raw))?;
+    let account_id = account_id_raw.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    });
+    Some(ChannelWebhookRoute {
+        channel,
+        account_id,
+    })
+}
+
+fn normalize_webhook_event_name(channel: &str, raw_event: Option<&str>) -> String {
+    let normalized = raw_event
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(normalize_method);
+    match normalized {
+        Some(value) if value.contains('.') => value,
+        Some(value) => format!("{channel}.{value}"),
+        None => format!("{channel}.message"),
+    }
+}
+
+fn enrich_webhook_payload(payload: Value, channel: &str, account_id: Option<&str>) -> Value {
+    let mut payload = match payload {
+        Value::Object(map) => Value::Object(map),
+        other => json!({ "body": other }),
+    };
+    let Some(map) = payload.as_object_mut() else {
+        return payload;
+    };
+    if !map.contains_key("channel") {
+        map.insert("channel".to_owned(), Value::String(channel.to_owned()));
+    }
+    if let Some(account_id) = account_id {
+        if !map.contains_key("accountId") && !map.contains_key("account_id") {
+            map.insert("accountId".to_owned(), Value::String(account_id.to_owned()));
+        }
+    }
+    payload
+}
+
+fn parse_channel_webhook_frame_payload(route: &ChannelWebhookRoute, payload: Value) -> Value {
+    let event = payload
+        .as_object()
+        .and_then(|map| map.get("event"))
+        .or_else(|| payload.as_object().and_then(|map| map.get("type")))
+        .and_then(Value::as_str);
+    let event_name = normalize_webhook_event_name(&route.channel, event);
+    let event_payload = payload
+        .as_object()
+        .and_then(|map| map.get("payload"))
+        .or_else(|| payload.as_object().and_then(|map| map.get("data")))
+        .cloned()
+        .unwrap_or(payload);
+    let event_payload =
+        enrich_webhook_payload(event_payload, &route.channel, route.account_id.as_deref());
+    json!({
+        "type": "event",
+        "event": event_name,
+        "payload": event_payload
+    })
+}
+
+fn parse_channel_webhook_frames(route: &ChannelWebhookRoute, body: &[u8]) -> Result<Vec<Value>> {
+    let payload: Value = if body.is_empty() {
+        json!({})
+    } else {
+        serde_json::from_slice(body).context("invalid webhook JSON payload")?
+    };
+    let mut frames = match payload {
+        Value::Array(items) => items
+            .into_iter()
+            .map(|entry| parse_channel_webhook_frame_payload(route, entry))
+            .collect::<Vec<_>>(),
+        Value::Object(mut object) => {
+            if let Some(Value::Array(items)) = object.remove("events") {
+                items
+                    .into_iter()
+                    .map(|entry| parse_channel_webhook_frame_payload(route, entry))
+                    .collect::<Vec<_>>()
+            } else {
+                vec![parse_channel_webhook_frame_payload(
+                    route,
+                    Value::Object(object),
+                )]
+            }
+        }
+        other => vec![parse_channel_webhook_frame_payload(route, other)],
+    };
+    if frames.is_empty() {
+        frames.push(parse_channel_webhook_frame_payload(route, json!({})));
+    }
+    Ok(frames)
+}
+
+async fn handle_channel_webhook_http(
+    stream: &mut tokio::net::TcpStream,
+    state: Arc<ServerState>,
+    route: ChannelWebhookRoute,
+    body: &[u8],
+) -> Result<()> {
+    let frames = match parse_channel_webhook_frames(&route, body) {
+        Ok(frames) => frames,
+        Err(err) => {
+            let payload = json!({
+                "ok": false,
+                "error": {
+                    "code": 400,
+                    "message": err.to_string()
+                }
+            });
+            return write_http_json_response(stream, 400, &payload).await;
+        }
+    };
+    let mut events = Vec::with_capacity(frames.len());
+    let mut ingresses = Vec::with_capacity(frames.len());
+    for frame in frames {
+        events.push(
+            frame
+                .get("event")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        );
+        ingresses.push(process_event_frame(state.clone(), frame).await);
+    }
+    let ingress = ingresses
+        .first()
+        .cloned()
+        .unwrap_or_else(EventIngressStatus::ignored);
+    let accepted_count = ingresses.iter().filter(|entry| entry.accepted).count();
+    let extracted_count = ingresses.iter().filter(|entry| entry.extracted).count();
+    let dispatched_count = ingresses
+        .iter()
+        .filter(|entry| entry.dispatch == "dispatched")
+        .count();
+    let payload = json!({
+        "ok": true,
+        "accepted": accepted_count > 0,
+        "acceptedCount": accepted_count,
+        "extractedCount": extracted_count,
+        "dispatchedCount": dispatched_count,
+        "eventCount": events.len(),
+        "channel": route.channel,
+        "event": events.first().cloned().unwrap_or_default(),
+        "events": events,
+        "accountId": route.account_id,
+        "ingress": ingress,
+        "ingresses": ingresses
+    });
+    write_http_json_response(stream, 200, &payload).await
 }
 
 fn parse_control_http_rpc_request(body: &[u8]) -> Result<RpcRequestFrame> {
@@ -1040,56 +1228,7 @@ async fn handle_connection(
                         let _ = out_tx.send(Message::Text(response.to_string())).await;
                     }
                     FrameKind::Event => {
-                        state.rpc.ingest_event_frame(&frame).await;
-                        if let Some(event) = frame.get("event").and_then(Value::as_str) {
-                            let payload = frame.get("payload").cloned().unwrap_or(Value::Null);
-                            let drop_if_slow = matches!(
-                                normalize_method(event).as_str(),
-                                "heartbeat" | "presence" | "tick"
-                            );
-                            state
-                                .broadcaster
-                                .broadcast_event(event, payload, drop_if_slow)
-                                .await;
-                        }
-
-                        if let Some(request) = state.drivers.extract(&frame) {
-                            match state.scheduler.submit(request).await {
-                                SubmitOutcome::Dispatch(dispatch_request) => {
-                                    let Ok(slot) = state.inflight.clone().try_acquire_owned()
-                                    else {
-                                        warn!(
-                                            "standalone gateway decision queue saturated, dropping request {}",
-                                            dispatch_request.id
-                                        );
-                                        let _ = state.scheduler.complete(&dispatch_request).await;
-                                        continue;
-                                    };
-                                    spawn_session_worker(dispatch_request, slot, state.clone());
-                                }
-                                SubmitOutcome::Queued => {}
-                                SubmitOutcome::Dropped {
-                                    request_id,
-                                    session_id,
-                                } => {
-                                    debug!(
-                                        "standalone gateway session queue dropped request {} (session={})",
-                                        request_id,
-                                        session_id
-                                    );
-                                }
-                                SubmitOutcome::IgnoredActivation {
-                                    request_id,
-                                    session_id,
-                                } => {
-                                    debug!(
-                                        "standalone gateway ignored request {} due to activation (session={})",
-                                        request_id,
-                                        session_id
-                                    );
-                                }
-                            }
-                        }
+                        let _ = process_event_frame(state.clone(), frame).await;
                     }
                     FrameKind::Resp | FrameKind::Error | FrameKind::Unknown => {}
                 }
@@ -1106,6 +1245,131 @@ async fn handle_connection(
     drop(out_tx);
     let _ = writer.await;
     Ok(())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct EventIngressStatus {
+    accepted: bool,
+    extracted: bool,
+    dispatch: &'static str,
+    #[serde(rename = "requestId", skip_serializing_if = "Option::is_none")]
+    request_id: Option<String>,
+    #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+}
+
+impl EventIngressStatus {
+    fn ignored() -> Self {
+        Self {
+            accepted: true,
+            extracted: false,
+            dispatch: "ignored",
+            request_id: None,
+            session_id: None,
+        }
+    }
+}
+
+async fn process_event_frame(state: Arc<ServerState>, frame: Value) -> EventIngressStatus {
+    state.rpc.ingest_event_frame(&frame).await;
+    if let Some(event) = frame.get("event").and_then(Value::as_str) {
+        let payload = frame.get("payload").cloned().unwrap_or(Value::Null);
+        let drop_if_slow = matches!(
+            normalize_method(event).as_str(),
+            "heartbeat" | "presence" | "tick"
+        );
+        state
+            .broadcaster
+            .broadcast_event(event, payload, drop_if_slow)
+            .await;
+    }
+
+    let Some(mut request) = state.drivers.extract(&frame) else {
+        return EventIngressStatus::ignored();
+    };
+    if request
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        if let Some(resolved) = state
+            .rpc
+            .resolve_session_for_delivery_hints(&request.raw)
+            .await
+        {
+            request.session_id = Some(resolved);
+        }
+    }
+
+    let request_id = Some(request.id.clone());
+    let session_id = request.session_id.clone();
+    match state.scheduler.submit(request).await {
+        SubmitOutcome::Dispatch(dispatch_request) => {
+            let Ok(slot) = state.inflight.clone().try_acquire_owned() else {
+                warn!(
+                    "standalone gateway decision queue saturated, dropping request {}",
+                    dispatch_request.id
+                );
+                let _ = state.scheduler.complete(&dispatch_request).await;
+                return EventIngressStatus {
+                    accepted: true,
+                    extracted: true,
+                    dispatch: "dropped_capacity",
+                    request_id,
+                    session_id,
+                };
+            };
+            spawn_session_worker(dispatch_request, slot, state.clone());
+            EventIngressStatus {
+                accepted: true,
+                extracted: true,
+                dispatch: "dispatched",
+                request_id,
+                session_id,
+            }
+        }
+        SubmitOutcome::Queued => EventIngressStatus {
+            accepted: true,
+            extracted: true,
+            dispatch: "queued",
+            request_id,
+            session_id,
+        },
+        SubmitOutcome::Dropped {
+            request_id,
+            session_id,
+        } => {
+            debug!(
+                "standalone gateway session queue dropped request {} (session={})",
+                request_id, session_id
+            );
+            EventIngressStatus {
+                accepted: true,
+                extracted: true,
+                dispatch: "dropped",
+                request_id: Some(request_id),
+                session_id: Some(session_id),
+            }
+        }
+        SubmitOutcome::IgnoredActivation {
+            request_id,
+            session_id,
+        } => {
+            debug!(
+                "standalone gateway ignored request {} due to activation (session={})",
+                request_id, session_id
+            );
+            EventIngressStatus {
+                accepted: true,
+                extracted: true,
+                dispatch: "ignored_activation",
+                request_id: Some(request_id),
+                session_id: Some(session_id),
+            }
+        }
+    }
 }
 
 fn spawn_session_worker(
@@ -1357,6 +1621,7 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -1377,7 +1642,9 @@ mod tests {
     use crate::security::ActionEvaluator;
     use crate::types::{ActionRequest, Decision, DecisionAction};
 
-    use super::{authorize_gateway_method, GatewayBroadcaster, GatewayServer};
+    use super::{
+        authorize_gateway_method, parse_channel_webhook_route, GatewayBroadcaster, GatewayServer,
+    };
 
     struct AllowEvaluator;
 
@@ -1680,6 +1947,248 @@ mod tests {
             .pointer("/result/sessions")
             .and_then(Value::as_array)
             .is_some());
+
+        let _ = shutdown_tx.send(());
+        task.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn standalone_gateway_control_http_webhook_ingest_dispatches_decisions() -> Result<()> {
+        let ws_bind = reserve_bind()?;
+        let http_bind = reserve_bind()?;
+        let mut gateway = test_gateway(ws_bind.clone());
+        gateway.server.http_bind = Some(http_bind.clone());
+        let server = GatewayServer::new(
+            gateway,
+            "security.decision".to_owned(),
+            64,
+            SessionQueueMode::Followup,
+            GroupActivationMode::Always,
+        );
+        let evaluator: Arc<dyn ActionEvaluator> = Arc::new(AllowEvaluator);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            server
+                .run_until(evaluator, None, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let url = format!("ws://{ws_bind}");
+        let (mut ws, _hello) =
+            ws_connect_with_hello(&url, "operator", &["operator.admin"], "cp1-token").await?;
+
+        let webhook = http_post_json(
+            &http_bind,
+            "/webhook/tg/account-main",
+            &json!({
+                "id": "req-http-webhook-1",
+                "sessionKey": "agent:main:telegram:dm:+15551234567",
+                "message": "hello from webhook"
+            }),
+        )
+        .await?;
+        assert_eq!(webhook.pointer("/ok").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            webhook.pointer("/channel").and_then(Value::as_str),
+            Some("telegram")
+        );
+        assert_eq!(
+            webhook.pointer("/event").and_then(Value::as_str),
+            Some("telegram.message")
+        );
+        assert_eq!(
+            webhook
+                .pointer("/ingress/extracted")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+
+        let decision_frame = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let frame = ws
+                    .next()
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("missing websocket frame"))??;
+                if let Message::Text(text) = frame {
+                    let parsed: Value = serde_json::from_str(text.as_str())?;
+                    if parsed.get("type").and_then(Value::as_str) == Some("event")
+                        && parsed.get("event").and_then(Value::as_str) == Some("security.decision")
+                        && parsed.pointer("/payload/requestId").and_then(Value::as_str)
+                            == Some("req-http-webhook-1")
+                    {
+                        return Ok::<Value, anyhow::Error>(parsed);
+                    }
+                }
+            }
+        })
+        .await??;
+        assert_eq!(
+            decision_frame
+                .pointer("/payload/deliveryContext/channel")
+                .and_then(Value::as_str),
+            Some("telegram")
+        );
+        assert_eq!(
+            decision_frame
+                .pointer("/payload/deliveryContext/accountId")
+                .and_then(Value::as_str),
+            Some("account-main")
+        );
+
+        let status = http_post_json(
+            &http_bind,
+            "/rpc",
+            &json!({
+                "id": "http-status-after-webhook",
+                "method": "channels.status",
+                "params": {
+                    "probe": false
+                }
+            }),
+        )
+        .await?;
+        assert!(status
+            .pointer("/result/channelAccounts/telegram/0/lastInboundAt")
+            .and_then(Value::as_u64)
+            .is_some());
+
+        let _ = shutdown_tx.send(());
+        task.await??;
+        Ok(())
+    }
+
+    #[test]
+    fn channel_webhook_route_aliases_are_supported() {
+        let route =
+            parse_channel_webhook_route("/webhooks/tg/account-main").expect("webhooks alias route");
+        assert_eq!(route.channel, "telegram");
+        assert_eq!(route.account_id.as_deref(), Some("account-main"));
+
+        let route = parse_channel_webhook_route("/channels/discord/account/bot-1/webhook")
+            .expect("singular account route");
+        assert_eq!(route.channel, "discord");
+        assert_eq!(route.account_id.as_deref(), Some("bot-1"));
+
+        let route = parse_channel_webhook_route("/channel/slack/webhook")
+            .expect("channel singular alias route");
+        assert_eq!(route.channel, "slack");
+        assert_eq!(route.account_id, None);
+    }
+
+    #[tokio::test]
+    async fn standalone_gateway_control_http_webhook_batch_ingest_dispatches_all_decisions(
+    ) -> Result<()> {
+        let ws_bind = reserve_bind()?;
+        let http_bind = reserve_bind()?;
+        let mut gateway = test_gateway(ws_bind.clone());
+        gateway.server.http_bind = Some(http_bind.clone());
+        let server = GatewayServer::new(
+            gateway,
+            "security.decision".to_owned(),
+            64,
+            SessionQueueMode::Followup,
+            GroupActivationMode::Always,
+        );
+        let evaluator: Arc<dyn ActionEvaluator> = Arc::new(AllowEvaluator);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            server
+                .run_until(evaluator, None, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let url = format!("ws://{ws_bind}");
+        let (mut ws, _hello) =
+            ws_connect_with_hello(&url, "operator", &["operator.admin"], "cp1-token").await?;
+
+        let webhook = http_post_json(
+            &http_bind,
+            "/channels/discord/account/bot-main/webhook",
+            &json!({
+                "events": [
+                    {
+                        "event": "message",
+                        "payload": {
+                            "id": "req-http-webhook-batch-1",
+                            "sessionKey": "agent:main:discord:dm:user-1",
+                            "message": "hello one"
+                        }
+                    },
+                    {
+                        "type": "message",
+                        "data": {
+                            "id": "req-http-webhook-batch-2",
+                            "sessionKey": "agent:main:discord:dm:user-2",
+                            "message": "hello two"
+                        }
+                    }
+                ]
+            }),
+        )
+        .await?;
+        assert_eq!(webhook.pointer("/ok").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            webhook.pointer("/channel").and_then(Value::as_str),
+            Some("discord")
+        );
+        assert_eq!(
+            webhook.pointer("/accountId").and_then(Value::as_str),
+            Some("bot-main")
+        );
+        assert_eq!(
+            webhook.pointer("/eventCount").and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            webhook.pointer("/extractedCount").and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            webhook.pointer("/events/0").and_then(Value::as_str),
+            Some("discord.message")
+        );
+        assert_eq!(
+            webhook.pointer("/events/1").and_then(Value::as_str),
+            Some("discord.message")
+        );
+
+        let expected = ["req-http-webhook-batch-1", "req-http-webhook-batch-2"];
+        let seen = tokio::time::timeout(Duration::from_secs(3), async {
+            let mut seen = HashSet::new();
+            while seen.len() < expected.len() {
+                let frame = ws
+                    .next()
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("missing websocket frame"))??;
+                if let Message::Text(text) = frame {
+                    let parsed: Value = serde_json::from_str(text.as_str())?;
+                    if parsed.get("type").and_then(Value::as_str) == Some("event")
+                        && parsed.get("event").and_then(Value::as_str) == Some("security.decision")
+                    {
+                        if let Some(request_id) =
+                            parsed.pointer("/payload/requestId").and_then(Value::as_str)
+                        {
+                            if expected
+                                .iter()
+                                .any(|candidate| candidate.eq_ignore_ascii_case(request_id))
+                            {
+                                seen.insert(request_id.to_owned());
+                            }
+                        }
+                    }
+                }
+            }
+            Ok::<HashSet<String>, anyhow::Error>(seen)
+        })
+        .await??;
+        assert_eq!(seen.len(), expected.len());
 
         let _ = shutdown_tx.send(());
         task.await??;

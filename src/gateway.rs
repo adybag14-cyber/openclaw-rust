@@ -700,6 +700,7 @@ pub struct RpcDispatcher {
     talk: TalkRegistry,
     tts: TtsRegistry,
     voicewake: VoiceWakeRegistry,
+    voice_io: VoiceIoRegistry,
     models: ModelRegistry,
     auth_profiles: AuthProfileRegistry,
     agents: AgentRegistry,
@@ -804,6 +805,8 @@ const TTS_ELEVENLABS_VOICE_ID_ENV: &str = "ELEVENLABS_VOICE_ID";
 const TTS_ELEVENLABS_DEFAULT_VOICE_ID: &str = "EXAVITQu4vr4xnSDxMaL";
 const TTS_PROVIDER_HTTP_TIMEOUT_SECS: u64 = 15;
 const DEFAULT_VOICEWAKE_TRIGGERS: &[&str] = &["openclaw", "claude", "computer"];
+const VOICE_INPUT_DEVICE_DEFAULT: &str = "default-microphone";
+const VOICE_OUTPUT_DEVICE_DEFAULT: &str = "default-speaker";
 static SESSION_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static CRON_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static WEB_LOGIN_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -820,6 +823,7 @@ static CHAT_INJECT_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static SEND_MESSAGE_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static POLL_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static TTS_AUDIO_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static VOICE_CAPTURE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const SUPPORTED_RPC_METHODS: &[&str] = &[
     "connect",
     "health",
@@ -943,6 +947,7 @@ impl RpcDispatcher {
             talk: TalkRegistry::new(),
             tts: TtsRegistry::new(),
             voicewake: VoiceWakeRegistry::new(),
+            voice_io: VoiceIoRegistry::new(),
             models: ModelRegistry::new(),
             auth_profiles: AuthProfileRegistry::new(),
             agents: AgentRegistry::new(),
@@ -984,8 +989,8 @@ impl RpcDispatcher {
     }
 
     pub async fn resolve_session_for_delivery_hints(&self, raw: &Value) -> Option<String> {
-        let (channel, to, account_id) = extract_delivery_context_hints(raw);
-        if channel.is_none() && to.is_none() && account_id.is_none() {
+        let hints = extract_delivery_context_hints(raw);
+        if hints.is_empty() {
             return None;
         }
         self.sessions
@@ -993,9 +998,10 @@ impl RpcDispatcher {
                 label: None,
                 agent_id: None,
                 spawned_by: None,
-                channel,
-                to,
-                account_id,
+                channel: hints.channel,
+                to: hints.to,
+                account_id: hints.account_id,
+                thread_id: hints.thread_id,
                 include_global: true,
                 include_unknown: true,
             })
@@ -1536,9 +1542,26 @@ impl RpcDispatcher {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
         };
+        let io_state = self.voice_io.snapshot().await;
         let mut talk = serde_json::Map::new();
         talk.insert("outputFormat".to_owned(), Value::String("pcm16".to_owned()));
         talk.insert("interruptOnSpeech".to_owned(), Value::Bool(true));
+        talk.insert(
+            "inputDevice".to_owned(),
+            Value::String(io_state.input_device.clone()),
+        );
+        talk.insert(
+            "outputDevice".to_owned(),
+            Value::String(io_state.output_device.clone()),
+        );
+        talk.insert(
+            "captureActive".to_owned(),
+            Value::Bool(io_state.capture_active),
+        );
+        talk.insert(
+            "playbackActive".to_owned(),
+            Value::Bool(io_state.playback_active),
+        );
         if params.include_secrets.unwrap_or(false) {
             talk.insert("apiKey".to_owned(), Value::String("redacted".to_owned()));
         }
@@ -1547,6 +1570,25 @@ impl RpcDispatcher {
                 "talk": Value::Object(talk),
                 "session": { "mainKey": "main" },
                 "ui": { "seamColor": "#4b5563" }
+            },
+            "audio": {
+                "capture": {
+                    "active": io_state.capture_active,
+                    "sessionId": io_state.capture_session_id,
+                    "startedAtMs": io_state.capture_started_at_ms,
+                    "lastFrameAtMs": io_state.capture_last_frame_at_ms,
+                    "frames": io_state.capture_frames
+                },
+                "playback": {
+                    "active": io_state.playback_active,
+                    "queueDepth": io_state.playback_queue_depth,
+                    "outputDevice": io_state.output_device,
+                    "lastAudioPath": io_state.playback_last_audio_path,
+                    "lastProvider": io_state.playback_last_provider,
+                    "lastStartedAtMs": io_state.playback_last_started_at_ms,
+                    "lastCompletedAtMs": io_state.playback_last_completed_at_ms,
+                    "lastDurationMs": io_state.playback_last_duration_ms
+                }
             }
         }))
     }
@@ -1563,17 +1605,39 @@ impl RpcDispatcher {
         };
         let phase = normalize_optional_text(params.phase, 64);
         let state = self.talk.set_mode(enabled, phase).await;
+        let input_device = normalize_optional_text(params.input_device, 128);
+        let output_device = normalize_optional_text(params.output_device, 128);
+        let io_state = self
+            .voice_io
+            .set_capture_mode_and_devices(
+                enabled,
+                input_device.as_deref(),
+                output_device.as_deref(),
+            )
+            .await;
         self.system
             .log_line(format!(
-                "talk.mode enabled={} phase={}",
+                "talk.mode enabled={} phase={} captureActive={} inputDevice={} outputDevice={}",
                 state.enabled,
-                state.phase.clone().unwrap_or_else(|| "null".to_owned())
+                state.phase.clone().unwrap_or_else(|| "null".to_owned()),
+                io_state.capture_active,
+                io_state.input_device,
+                io_state.output_device
             ))
             .await;
         RpcDispatchOutcome::Handled(json!({
             "enabled": state.enabled,
             "phase": state.phase,
-            "ts": state.updated_at_ms
+            "ts": state.updated_at_ms,
+            "inputDevice": io_state.input_device,
+            "outputDevice": io_state.output_device,
+            "capture": {
+                "active": io_state.capture_active,
+                "sessionId": io_state.capture_session_id,
+                "startedAtMs": io_state.capture_started_at_ms,
+                "lastFrameAtMs": io_state.capture_last_frame_at_ms,
+                "frames": io_state.capture_frames
+            }
         }))
     }
 
@@ -1582,6 +1646,7 @@ impl RpcDispatcher {
             return RpcDispatchOutcome::bad_request(format!("invalid tts.status params: {err}"));
         }
         let state = self.tts.snapshot().await;
+        let io_state = self.voice_io.snapshot().await;
         let has_openai_key = tts_provider_api_key("openai").is_some();
         let has_elevenlabs_key = tts_provider_api_key("elevenlabs").is_some();
         let fallback_providers = tts_fallback_providers(&state.provider);
@@ -1595,7 +1660,24 @@ impl RpcDispatcher {
             "prefsPath": TTS_PREFS_PATH,
             "hasOpenAIKey": has_openai_key,
             "hasElevenLabsKey": has_elevenlabs_key,
-            "edgeEnabled": true
+            "edgeEnabled": true,
+            "capture": {
+                "active": io_state.capture_active,
+                "sessionId": io_state.capture_session_id,
+                "startedAtMs": io_state.capture_started_at_ms,
+                "lastFrameAtMs": io_state.capture_last_frame_at_ms,
+                "frames": io_state.capture_frames
+            },
+            "playback": {
+                "active": io_state.playback_active,
+                "queueDepth": io_state.playback_queue_depth,
+                "outputDevice": io_state.output_device,
+                "lastAudioPath": io_state.playback_last_audio_path,
+                "lastProvider": io_state.playback_last_provider,
+                "lastStartedAtMs": io_state.playback_last_started_at_ms,
+                "lastCompletedAtMs": io_state.playback_last_completed_at_ms,
+                "lastDurationMs": io_state.playback_last_duration_ms
+            }
         }))
     }
 
@@ -1632,6 +1714,7 @@ impl RpcDispatcher {
             return RpcDispatchOutcome::bad_request("tts.convert requires text");
         };
         let channel = normalize_optional_text(params.channel, 64).map(|value| normalize(&value));
+        let output_device = normalize_optional_text(params.output_device, 128);
         let state = self.tts.snapshot().await;
         let (output_format, extension, voice_compatible) = if channel.as_deref() == Some("telegram")
         {
@@ -1645,14 +1728,24 @@ impl RpcDispatcher {
             synthesize_tts_audio_blob_with_provider(&text, output_format, &state.provider).await;
         let audio_bytes = audio_blob.bytes;
         let audio_base64 = BASE64_STANDARD.encode(&audio_bytes);
+        let io_state = self
+            .voice_io
+            .record_playback_with_output(
+                &audio_path,
+                &audio_blob.provider_used,
+                audio_blob.duration_ms,
+                output_device.as_deref(),
+            )
+            .await;
         self.system
             .log_line(format!(
-                "tts.convert provider={} providerUsed={} source={} channel={} chars={}",
+                "tts.convert provider={} providerUsed={} source={} channel={} chars={} outputDevice={}",
                 state.provider,
                 audio_blob.provider_used,
                 audio_blob.source,
                 channel.unwrap_or_else(|| "default".to_owned()),
-                text_chars
+                text_chars,
+                io_state.output_device
             ))
             .await;
         RpcDispatchOutcome::Handled(json!({
@@ -1667,7 +1760,18 @@ impl RpcDispatcher {
             "durationMs": audio_blob.duration_ms,
             "sampleRateHz": audio_blob.sample_rate_hz,
             "channels": 1,
-            "textChars": text_chars
+            "textChars": text_chars,
+            "outputDevice": io_state.output_device,
+            "playback": {
+                "active": io_state.playback_active,
+                "queueDepth": io_state.playback_queue_depth,
+                "lastAudioPath": io_state.playback_last_audio_path,
+                "lastProvider": io_state.playback_last_provider,
+                "lastStartedAtMs": io_state.playback_last_started_at_ms,
+                "lastCompletedAtMs": io_state.playback_last_completed_at_ms,
+                "lastDurationMs": io_state.playback_last_duration_ms,
+                "outputDevice": io_state.output_device
+            }
         }))
     }
 
@@ -1732,8 +1836,16 @@ impl RpcDispatcher {
             return RpcDispatchOutcome::bad_request(format!("invalid voicewake.get params: {err}"));
         }
         let state = self.voicewake.snapshot().await;
+        let io_state = self.voice_io.snapshot().await;
         RpcDispatchOutcome::Handled(json!({
-            "triggers": state.triggers
+            "triggers": state.triggers,
+            "capture": {
+                "active": io_state.capture_active,
+                "sessionId": io_state.capture_session_id,
+                "startedAtMs": io_state.capture_started_at_ms,
+                "lastFrameAtMs": io_state.capture_last_frame_at_ms,
+                "frames": io_state.capture_frames
+            }
         }))
     }
 
@@ -1754,6 +1866,7 @@ impl RpcDispatcher {
         };
         let normalized = normalize_voicewake_triggers(values);
         let state = self.voicewake.set_triggers(normalized.clone()).await;
+        let io_state = self.voice_io.touch_capture_frame().await;
         let payload_json = serde_json::to_string(&json!({ "triggers": normalized }))
             .ok()
             .filter(|value| !value.is_empty());
@@ -1761,10 +1874,21 @@ impl RpcDispatcher {
             .record_event("voicewake.changed".to_owned(), payload_json)
             .await;
         self.system
-            .log_line(format!("voicewake.set triggers={}", state.triggers.len()))
+            .log_line(format!(
+                "voicewake.set triggers={} captureFrames={}",
+                state.triggers.len(),
+                io_state.capture_frames
+            ))
             .await;
         RpcDispatchOutcome::Handled(json!({
-            "triggers": state.triggers
+            "triggers": state.triggers,
+            "capture": {
+                "active": io_state.capture_active,
+                "sessionId": io_state.capture_session_id,
+                "startedAtMs": io_state.capture_started_at_ms,
+                "lastFrameAtMs": io_state.capture_last_frame_at_ms,
+                "frames": io_state.capture_frames
+            }
         }))
     }
 
@@ -2024,6 +2148,8 @@ impl RpcDispatcher {
                     channel,
                     to,
                     account_id,
+                    thread_id: normalize_optional_text(params.thread_id, 128),
+                    reply_back: None,
                 })
                 .await;
         }
@@ -4007,6 +4133,45 @@ impl RpcDispatcher {
         invoke_id: &str,
     ) -> LocalNodeCommandExecution {
         let command_key = normalize(command);
+        if runtime.external_command.is_some() {
+            let external = local_node_host_execute_external_command(
+                node_id,
+                command,
+                params.as_ref(),
+                runtime,
+            )
+            .await;
+            if external.ok {
+                self.system
+                    .log_line(format!(
+                        "node.invoke.local node={} command={} invokeId={} ok=true source=external-host-runtime",
+                        node_id, command, invoke_id
+                    ))
+                    .await;
+                return external;
+            }
+            if external
+                .error
+                .as_ref()
+                .and_then(|error| error.code.as_deref())
+                == Some("LOCAL_EXTERNAL_HOST_UNAVAILABLE")
+            {
+                self.system
+                    .log_line(format!(
+                        "node.invoke.local external host unavailable for node={} command={} invokeId={}; falling back to in-process runtime",
+                        node_id, command, invoke_id
+                    ))
+                    .await;
+            } else {
+                self.system
+                    .log_line(format!(
+                        "node.invoke.local node={} command={} invokeId={} ok=false source=external-host-runtime",
+                        node_id, command, invoke_id
+                    ))
+                    .await;
+                return external;
+            }
+        }
         let result = match command_key.as_str() {
             "camera.snap" => {
                 let quality = params
@@ -4531,6 +4696,8 @@ impl RpcDispatcher {
                 channel: Some(channel.clone()),
                 to: Some(to),
                 account_id: account_id.clone(),
+                thread_id: thread_id.clone(),
+                reply_back: None,
             })
             .await;
         self.channel_runtime
@@ -4698,6 +4865,8 @@ impl RpcDispatcher {
                 channel: Some(channel.clone()),
                 to: Some(to),
                 account_id: account_id.clone(),
+                thread_id: thread_id.clone(),
+                reply_back: None,
             })
             .await;
         self.channel_runtime
@@ -4817,6 +4986,8 @@ impl RpcDispatcher {
                 channel: Some("webchat".to_owned()),
                 to: None,
                 account_id: None,
+                thread_id: None,
+                reply_back: None,
             })
             .await;
         self.channel_runtime
@@ -4918,6 +5089,8 @@ impl RpcDispatcher {
                 channel: Some("webchat".to_owned()),
                 to: None,
                 account_id: None,
+                thread_id: None,
+                reply_back: None,
             })
             .await;
         self.channel_runtime
@@ -5145,6 +5318,7 @@ impl RpcDispatcher {
                 channel: normalize_optional_text(params.channel, 128),
                 to: normalize_optional_text(params.to, 256),
                 account_id: normalize_optional_text(params.account_id, 128),
+                thread_id: normalize_optional_text(params.thread_id, 128),
                 include_derived_titles: params.include_derived_titles.unwrap_or(false),
                 include_last_message: params.include_last_message.unwrap_or(false),
             })
@@ -5412,7 +5586,13 @@ impl RpcDispatcher {
         let channel = normalize_optional_text(params.channel, 128);
         let to = normalize_optional_text(params.to, 256);
         let account_id = normalize_optional_text(params.account_id, 128);
-        if label.is_none() && channel.is_none() && to.is_none() && account_id.is_none() {
+        let thread_id = normalize_optional_text(params.thread_id, 128);
+        if label.is_none()
+            && channel.is_none()
+            && to.is_none()
+            && account_id.is_none()
+            && thread_id.is_none()
+        {
             return RpcDispatchOutcome::bad_request(
                 "sessionKey|key|sessionId or label is required",
             );
@@ -5427,6 +5607,7 @@ impl RpcDispatcher {
                 channel,
                 to,
                 account_id,
+                thread_id,
                 include_global: params.include_global.unwrap_or(true),
                 include_unknown: params.include_unknown.unwrap_or(true),
             })
@@ -5820,18 +6001,111 @@ impl RpcDispatcher {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(format!("invalid params: {err}")),
         };
-        let session_key = canonicalize_session_key(&params.session_key);
-        if session_key.is_empty() {
-            return RpcDispatchOutcome::bad_request("sessionKey is required");
-        }
-
         let message = normalize_optional_text(params.message, 2_048);
         let command = normalize_optional_text(params.command, 1_024);
         if message.is_none() && command.is_none() {
             return RpcDispatchOutcome::bad_request("message or command is required");
         }
-        let channel = normalize_optional_text(params.channel, 128);
-        let account_id = normalize_optional_text(params.account_id, 128);
+        let delivery_context_hints = params
+            .delivery_context
+            .as_ref()
+            .map(extract_delivery_context_hints)
+            .unwrap_or_default();
+        let reply_back = params.reply_back.and_then(|value| value.then_some(true));
+        let mut channel = normalize_optional_text(params.channel, 128)
+            .or_else(|| delivery_context_hints.channel.clone());
+        let mut to =
+            normalize_optional_text(params.to, 256).or_else(|| delivery_context_hints.to.clone());
+        let mut account_id = normalize_optional_text(params.account_id, 128)
+            .or_else(|| delivery_context_hints.account_id.clone());
+        let mut thread_id = normalize_optional_text(params.thread_id, 128)
+            .or_else(|| delivery_context_hints.thread_id.clone());
+        if let Some(canonical) = channel
+            .as_deref()
+            .and_then(|value| normalize_channel_id(Some(value)))
+        {
+            channel = Some(canonical);
+        }
+
+        let mut session_key = normalize_session_key_input(params.session_key.or(params.key));
+        if session_key.is_none() {
+            if let Some(session_id) = normalize_optional_text(params.session_id, 128) {
+                if let Some(resolved) = self.sessions.resolve_session_id(&session_id).await {
+                    session_key = Some(resolved);
+                } else {
+                    return RpcDispatchOutcome::not_found("session not found");
+                }
+            }
+        }
+        if session_key.is_none()
+            && reply_back.is_some()
+            && (channel.is_some() || to.is_some() || account_id.is_some() || thread_id.is_some())
+        {
+            session_key = self
+                .sessions
+                .resolve_query(SessionResolveQuery {
+                    label: None,
+                    agent_id: None,
+                    spawned_by: None,
+                    channel: channel.clone(),
+                    to: to.clone(),
+                    account_id: account_id.clone(),
+                    thread_id: thread_id.clone(),
+                    include_global: params.include_global.unwrap_or(true),
+                    include_unknown: params.include_unknown.unwrap_or(true),
+                })
+                .await;
+            if session_key.is_none() {
+                return RpcDispatchOutcome::not_found("session not found");
+            }
+        }
+        let Some(session_key) = session_key else {
+            return RpcDispatchOutcome::bad_request("sessionKey|key|sessionId is required");
+        };
+
+        if reply_back.is_some() {
+            if let Some(existing) = self.sessions.get(&session_key).await {
+                if channel.is_none() {
+                    channel = existing.channel.clone();
+                }
+                if to.is_none() {
+                    to = existing
+                        .delivery_context
+                        .as_ref()
+                        .and_then(|context| context.to.clone());
+                }
+                if account_id.is_none() {
+                    account_id = existing.last_account_id.clone();
+                }
+                if thread_id.is_none() {
+                    thread_id = existing
+                        .delivery_context
+                        .as_ref()
+                        .and_then(|context| context.thread_id.clone());
+                }
+            }
+            let parsed = parse_session_key(&session_key);
+            if channel.is_none() {
+                channel = parsed.channel.clone();
+            }
+            if to.is_none()
+                && matches!(
+                    parsed.kind,
+                    SessionKind::Direct | SessionKind::Group | SessionKind::Channel
+                )
+            {
+                to = parsed.scope_id.clone();
+            }
+            if thread_id.is_none() {
+                thread_id = parsed.topic_id;
+            }
+        }
+        if let Some(canonical) = channel
+            .as_deref()
+            .and_then(|value| normalize_channel_id(Some(value)))
+        {
+            channel = Some(canonical);
+        }
         if channel
             .as_deref()
             .map(|value| value.eq_ignore_ascii_case("webchat"))
@@ -5852,8 +6126,10 @@ impl RpcDispatcher {
                 source: normalize_optional_text(params.source, 128)
                     .unwrap_or_else(|| "rpc".to_owned()),
                 channel,
-                to: normalize_optional_text(params.to, 256),
+                to,
                 account_id: account_id.clone(),
+                thread_id,
+                reply_back,
             })
             .await;
         if let Some(channel) = recorded.channel.as_deref() {
@@ -6560,6 +6836,130 @@ impl VoiceWakeRegistry {
     async fn set_triggers(&self, triggers: Vec<String>) -> VoiceWakeState {
         let mut guard = self.state.lock().await;
         guard.triggers = triggers;
+        guard.updated_at_ms = now_ms();
+        guard.clone()
+    }
+}
+
+struct VoiceIoRegistry {
+    state: Mutex<VoiceIoState>,
+}
+
+#[derive(Debug, Clone)]
+struct VoiceIoState {
+    input_device: String,
+    output_device: String,
+    capture_active: bool,
+    capture_session_id: Option<String>,
+    capture_started_at_ms: Option<u64>,
+    capture_last_frame_at_ms: Option<u64>,
+    capture_frames: u64,
+    playback_active: bool,
+    playback_queue_depth: usize,
+    playback_last_audio_path: Option<String>,
+    playback_last_provider: Option<String>,
+    playback_last_started_at_ms: Option<u64>,
+    playback_last_completed_at_ms: Option<u64>,
+    playback_last_duration_ms: Option<u64>,
+    updated_at_ms: u64,
+}
+
+impl VoiceIoRegistry {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(VoiceIoState {
+                input_device: VOICE_INPUT_DEVICE_DEFAULT.to_owned(),
+                output_device: VOICE_OUTPUT_DEVICE_DEFAULT.to_owned(),
+                capture_active: false,
+                capture_session_id: None,
+                capture_started_at_ms: None,
+                capture_last_frame_at_ms: None,
+                capture_frames: 0,
+                playback_active: false,
+                playback_queue_depth: 0,
+                playback_last_audio_path: None,
+                playback_last_provider: None,
+                playback_last_started_at_ms: None,
+                playback_last_completed_at_ms: None,
+                playback_last_duration_ms: None,
+                updated_at_ms: now_ms(),
+            }),
+        }
+    }
+
+    async fn snapshot(&self) -> VoiceIoState {
+        let guard = self.state.lock().await;
+        guard.clone()
+    }
+
+    async fn set_capture_mode_and_devices(
+        &self,
+        enabled: bool,
+        input_device: Option<&str>,
+        output_device: Option<&str>,
+    ) -> VoiceIoState {
+        let mut guard = self.state.lock().await;
+        if let Some(device) =
+            input_device.and_then(|value| normalize_optional_text(Some(value.to_owned()), 128))
+        {
+            guard.input_device = device;
+        }
+        if let Some(device) =
+            output_device.and_then(|value| normalize_optional_text(Some(value.to_owned()), 128))
+        {
+            guard.output_device = device;
+        }
+        if enabled {
+            if guard.capture_session_id.is_none() {
+                let sequence = VOICE_CAPTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
+                guard.capture_session_id = Some(format!("capture-{}-{sequence}", now_ms()));
+            }
+            guard.capture_active = true;
+            if guard.capture_started_at_ms.is_none() {
+                guard.capture_started_at_ms = Some(now_ms());
+            }
+            guard.capture_last_frame_at_ms = Some(now_ms());
+            guard.capture_frames = guard.capture_frames.saturating_add(1);
+        } else {
+            guard.capture_active = false;
+        }
+        guard.updated_at_ms = now_ms();
+        guard.clone()
+    }
+
+    async fn touch_capture_frame(&self) -> VoiceIoState {
+        let mut guard = self.state.lock().await;
+        if guard.capture_active {
+            guard.capture_last_frame_at_ms = Some(now_ms());
+            guard.capture_frames = guard.capture_frames.saturating_add(1);
+            guard.updated_at_ms = now_ms();
+        }
+        guard.clone()
+    }
+
+    async fn record_playback_with_output(
+        &self,
+        audio_path: &str,
+        provider: &str,
+        duration_ms: u64,
+        output_device: Option<&str>,
+    ) -> VoiceIoState {
+        let mut guard = self.state.lock().await;
+        if let Some(device) =
+            output_device.and_then(|value| normalize_optional_text(Some(value.to_owned()), 128))
+        {
+            guard.output_device = device;
+        }
+        guard.playback_queue_depth = guard.playback_queue_depth.saturating_add(1);
+        guard.playback_active = true;
+        guard.playback_last_audio_path = Some(audio_path.to_owned());
+        guard.playback_last_provider = Some(provider.to_owned());
+        guard.playback_last_started_at_ms = Some(now_ms());
+        guard.playback_last_duration_ms = Some(duration_ms);
+        // Playback is simulated; mark completion immediately while preserving metadata.
+        guard.playback_last_completed_at_ms = Some(now_ms());
+        guard.playback_active = false;
+        guard.playback_queue_depth = guard.playback_queue_depth.saturating_sub(1);
         guard.updated_at_ms = now_ms();
         guard.clone()
     }
@@ -7576,6 +7976,15 @@ struct NodeHostRuntimeConfig {
     local_node_ids: Vec<String>,
     allow_system_run: bool,
     system_run_timeout_ms: u64,
+    external_command: Option<String>,
+    external_args: Vec<String>,
+    external_commands: HashMap<String, NodeHostExternalCommand>,
+}
+
+#[derive(Debug, Clone)]
+struct NodeHostExternalCommand {
+    command: String,
+    args: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -9149,6 +9558,183 @@ fn local_node_command_error(code: &str, message: String) -> LocalNodeCommandExec
     }
 }
 
+fn resolve_node_host_external_runtime_command(
+    runtime: &NodeHostRuntimeConfig,
+    command: &str,
+) -> Option<NodeHostExternalCommand> {
+    let normalized = normalize(command);
+    if let Some(mapped) = runtime.external_commands.get(&normalized) {
+        return Some(mapped.clone());
+    }
+    runtime
+        .external_command
+        .as_ref()
+        .cloned()
+        .map(|command| NodeHostExternalCommand {
+            command,
+            args: runtime.external_args.clone(),
+        })
+}
+
+async fn local_node_host_execute_external_command(
+    node_id: &str,
+    command: &str,
+    params: Option<&Value>,
+    runtime: &NodeHostRuntimeConfig,
+) -> LocalNodeCommandExecution {
+    let Some(external_runtime) = resolve_node_host_external_runtime_command(runtime, command)
+    else {
+        return local_node_command_error(
+            "LOCAL_EXTERNAL_HOST_UNAVAILABLE",
+            "external host runtime command is not configured".to_owned(),
+        );
+    };
+    let request_payload = json!({
+        "nodeId": node_id,
+        "command": command,
+        "params": params.cloned().unwrap_or_else(|| json!({})),
+        "timeoutMs": runtime.system_run_timeout_ms,
+        "ts": now_ms(),
+    });
+    let request_json = match serde_json::to_string(&request_payload) {
+        Ok(json) => json,
+        Err(err) => {
+            return local_node_command_error(
+                "LOCAL_EXTERNAL_HOST_INVALID_REQUEST",
+                format!("failed to serialize external host request: {err}"),
+            );
+        }
+    };
+
+    let mut process = TokioCommand::new(&external_runtime.command);
+    if !external_runtime.args.is_empty() {
+        process.args(&external_runtime.args);
+    }
+    process
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("OPENCLAW_NODE_HOST_REQUEST", &request_json)
+        .env("OPENCLAW_NODE_HOST_NODE_ID", node_id)
+        .env("OPENCLAW_NODE_HOST_COMMAND", command)
+        .env(
+            "OPENCLAW_NODE_HOST_RUNTIME_COMMAND",
+            &external_runtime.command,
+        );
+
+    let mut child = match process.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            return local_node_command_error(
+                "LOCAL_EXTERNAL_HOST_SPAWN_FAILED",
+                format!(
+                    "failed spawning external host runtime command {}: {err}",
+                    external_runtime.command
+                ),
+            );
+        }
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let request_bytes = request_json.into_bytes();
+        if let Err(err) = tokio::io::AsyncWriteExt::write_all(&mut stdin, &request_bytes).await {
+            return local_node_command_error(
+                "LOCAL_EXTERNAL_HOST_IO",
+                format!("failed writing external host request stdin: {err}"),
+            );
+        }
+    }
+
+    let timeout_ms = runtime.system_run_timeout_ms.clamp(500, 120_000);
+    let output =
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), child.wait_with_output())
+            .await
+        {
+            Ok(Ok(output)) => output,
+            Ok(Err(err)) => {
+                return local_node_command_error(
+                    "LOCAL_EXTERNAL_HOST_IO",
+                    format!("external host runtime execution failed: {err}"),
+                );
+            }
+            Err(_) => {
+                return local_node_command_error(
+                    "LOCAL_EXTERNAL_HOST_TIMEOUT",
+                    format!("external host runtime timed out after {timeout_ms}ms"),
+                );
+            }
+        };
+
+    let stdout_text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stderr_text = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if stdout_text.is_empty() {
+        let message = if stderr_text.is_empty() {
+            "external host runtime returned empty stdout".to_owned()
+        } else {
+            format!("external host runtime stderr: {stderr_text}")
+        };
+        return local_node_command_error("LOCAL_EXTERNAL_HOST_EMPTY", message);
+    }
+
+    let parsed_stdout: Value = match serde_json::from_str(&stdout_text) {
+        Ok(value) => value,
+        Err(err) => {
+            return local_node_command_error(
+                "LOCAL_EXTERNAL_HOST_INVALID_JSON",
+                format!("external host runtime returned invalid JSON: {err}"),
+            );
+        }
+    };
+
+    if output.status.success() {
+        if let Some(object) = parsed_stdout.as_object() {
+            let ok = object.get("ok").and_then(Value::as_bool).unwrap_or(true);
+            if ok {
+                if let Some(payload) = object.get("payload").cloned() {
+                    return local_node_command_ok(payload);
+                }
+                return local_node_command_ok(parsed_stdout);
+            }
+            let error = object.get("error").and_then(Value::as_object);
+            return LocalNodeCommandExecution {
+                ok: false,
+                payload_json: serde_json::to_string(&parsed_stdout).ok(),
+                payload: object
+                    .get("payload")
+                    .cloned()
+                    .or_else(|| Some(parsed_stdout.clone())),
+                error: Some(NodeInvokeResultError {
+                    code: error
+                        .and_then(|value| value.get("code"))
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .or_else(|| Some("LOCAL_EXTERNAL_HOST_ERROR".to_owned())),
+                    message: error
+                        .and_then(|value| value.get("message"))
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .or_else(|| Some("external host runtime returned ok=false".to_owned())),
+                }),
+            };
+        }
+        return local_node_command_ok(parsed_stdout);
+    }
+
+    let exit_code = output
+        .status
+        .code()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_owned());
+    local_node_command_error(
+        "LOCAL_EXTERNAL_HOST_EXIT",
+        if stderr_text.is_empty() {
+            format!("external host runtime exited with status {exit_code}")
+        } else {
+            format!("external host runtime exited with status {exit_code}: {stderr_text}")
+        },
+    )
+}
+
 async fn local_node_host_execute_system_run(
     node_id: &str,
     params: Option<&Value>,
@@ -10290,7 +10876,24 @@ fn normalize_outbound_target_segment(target: &str) -> String {
     normalized
 }
 
-fn extract_delivery_context_hints(raw: &Value) -> (Option<String>, Option<String>, Option<String>) {
+#[derive(Debug, Clone, Default)]
+struct DeliveryContextHints {
+    channel: Option<String>,
+    to: Option<String>,
+    account_id: Option<String>,
+    thread_id: Option<String>,
+}
+
+impl DeliveryContextHints {
+    fn is_empty(&self) -> bool {
+        self.channel.is_none()
+            && self.to.is_none()
+            && self.account_id.is_none()
+            && self.thread_id.is_none()
+    }
+}
+
+fn extract_delivery_context_hints(raw: &Value) -> DeliveryContextHints {
     const CHANNEL_KEYS: &[&str] = &[
         "channel",
         "channelName",
@@ -10298,16 +10901,7 @@ fn extract_delivery_context_hints(raw: &Value) -> (Option<String>, Option<String
         "platform",
         "provider",
     ];
-    const TO_KEYS: &[&str] = &[
-        "to",
-        "recipient",
-        "target",
-        "peer",
-        "chatId",
-        "chat_id",
-        "threadId",
-        "thread_id",
-    ];
+    const TO_KEYS: &[&str] = &["to", "recipient", "target", "peer", "chatId", "chat_id"];
     const ACCOUNT_KEYS: &[&str] = &[
         "accountId",
         "account_id",
@@ -10318,6 +10912,7 @@ fn extract_delivery_context_hints(raw: &Value) -> (Option<String>, Option<String
         "defaultAccountId",
         "default_account_id",
     ];
+    const THREAD_KEYS: &[&str] = &["threadId", "thread_id", "topicId", "topic_id"];
     let channel = find_delivery_hint_string(raw, CHANNEL_KEYS)
         .and_then(|value| normalize_channel_id(Some(&value)).or_else(|| Some(normalize(&value))));
     let to = find_delivery_hint_string(raw, TO_KEYS)
@@ -10326,7 +10921,15 @@ fn extract_delivery_context_hints(raw: &Value) -> (Option<String>, Option<String
     let account_id = find_delivery_hint_string(raw, ACCOUNT_KEYS)
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
-    (channel, to, account_id)
+    let thread_id = find_delivery_hint_string(raw, THREAD_KEYS)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    DeliveryContextHints {
+        channel,
+        to,
+        account_id,
+        thread_id,
+    }
 }
 
 fn find_delivery_hint_string(root: &Value, keys: &[&str]) -> Option<String> {
@@ -14079,11 +14682,109 @@ fn node_host_runtime_config_from_config(config: &Value) -> NodeHostRuntimeConfig
         .map(|value| value.clamp(500, 120_000))
         .unwrap_or(LOCAL_NODE_HOST_SYSTEM_RUN_TIMEOUT_MS);
 
+    let external_command = node_host
+        .and_then(|obj| {
+            read_config_string(
+                obj,
+                &[
+                    "externalCommand",
+                    "external_command",
+                    "hostCommand",
+                    "host_command",
+                    "command",
+                ],
+                1_024,
+            )
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string(
+                    obj,
+                    &[
+                        "nodeHostCommand",
+                        "node_host_command",
+                        "externalNodeHostCommand",
+                    ],
+                    1_024,
+                )
+            })
+        });
+    let external_args = node_host
+        .and_then(|obj| {
+            read_config_string_list(
+                obj,
+                &["externalArgs", "external_args", "hostArgs", "host_args"],
+                32,
+                512,
+            )
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string_list(
+                    obj,
+                    &["nodeHostArgs", "node_host_args", "externalNodeHostArgs"],
+                    32,
+                    512,
+                )
+            })
+        })
+        .unwrap_or_default();
+
+    let mut external_commands = HashMap::new();
+    if let Some(map) = runtime.and_then(|obj| {
+        read_config_object(
+            obj,
+            &[
+                "nodeHostCommands",
+                "node_host_commands",
+                "externalNodeHostCommands",
+            ],
+        )
+    }) {
+        collect_node_host_external_command_overrides(
+            &mut external_commands,
+            map,
+            external_command.as_deref(),
+            &external_args,
+            false,
+        );
+    }
+    if let Some(map) = node_host.and_then(|obj| {
+        read_config_object(
+            obj,
+            &[
+                "externalCommands",
+                "external_commands",
+                "hostCommands",
+                "host_commands",
+            ],
+        )
+    }) {
+        collect_node_host_external_command_overrides(
+            &mut external_commands,
+            map,
+            external_command.as_deref(),
+            &external_args,
+            true,
+        );
+    }
+
     NodeHostRuntimeConfig {
         local_node_ids,
         allow_system_run,
         system_run_timeout_ms,
+        external_command,
+        external_args,
+        external_commands,
     }
+}
+
+fn read_config_object<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    keys: &[&str],
+) -> Option<&'a serde_json::Map<String, Value>> {
+    keys.iter()
+        .find_map(|key| object.get(*key).and_then(Value::as_object))
 }
 
 fn read_config_string(
@@ -14146,6 +14847,80 @@ fn read_config_string_list(
         }
         Some(out)
     })
+}
+
+fn parse_node_host_external_command_entry(
+    value: &Value,
+    fallback_command: Option<&str>,
+    fallback_args: &[String],
+) -> Option<NodeHostExternalCommand> {
+    match value {
+        Value::String(raw_command) => normalize_optional_text(Some(raw_command.clone()), 1_024)
+            .map(|command| NodeHostExternalCommand {
+                command,
+                args: Vec::new(),
+            }),
+        Value::Object(obj) => {
+            let command = read_config_string(
+                obj,
+                &[
+                    "command",
+                    "externalCommand",
+                    "external_command",
+                    "hostCommand",
+                    "host_command",
+                ],
+                1_024,
+            )
+            .or_else(|| {
+                fallback_command
+                    .and_then(|value| normalize_optional_text(Some(value.to_owned()), 1_024))
+            })?;
+            let args = read_config_string_list(
+                obj,
+                &[
+                    "args",
+                    "externalArgs",
+                    "external_args",
+                    "hostArgs",
+                    "host_args",
+                ],
+                32,
+                512,
+            )
+            .unwrap_or_else(|| fallback_args.to_vec());
+            Some(NodeHostExternalCommand { command, args })
+        }
+        _ => None,
+    }
+}
+
+fn collect_node_host_external_command_overrides(
+    target: &mut HashMap<String, NodeHostExternalCommand>,
+    source: &serde_json::Map<String, Value>,
+    fallback_command: Option<&str>,
+    fallback_args: &[String],
+    overwrite: bool,
+) {
+    for (command_key_raw, entry) in source {
+        let Some(command_key) = normalize_optional_text(Some(command_key_raw.clone()), 128)
+            .map(|value| normalize(&value))
+        else {
+            continue;
+        };
+        if command_key.is_empty() {
+            continue;
+        }
+        if !overwrite && target.contains_key(&command_key) {
+            continue;
+        }
+        let Some(parsed) =
+            parse_node_host_external_command_entry(entry, fallback_command, fallback_args)
+        else {
+            continue;
+        };
+        target.insert(command_key, parsed);
+    }
 }
 
 fn config_value_as_u64(value: &Value) -> Option<u64> {
@@ -14798,6 +15573,7 @@ struct SessionListQuery {
     channel: Option<String>,
     to: Option<String>,
     account_id: Option<String>,
+    thread_id: Option<String>,
     include_derived_titles: bool,
     include_last_message: bool,
 }
@@ -14810,6 +15586,7 @@ struct SessionResolveQuery {
     channel: Option<String>,
     to: Option<String>,
     account_id: Option<String>,
+    thread_id: Option<String>,
     include_global: bool,
     include_unknown: bool,
 }
@@ -14897,21 +15674,23 @@ impl SessionRegistry {
         entry.total_requests += 1;
         entry.last_action = Some(decision.action);
         entry.last_risk_score = decision.risk_score;
-        let (delivery_channel, delivery_to, delivery_account_id) =
-            extract_delivery_context_hints(&request.raw);
+        let delivery_hints = extract_delivery_context_hints(&request.raw);
         match decision.action {
             DecisionAction::Allow => entry.allowed_count += 1,
             DecisionAction::Review => entry.review_count += 1,
             DecisionAction::Block => entry.blocked_count += 1,
         }
-        if request.channel.is_some() || delivery_channel.is_some() {
-            entry.channel = request.channel.clone().or(delivery_channel.clone());
+        if request.channel.is_some() || delivery_hints.channel.is_some() {
+            entry.channel = request.channel.clone().or(delivery_hints.channel.clone());
         }
-        if delivery_to.is_some() {
-            entry.last_to = delivery_to.clone();
+        if delivery_hints.to.is_some() {
+            entry.last_to = delivery_hints.to.clone();
         }
-        if delivery_account_id.is_some() {
-            entry.last_account_id = delivery_account_id.clone();
+        if delivery_hints.account_id.is_some() {
+            entry.last_account_id = delivery_hints.account_id.clone();
+        }
+        if delivery_hints.thread_id.is_some() {
+            entry.last_thread_id = delivery_hints.thread_id.clone();
         }
         entry.push_history(SessionHistoryEvent {
             at_ms: now,
@@ -14925,8 +15704,12 @@ impl SessionRegistry {
             channel: request
                 .channel
                 .clone()
-                .or(delivery_channel)
+                .or(delivery_hints.channel)
                 .or_else(|| entry.channel.clone()),
+            to: delivery_hints.to,
+            account_id: delivery_hints.account_id,
+            thread_id: delivery_hints.thread_id,
+            reply_back: None,
         });
         let snapshot = guard.values().cloned().collect::<Vec<_>>();
         drop(guard);
@@ -14943,6 +15726,8 @@ impl SessionRegistry {
             channel,
             to,
             account_id,
+            thread_id,
+            reply_back,
         } = send;
         let now = now_ms();
         let mut guard = self.entries.lock().await;
@@ -14959,6 +15744,9 @@ impl SessionRegistry {
         if account_id.is_some() {
             entry.last_account_id = account_id.clone();
         }
+        if thread_id.is_some() {
+            entry.last_thread_id = thread_id.clone();
+        }
 
         let event = SessionHistoryEvent {
             at_ms: now,
@@ -14970,6 +15758,10 @@ impl SessionRegistry {
             risk_score: None,
             source: Some(source),
             channel: channel.or_else(|| entry.channel.clone()),
+            to,
+            account_id,
+            thread_id,
+            reply_back,
         };
         entry.push_history(event.clone());
 
@@ -15205,6 +15997,15 @@ impl SessionRegistry {
                     .unwrap_or(false)
             });
         }
+        if let Some(thread_id) = query.thread_id {
+            entries.retain(|entry| {
+                entry
+                    .last_thread_id
+                    .as_deref()
+                    .map(|value| value.eq_ignore_ascii_case(&thread_id))
+                    .unwrap_or(false)
+            });
+        }
         entries.sort_by(|a, b| {
             b.updated_at_ms
                 .cmp(&a.updated_at_ms)
@@ -15277,6 +16078,15 @@ impl SessionRegistry {
                     .last_account_id
                     .as_deref()
                     .map(|value| value.eq_ignore_ascii_case(&account_id))
+                    .unwrap_or(false)
+            });
+        }
+        if let Some(thread_id) = query.thread_id {
+            items.retain(|entry| {
+                entry
+                    .last_thread_id
+                    .as_deref()
+                    .map(|value| value.eq_ignore_ascii_case(&thread_id))
                     .unwrap_or(false)
             });
         }
@@ -15399,6 +16209,10 @@ impl SessionRegistry {
                         risk_score: event.risk_score,
                         source: event.source,
                         channel: event.channel,
+                        to: event.to,
+                        account_id: event.account_id,
+                        thread_id: event.thread_id,
+                        reply_back: event.reply_back,
                     })
                     .collect::<Vec<_>>();
                 SessionPreviewEntry {
@@ -15684,6 +16498,7 @@ struct SessionEntry {
     channel: Option<String>,
     last_to: Option<String>,
     last_account_id: Option<String>,
+    last_thread_id: Option<String>,
     label: Option<String>,
     spawned_by: Option<String>,
     spawn_depth: Option<u32>,
@@ -15726,6 +16541,7 @@ impl SessionEntry {
             channel: parsed.channel,
             last_to: None,
             last_account_id: None,
+            last_thread_id: None,
             label: None,
             spawned_by: None,
             spawn_depth: None,
@@ -15784,10 +16600,12 @@ impl SessionEntry {
             last_message_preview,
             channel: self.channel.clone(),
             last_account_id: self.last_account_id.clone(),
+            last_thread_id: self.last_thread_id.clone(),
             delivery_context: SessionDeliveryContext::from_parts(
                 self.channel.clone(),
                 self.last_to.clone(),
                 self.last_account_id.clone(),
+                self.last_thread_id.clone(),
             ),
             total_tokens: None,
             total_tokens_fresh: false,
@@ -15894,6 +16712,8 @@ struct SessionSend {
     channel: Option<String>,
     to: Option<String>,
     account_id: Option<String>,
+    thread_id: Option<String>,
+    reply_back: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -15914,6 +16734,10 @@ struct SessionHistoryEvent {
     risk_score: Option<u8>,
     source: Option<String>,
     channel: Option<String>,
+    to: Option<String>,
+    account_id: Option<String>,
+    thread_id: Option<String>,
+    reply_back: Option<bool>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -15937,6 +16761,14 @@ struct SessionHistoryRecord {
     source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     channel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    to: Option<String>,
+    #[serde(rename = "accountId", skip_serializing_if = "Option::is_none")]
+    account_id: Option<String>,
+    #[serde(rename = "threadId", skip_serializing_if = "Option::is_none")]
+    thread_id: Option<String>,
+    #[serde(rename = "replyBack", skip_serializing_if = "Option::is_none")]
+    reply_back: Option<bool>,
 }
 
 impl SessionHistoryRecord {
@@ -15952,6 +16784,10 @@ impl SessionHistoryRecord {
             risk_score: event.risk_score,
             source: event.source,
             channel: event.channel,
+            to: event.to,
+            account_id: event.account_id,
+            thread_id: event.thread_id,
+            reply_back: event.reply_back,
         }
     }
 }
@@ -15980,6 +16816,14 @@ struct SessionPreviewItem {
     source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     channel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    to: Option<String>,
+    #[serde(rename = "accountId", skip_serializing_if = "Option::is_none")]
+    account_id: Option<String>,
+    #[serde(rename = "threadId", skip_serializing_if = "Option::is_none")]
+    thread_id: Option<String>,
+    #[serde(rename = "replyBack", skip_serializing_if = "Option::is_none")]
+    reply_back: Option<bool>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -16077,6 +16921,8 @@ struct SessionDeliveryContext {
     to: Option<String>,
     #[serde(rename = "accountId", skip_serializing_if = "Option::is_none")]
     account_id: Option<String>,
+    #[serde(rename = "threadId", skip_serializing_if = "Option::is_none")]
+    thread_id: Option<String>,
 }
 
 impl SessionDeliveryContext {
@@ -16084,14 +16930,16 @@ impl SessionDeliveryContext {
         channel: Option<String>,
         to: Option<String>,
         account_id: Option<String>,
+        thread_id: Option<String>,
     ) -> Option<Self> {
-        if channel.is_none() && to.is_none() && account_id.is_none() {
+        if channel.is_none() && to.is_none() && account_id.is_none() && thread_id.is_none() {
             return None;
         }
         Some(Self {
             channel,
             to,
             account_id,
+            thread_id,
         })
     }
 }
@@ -16113,6 +16961,8 @@ struct SessionView {
     channel: Option<String>,
     #[serde(rename = "lastAccountId", skip_serializing_if = "Option::is_none")]
     last_account_id: Option<String>,
+    #[serde(rename = "lastThreadId", skip_serializing_if = "Option::is_none")]
+    last_thread_id: Option<String>,
     #[serde(rename = "deliveryContext", skip_serializing_if = "Option::is_none")]
     delivery_context: Option<SessionDeliveryContext>,
     #[serde(rename = "totalTokens", skip_serializing_if = "Option::is_none")]
@@ -16217,6 +17067,8 @@ struct SessionsListParams {
     to: Option<String>,
     #[serde(rename = "accountId", alias = "account_id")]
     account_id: Option<String>,
+    #[serde(rename = "threadId", alias = "thread_id")]
+    thread_id: Option<String>,
     search: Option<String>,
 }
 
@@ -16280,6 +17132,10 @@ struct TalkConfigParams {
 struct TalkModeParams {
     enabled: Option<bool>,
     phase: Option<String>,
+    #[serde(rename = "inputDevice", alias = "input_device")]
+    input_device: Option<String>,
+    #[serde(rename = "outputDevice", alias = "output_device")]
+    output_device: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -16295,6 +17151,8 @@ struct TtsToggleParams {}
 struct TtsConvertParams {
     text: Option<String>,
     channel: Option<String>,
+    #[serde(rename = "outputDevice", alias = "output_device")]
+    output_device: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -17044,6 +17902,8 @@ struct SessionsResolveParams {
     to: Option<String>,
     #[serde(rename = "accountId", alias = "account_id")]
     account_id: Option<String>,
+    #[serde(rename = "threadId", alias = "thread_id")]
+    thread_id: Option<String>,
     #[serde(rename = "includeGlobal", alias = "include_global")]
     include_global: Option<bool>,
     #[serde(rename = "includeUnknown", alias = "include_unknown")]
@@ -17173,7 +18033,10 @@ struct GatewayPollParams {
 #[derive(Debug, Deserialize)]
 struct SessionsSendParams {
     #[serde(rename = "sessionKey", alias = "session_key")]
-    session_key: String,
+    session_key: Option<String>,
+    key: Option<String>,
+    #[serde(rename = "sessionId", alias = "session_id")]
+    session_id: Option<String>,
     #[serde(rename = "message", alias = "text", alias = "prompt", alias = "input")]
     message: Option<String>,
     command: Option<String>,
@@ -17184,6 +18047,16 @@ struct SessionsSendParams {
     to: Option<String>,
     #[serde(rename = "accountId", alias = "account_id")]
     account_id: Option<String>,
+    #[serde(rename = "threadId", alias = "thread_id")]
+    thread_id: Option<String>,
+    #[serde(rename = "replyBack", alias = "reply_back")]
+    reply_back: Option<bool>,
+    #[serde(rename = "deliveryContext", alias = "delivery_context")]
+    delivery_context: Option<Value>,
+    #[serde(rename = "includeGlobal", alias = "include_global")]
+    include_global: Option<bool>,
+    #[serde(rename = "includeUnknown", alias = "include_unknown")]
+    include_unknown: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -19942,6 +20815,282 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_sessions_send_reply_back_uses_last_delivery_context() {
+        let dispatcher = RpcDispatcher::new();
+        let session_key = "agent:main:telegram:group:chat-99:topic:12";
+
+        let seeded = RpcRequestFrame {
+            id: "req-session-send-seed".to_owned(),
+            method: "sessions.send".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": session_key,
+                "message": "seed context",
+                "channel": "telegram",
+                "to": "chat-99",
+                "accountId": "acc-seed",
+                "threadId": "12"
+            }),
+        };
+        assert!(matches!(
+            dispatcher.handle_request(&seeded).await,
+            RpcDispatchOutcome::Handled(_)
+        ));
+
+        let reply_back = RpcRequestFrame {
+            id: "req-session-send-reply-back".to_owned(),
+            method: "sessions.send".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": session_key,
+                "message": "reply back followup",
+                "replyBack": true
+            }),
+        };
+        match dispatcher.handle_request(&reply_back).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/recorded/replyBack")
+                        .and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload.pointer("/recorded/channel").and_then(Value::as_str),
+                    Some("telegram")
+                );
+                assert_eq!(
+                    payload.pointer("/recorded/to").and_then(Value::as_str),
+                    Some("chat-99")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/recorded/accountId")
+                        .and_then(Value::as_str),
+                    Some("acc-seed")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/recorded/threadId")
+                        .and_then(Value::as_str),
+                    Some("12")
+                );
+            }
+            _ => panic!("expected reply-back sessions.send handled"),
+        }
+
+        let list = RpcRequestFrame {
+            id: "req-session-send-reply-back-list".to_owned(),
+            method: "sessions.list".to_owned(),
+            params: serde_json::json!({
+                "channel": "telegram",
+                "to": "chat-99",
+                "accountId": "acc-seed",
+                "threadId": "12",
+                "includeDerivedTitles": true,
+                "includeLastMessage": true
+            }),
+        };
+        match dispatcher.handle_request(&list).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/sessions/0/deliveryContext/threadId")
+                        .and_then(Value::as_str),
+                    Some("12")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/sessions/0/lastThreadId")
+                        .and_then(Value::as_str),
+                    Some("12")
+                );
+            }
+            _ => panic!("expected sessions.list handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_sessions_send_reply_back_resolves_session_from_route_selectors() {
+        let dispatcher = RpcDispatcher::new();
+        let session_key = "agent:main:discord:group:route-room:topic:77";
+
+        let seeded = RpcRequestFrame {
+            id: "req-session-send-route-seed".to_owned(),
+            method: "sessions.send".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": session_key,
+                "message": "seed route context",
+                "channel": "discord",
+                "to": "route-room",
+                "accountId": "acc-route",
+                "threadId": "77"
+            }),
+        };
+        assert!(matches!(
+            dispatcher.handle_request(&seeded).await,
+            RpcDispatchOutcome::Handled(_)
+        ));
+
+        let reply_back = RpcRequestFrame {
+            id: "req-session-send-route-reply-back".to_owned(),
+            method: "sessions.send".to_owned(),
+            params: serde_json::json!({
+                "message": "route selector followup",
+                "replyBack": true,
+                "channel": "discord",
+                "to": "route-room",
+                "accountId": "acc-route",
+                "threadId": "77"
+            }),
+        };
+        match dispatcher.handle_request(&reply_back).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/recorded/replyBack")
+                        .and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload.pointer("/session/key").and_then(Value::as_str),
+                    Some(session_key)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/recorded/threadId")
+                        .and_then(Value::as_str),
+                    Some("77")
+                );
+            }
+            _ => panic!("expected route-selector sessions.send handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_sessions_send_accepts_session_id_alias() {
+        let dispatcher = RpcDispatcher::new();
+        let session_key = "agent:main:telegram:dm:+15550001111";
+
+        let seeded = RpcRequestFrame {
+            id: "req-session-send-session-id-seed".to_owned(),
+            method: "sessions.send".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": session_key,
+                "message": "seed session id context",
+                "channel": "telegram",
+                "to": "+15550001111",
+                "accountId": "acct-session-id"
+            }),
+        };
+        assert!(matches!(
+            dispatcher.handle_request(&seeded).await,
+            RpcDispatchOutcome::Handled(_)
+        ));
+
+        let status = RpcRequestFrame {
+            id: "req-session-send-session-id-status".to_owned(),
+            method: "session.status".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": session_key
+            }),
+        };
+        let session_id = match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/session/sessionId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("session id"),
+            _ => panic!("expected session.status handled"),
+        };
+
+        let by_session_id = RpcRequestFrame {
+            id: "req-session-send-by-session-id".to_owned(),
+            method: "sessions.send".to_owned(),
+            params: serde_json::json!({
+                "sessionId": session_id,
+                "message": "sent by session id",
+                "replyBack": true
+            }),
+        };
+        match dispatcher.handle_request(&by_session_id).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/session/key").and_then(Value::as_str),
+                    Some(session_key)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/recorded/replyBack")
+                        .and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload.pointer("/recorded/channel").and_then(Value::as_str),
+                    Some("telegram")
+                );
+            }
+            _ => panic!("expected sessions.send by sessionId handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_sessions_resolve_supports_thread_selector() {
+        let dispatcher = RpcDispatcher::new();
+
+        let send_a = RpcRequestFrame {
+            id: "req-session-thread-a".to_owned(),
+            method: "sessions.send".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": "agent:main:discord:group:room-x:topic:100",
+                "message": "thread a",
+                "channel": "discord",
+                "to": "room-x",
+                "accountId": "acc-room",
+                "threadId": "100"
+            }),
+        };
+        let send_b = RpcRequestFrame {
+            id: "req-session-thread-b".to_owned(),
+            method: "sessions.send".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": "agent:main:discord:group:room-x:topic:200",
+                "message": "thread b",
+                "channel": "discord",
+                "to": "room-x",
+                "accountId": "acc-room",
+                "threadId": "200"
+            }),
+        };
+        assert!(matches!(
+            dispatcher.handle_request(&send_a).await,
+            RpcDispatchOutcome::Handled(_)
+        ));
+        assert!(matches!(
+            dispatcher.handle_request(&send_b).await,
+            RpcDispatchOutcome::Handled(_)
+        ));
+
+        let resolve = RpcRequestFrame {
+            id: "req-session-resolve-thread".to_owned(),
+            method: "sessions.resolve".to_owned(),
+            params: serde_json::json!({
+                "channel": "discord",
+                "to": "room-x",
+                "accountId": "acc-room",
+                "threadId": "100"
+            }),
+        };
+        match dispatcher.handle_request(&resolve).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/key").and_then(Value::as_str),
+                    Some("agent:main:discord:group:room-x:topic:100")
+                );
+            }
+            _ => panic!("expected sessions.resolve handled"),
+        }
     }
 
     #[tokio::test]
@@ -22732,7 +23881,9 @@ mod tests {
             method: "talk.mode".to_owned(),
             params: serde_json::json!({
                 "enabled": true,
-                "phase": "listen"
+                "phase": "listen",
+                "inputDevice": "mic-array-1",
+                "outputDevice": "speaker-main-1"
             }),
         };
         let out = dispatcher.handle_request(&set_mode).await;
@@ -22749,6 +23900,18 @@ mod tests {
                         .pointer("/phase")
                         .and_then(serde_json::Value::as_str),
                     Some("listen")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/inputDevice")
+                        .and_then(serde_json::Value::as_str),
+                    Some("mic-array-1")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/outputDevice")
+                        .and_then(serde_json::Value::as_str),
+                    Some("speaker-main-1")
                 );
                 assert!(payload
                     .pointer("/ts")
@@ -22866,7 +24029,8 @@ mod tests {
             method: "tts.convert".to_owned(),
             params: serde_json::json!({
                 "text": "hello voice",
-                "channel": "telegram"
+                "channel": "telegram",
+                "outputDevice": "speaker-main-1"
             }),
         };
         match dispatcher.handle_request(&convert).await {
@@ -22922,6 +24086,12 @@ mod tests {
                         .pointer("/sampleRateHz")
                         .and_then(serde_json::Value::as_u64),
                     Some(24_000)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/playback/outputDevice")
+                        .and_then(serde_json::Value::as_str),
+                    Some("speaker-main-1")
                 );
             }
             _ => panic!("expected tts.convert handled"),
@@ -23054,6 +24224,101 @@ mod tests {
                 );
             }
             _ => panic!("expected voicewake.get after set"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_voice_runtime_tracks_capture_and_playback_state() {
+        let dispatcher = RpcDispatcher::new();
+
+        let talk_enable = RpcRequestFrame {
+            id: "req-talk-enable-audio".to_owned(),
+            method: "talk.mode".to_owned(),
+            params: serde_json::json!({
+                "enabled": true,
+                "phase": "listen"
+            }),
+        };
+        match dispatcher.handle_request(&talk_enable).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/capture/active").and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert!(payload
+                    .pointer("/capture/sessionId")
+                    .and_then(Value::as_str)
+                    .is_some());
+            }
+            _ => panic!("expected talk.mode enable handled"),
+        }
+
+        let convert = RpcRequestFrame {
+            id: "req-voice-runtime-tts-convert".to_owned(),
+            method: "tts.convert".to_owned(),
+            params: serde_json::json!({
+                "text": "voice runtime playback check",
+                "channel": "telegram",
+                "outputDevice": "spk-runtime"
+            }),
+        };
+        let last_audio_path = match dispatcher.handle_request(&convert).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/playback/active").and_then(Value::as_bool),
+                    Some(false)
+                );
+                payload
+                    .pointer("/audioPath")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .expect("tts.convert audioPath")
+            }
+            _ => panic!("expected tts.convert handled"),
+        };
+
+        let status = RpcRequestFrame {
+            id: "req-voice-runtime-tts-status".to_owned(),
+            method: "tts.status".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/capture/active").and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/playback/lastAudioPath")
+                        .and_then(Value::as_str),
+                    Some(last_audio_path.as_str())
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/playback/outputDevice")
+                        .and_then(Value::as_str),
+                    Some("spk-runtime")
+                );
+            }
+            _ => panic!("expected tts.status handled"),
+        }
+
+        let talk_disable = RpcRequestFrame {
+            id: "req-talk-disable-audio".to_owned(),
+            method: "talk.mode".to_owned(),
+            params: serde_json::json!({
+                "enabled": false
+            }),
+        };
+        match dispatcher.handle_request(&talk_disable).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/capture/active").and_then(Value::as_bool),
+                    Some(false)
+                );
+            }
+            _ => panic!("expected talk.mode disable handled"),
         }
     }
 
@@ -29128,6 +30393,196 @@ mod tests {
             }
             _ => panic!("expected node.invoke handled"),
         }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_local_node_host_runtime_can_delegate_to_external_process() {
+        let dispatcher = RpcDispatcher::new();
+        let (external_command, external_args): (&str, Vec<&str>) = if cfg!(windows) {
+            ("cmd", vec!["/C", "echo %OPENCLAW_NODE_HOST_REQUEST%"])
+        } else {
+            (
+                "sh",
+                vec!["-lc", "printf '%s' \"$OPENCLAW_NODE_HOST_REQUEST\""],
+            )
+        };
+        patch_config(
+            &dispatcher,
+            json!({
+                "nodeHost": {
+                    "localNodeIds": ["local-node-external-1"],
+                    "externalCommand": external_command,
+                    "externalArgs": external_args
+                }
+            }),
+        )
+        .await;
+
+        let pair = RpcRequestFrame {
+            id: "req-local-node-external-pair".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-external-1",
+                "displayName": "Local External Runtime Node",
+                "caps": ["host.local"],
+                "commands": ["location.get"]
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&pair).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("pair request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+        let approve = RpcRequestFrame {
+            id: "req-local-node-external-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        let out = dispatcher.handle_request(&approve).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        let invoke = RpcRequestFrame {
+            id: "req-local-node-external-invoke".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-external-1",
+                "command": "location.get",
+                "params": {},
+                "idempotencyKey": "local-node-external-location"
+            }),
+        };
+        match dispatcher.handle_request(&invoke).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(payload.pointer("/ok").and_then(Value::as_bool), Some(true));
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/command")
+                        .and_then(Value::as_str),
+                    Some("location.get")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/nodeId")
+                        .and_then(Value::as_str),
+                    Some("local-node-external-1")
+                );
+            }
+            _ => panic!("expected node.invoke handled"),
+        }
+        assert!(
+            dispatcher
+                .node_runtime
+                .latest_pending_invoke_id()
+                .await
+                .is_none(),
+            "external local runtime should not leave pending invokes"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatcher_local_node_host_runtime_command_override_map_routes_by_command() {
+        let dispatcher = RpcDispatcher::new();
+        let (global_command, global_args, mapped_command, mapped_args): (
+            &str,
+            Vec<&str>,
+            &str,
+            Vec<&str>,
+        ) = if cfg!(windows) {
+            (
+                "cmd",
+                vec!["/C", "exit 1"],
+                "cmd",
+                vec!["/C", "echo %OPENCLAW_NODE_HOST_REQUEST%"],
+            )
+        } else {
+            (
+                "sh",
+                vec!["-lc", "exit 1"],
+                "sh",
+                vec!["-lc", "printf '%s' \"$OPENCLAW_NODE_HOST_REQUEST\""],
+            )
+        };
+        patch_config(
+            &dispatcher,
+            json!({
+                "nodeHost": {
+                    "localNodeIds": ["local-node-external-map-1"],
+                    "externalCommand": global_command,
+                    "externalArgs": global_args,
+                    "externalCommands": {
+                        "location.get": {
+                            "command": mapped_command,
+                            "args": mapped_args
+                        }
+                    }
+                }
+            }),
+        )
+        .await;
+
+        let pair = RpcRequestFrame {
+            id: "req-local-node-external-map-pair".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-external-map-1",
+                "displayName": "Local External Runtime Map Node",
+                "caps": ["host.local"],
+                "commands": ["location.get"]
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&pair).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("pair request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+        let approve = RpcRequestFrame {
+            id: "req-local-node-external-map-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        let out = dispatcher.handle_request(&approve).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        let invoke = RpcRequestFrame {
+            id: "req-local-node-external-map-invoke".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-external-map-1",
+                "command": "location.get",
+                "params": {},
+                "idempotencyKey": "local-node-external-map-location"
+            }),
+        };
+        match dispatcher.handle_request(&invoke).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(payload.pointer("/ok").and_then(Value::as_bool), Some(true));
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/command")
+                        .and_then(Value::as_str),
+                    Some("location.get")
+                );
+            }
+            _ => panic!("expected node.invoke handled"),
+        }
+        assert!(
+            dispatcher
+                .node_runtime
+                .latest_pending_invoke_id()
+                .await
+                .is_none(),
+            "external-map local runtime should not leave pending invokes"
+        );
     }
 
     #[tokio::test]
