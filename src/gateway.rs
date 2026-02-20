@@ -10,8 +10,9 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
@@ -707,6 +708,7 @@ pub struct RpcDispatcher {
     agent_runs: AgentRunRegistry,
     nodes: NodePairRegistry,
     node_runtime: NodeRuntimeRegistry,
+    node_host_runtime: NodeHostRuntimeRegistry,
     exec_approvals: ExecApprovalsRegistry,
     exec_approval: ExecApprovalRegistry,
     chat: ChatRegistry,
@@ -783,6 +785,10 @@ const LOCAL_NODE_CAP_HINTS: &[&str] = &[
 ];
 const LOCAL_NODE_HOST_SYSTEM_RUN_TIMEOUT_MS: u64 = 10_000;
 const LOCAL_NODE_HOST_SYSTEM_RUN_OUTPUT_MAX_CHARS: usize = 16_000;
+const LOCAL_NODE_HOST_EXTERNAL_QUEUE_CAPACITY: usize = 32;
+const LOCAL_NODE_HOST_EXTERNAL_IDLE_TIMEOUT_MS: u64 = 30_000;
+const LOCAL_NODE_HOST_EXTERNAL_MAX_SESSIONS: usize = 64;
+const LOCAL_NODE_HOST_EXTERNAL_RESPONSE_LINE_MAX_CHARS: usize = 262_144;
 const LOCAL_NODE_HOST_SYSTEM_RUN_ALLOWLIST: &[&str] = &[
     "echo", "whoami", "pwd", "uname", "id", "date", "hostname", "ls", "dir",
 ];
@@ -954,6 +960,7 @@ impl RpcDispatcher {
             agent_runs: AgentRunRegistry::new(),
             nodes: NodePairRegistry::new(),
             node_runtime: NodeRuntimeRegistry::new(),
+            node_host_runtime: NodeHostRuntimeRegistry::new(),
             exec_approvals: ExecApprovalsRegistry::new(),
             exec_approval: ExecApprovalRegistry::new(),
             chat: ChatRegistry::new(),
@@ -4133,14 +4140,11 @@ impl RpcDispatcher {
         invoke_id: &str,
     ) -> LocalNodeCommandExecution {
         let command_key = normalize(command);
-        if runtime.external_command.is_some() {
-            let external = local_node_host_execute_external_command(
-                node_id,
-                command,
-                params.as_ref(),
-                runtime,
-            )
-            .await;
+        if runtime.external_command.is_some() || !runtime.external_commands.is_empty() {
+            let external = self
+                .node_host_runtime
+                .execute_external_command(node_id, command, params.as_ref(), runtime)
+                .await;
             if external.ok {
                 self.system
                     .log_line(format!(
@@ -7976,6 +7980,9 @@ struct NodeHostRuntimeConfig {
     local_node_ids: Vec<String>,
     allow_system_run: bool,
     system_run_timeout_ms: u64,
+    external_persistent: bool,
+    external_queue_capacity: usize,
+    external_idle_timeout_ms: u64,
     external_command: Option<String>,
     external_args: Vec<String>,
     external_commands: HashMap<String, NodeHostExternalCommand>,
@@ -9558,6 +9565,40 @@ fn local_node_command_error(code: &str, message: String) -> LocalNodeCommandExec
     }
 }
 
+fn parse_local_node_host_external_response(parsed_stdout: Value) -> LocalNodeCommandExecution {
+    if let Some(object) = parsed_stdout.as_object() {
+        let ok = object.get("ok").and_then(Value::as_bool).unwrap_or(true);
+        if ok {
+            if let Some(payload) = object.get("payload").cloned() {
+                return local_node_command_ok(payload);
+            }
+            return local_node_command_ok(parsed_stdout);
+        }
+        let error = object.get("error").and_then(Value::as_object);
+        return LocalNodeCommandExecution {
+            ok: false,
+            payload_json: serde_json::to_string(&parsed_stdout).ok(),
+            payload: object
+                .get("payload")
+                .cloned()
+                .or_else(|| Some(parsed_stdout.clone())),
+            error: Some(NodeInvokeResultError {
+                code: error
+                    .and_then(|value| value.get("code"))
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .or_else(|| Some("LOCAL_EXTERNAL_HOST_ERROR".to_owned())),
+                message: error
+                    .and_then(|value| value.get("message"))
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .or_else(|| Some("external host runtime returned ok=false".to_owned())),
+            }),
+        };
+    }
+    local_node_command_ok(parsed_stdout)
+}
+
 fn resolve_node_host_external_runtime_command(
     runtime: &NodeHostRuntimeConfig,
     command: &str,
@@ -9687,37 +9728,7 @@ async fn local_node_host_execute_external_command(
     };
 
     if output.status.success() {
-        if let Some(object) = parsed_stdout.as_object() {
-            let ok = object.get("ok").and_then(Value::as_bool).unwrap_or(true);
-            if ok {
-                if let Some(payload) = object.get("payload").cloned() {
-                    return local_node_command_ok(payload);
-                }
-                return local_node_command_ok(parsed_stdout);
-            }
-            let error = object.get("error").and_then(Value::as_object);
-            return LocalNodeCommandExecution {
-                ok: false,
-                payload_json: serde_json::to_string(&parsed_stdout).ok(),
-                payload: object
-                    .get("payload")
-                    .cloned()
-                    .or_else(|| Some(parsed_stdout.clone())),
-                error: Some(NodeInvokeResultError {
-                    code: error
-                        .and_then(|value| value.get("code"))
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned)
-                        .or_else(|| Some("LOCAL_EXTERNAL_HOST_ERROR".to_owned())),
-                    message: error
-                        .and_then(|value| value.get("message"))
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned)
-                        .or_else(|| Some("external host runtime returned ok=false".to_owned())),
-                }),
-            };
-        }
-        return local_node_command_ok(parsed_stdout);
+        return parse_local_node_host_external_response(parsed_stdout);
     }
 
     let exit_code = output
@@ -9934,6 +9945,405 @@ fn resolve_browser_node_target(
         return Ok(browser_nodes.first().cloned());
     }
     Ok(None)
+}
+
+struct NodeHostRuntimeRegistry {
+    state: Mutex<NodeHostRuntimeState>,
+}
+
+#[derive(Default)]
+struct NodeHostRuntimeState {
+    sessions: HashMap<String, NodeHostRuntimeSession>,
+}
+
+#[derive(Clone)]
+struct NodeHostRuntimeSession {
+    command: String,
+    args: Vec<String>,
+    sender: mpsc::Sender<NodeHostRuntimeRequest>,
+    created_at_ms: u64,
+    last_used_at_ms: u64,
+}
+
+struct NodeHostRuntimeRequest {
+    request_json: String,
+    request_timeout_ms: u64,
+    respond_to: oneshot::Sender<LocalNodeCommandExecution>,
+}
+
+impl NodeHostRuntimeRegistry {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(NodeHostRuntimeState::default()),
+        }
+    }
+
+    async fn execute_external_command(
+        &self,
+        node_id: &str,
+        command: &str,
+        params: Option<&Value>,
+        runtime: &NodeHostRuntimeConfig,
+    ) -> LocalNodeCommandExecution {
+        let Some(external_runtime) = resolve_node_host_external_runtime_command(runtime, command)
+        else {
+            return local_node_command_error(
+                "LOCAL_EXTERNAL_HOST_UNAVAILABLE",
+                "external host runtime command is not configured".to_owned(),
+            );
+        };
+        if !runtime.external_persistent {
+            return local_node_host_execute_external_command(node_id, command, params, runtime)
+                .await;
+        }
+        let request_payload = json!({
+            "nodeId": node_id,
+            "command": command,
+            "params": params.cloned().unwrap_or_else(|| json!({})),
+            "timeoutMs": runtime.system_run_timeout_ms,
+            "ts": now_ms(),
+        });
+        let request_json = match serde_json::to_string(&request_payload) {
+            Ok(json) => json,
+            Err(err) => {
+                return local_node_command_error(
+                    "LOCAL_EXTERNAL_HOST_INVALID_REQUEST",
+                    format!("failed to serialize external host request: {err}"),
+                );
+            }
+        };
+        let session_key = node_host_external_runtime_session_key(&external_runtime);
+        let sender = self
+            .acquire_or_spawn_session(
+                &session_key,
+                external_runtime,
+                runtime.external_queue_capacity,
+                runtime.external_idle_timeout_ms,
+            )
+            .await;
+        let request_timeout_ms = runtime.system_run_timeout_ms.clamp(500, 120_000);
+        let (respond_to, waiter) = oneshot::channel();
+        let request = NodeHostRuntimeRequest {
+            request_json,
+            request_timeout_ms,
+            respond_to,
+        };
+        match sender.try_send(request) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                return local_node_command_error(
+                    "LOCAL_EXTERNAL_HOST_QUEUE_FULL",
+                    "persistent external host runtime queue is full".to_owned(),
+                );
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.remove_session(&session_key).await;
+                return local_node_command_error(
+                    "LOCAL_EXTERNAL_HOST_IO",
+                    "persistent external host runtime session closed".to_owned(),
+                );
+            }
+        }
+        match tokio::time::timeout(
+            Duration::from_millis(request_timeout_ms.saturating_add(500)),
+            waiter,
+        )
+        .await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                self.remove_session(&session_key).await;
+                local_node_command_error(
+                    "LOCAL_EXTERNAL_HOST_IO",
+                    "persistent external host runtime dropped response channel".to_owned(),
+                )
+            }
+            Err(_) => {
+                self.remove_session(&session_key).await;
+                local_node_command_error(
+                    "LOCAL_EXTERNAL_HOST_TIMEOUT",
+                    format!("external host runtime timed out after {request_timeout_ms}ms"),
+                )
+            }
+        }
+    }
+
+    async fn acquire_or_spawn_session(
+        &self,
+        session_key: &str,
+        external_runtime: NodeHostExternalCommand,
+        queue_capacity: usize,
+        idle_timeout_ms: u64,
+    ) -> mpsc::Sender<NodeHostRuntimeRequest> {
+        let now = now_ms();
+        let mut guard = self.state.lock().await;
+        if let Some(existing) = guard.sessions.get_mut(session_key) {
+            if !existing.sender.is_closed()
+                && existing.command == external_runtime.command
+                && existing.args == external_runtime.args
+            {
+                existing.last_used_at_ms = now;
+                return existing.sender.clone();
+            }
+            let _ = guard.sessions.remove(session_key);
+        }
+        let (sender, receiver) = mpsc::channel(queue_capacity.clamp(1, 1_024));
+        spawn_node_host_external_runtime_session_task(
+            external_runtime.clone(),
+            receiver,
+            idle_timeout_ms.clamp(1_000, 600_000),
+        );
+        guard.sessions.insert(
+            session_key.to_owned(),
+            NodeHostRuntimeSession {
+                command: external_runtime.command,
+                args: external_runtime.args,
+                sender: sender.clone(),
+                created_at_ms: now,
+                last_used_at_ms: now,
+            },
+        );
+        prune_node_host_runtime_sessions(
+            &mut guard.sessions,
+            LOCAL_NODE_HOST_EXTERNAL_MAX_SESSIONS,
+        );
+        sender
+    }
+
+    async fn remove_session(&self, session_key: &str) {
+        if session_key.trim().is_empty() {
+            return;
+        }
+        let mut guard = self.state.lock().await;
+        let _ = guard.sessions.remove(session_key);
+    }
+
+    #[cfg(test)]
+    async fn active_session_count(&self) -> usize {
+        let guard = self.state.lock().await;
+        guard.sessions.len()
+    }
+}
+
+fn node_host_external_runtime_session_key(runtime: &NodeHostExternalCommand) -> String {
+    let mut key = runtime.command.trim().to_owned();
+    for arg in &runtime.args {
+        key.push('\u{1f}');
+        key.push_str(arg.trim());
+    }
+    normalize(&key)
+}
+
+fn prune_node_host_runtime_sessions(
+    sessions: &mut HashMap<String, NodeHostRuntimeSession>,
+    max_sessions: usize,
+) {
+    let closed_keys = sessions
+        .iter()
+        .filter_map(|(key, entry)| {
+            if entry.sender.is_closed() {
+                Some(key.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    for key in closed_keys {
+        let _ = sessions.remove(&key);
+    }
+    while sessions.len() > max_sessions {
+        let Some(oldest_key) = sessions
+            .iter()
+            .min_by_key(|(_, entry)| (entry.last_used_at_ms, entry.created_at_ms))
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        let _ = sessions.remove(&oldest_key);
+    }
+}
+
+fn spawn_node_host_external_runtime_session_task(
+    external_runtime: NodeHostExternalCommand,
+    mut receiver: mpsc::Receiver<NodeHostRuntimeRequest>,
+    idle_timeout_ms: u64,
+) {
+    tokio::spawn(async move {
+        let mut process = TokioCommand::new(&external_runtime.command);
+        if !external_runtime.args.is_empty() {
+            process.args(&external_runtime.args);
+        }
+        process
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .env("OPENCLAW_NODE_HOST_MODE", "persistent")
+            .env(
+                "OPENCLAW_NODE_HOST_RUNTIME_COMMAND",
+                &external_runtime.command,
+            );
+
+        let mut child = match process.spawn() {
+            Ok(child) => child,
+            Err(err) => {
+                drain_node_host_runtime_requests_with_error(
+                    &mut receiver,
+                    "LOCAL_EXTERNAL_HOST_SPAWN_FAILED",
+                    format!(
+                        "failed spawning persistent external host runtime command {}: {err}",
+                        external_runtime.command
+                    ),
+                );
+                return;
+            }
+        };
+        let Some(mut stdin) = child.stdin.take() else {
+            drain_node_host_runtime_requests_with_error(
+                &mut receiver,
+                "LOCAL_EXTERNAL_HOST_IO",
+                "persistent external host runtime missing stdin pipe".to_owned(),
+            );
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return;
+        };
+        let Some(stdout) = child.stdout.take() else {
+            drain_node_host_runtime_requests_with_error(
+                &mut receiver,
+                "LOCAL_EXTERNAL_HOST_IO",
+                "persistent external host runtime missing stdout pipe".to_owned(),
+            );
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return;
+        };
+
+        let mut stdout_reader = BufReader::new(stdout);
+        let idle_timeout = Duration::from_millis(idle_timeout_ms);
+        loop {
+            let request = match tokio::time::timeout(idle_timeout, receiver.recv()).await {
+                Ok(Some(request)) => request,
+                Ok(None) | Err(_) => break,
+            };
+
+            if let Err(err) =
+                write_persistent_node_host_request(&mut stdin, &request.request_json).await
+            {
+                let _ = request.respond_to.send(local_node_command_error(
+                    "LOCAL_EXTERNAL_HOST_IO",
+                    format!("failed writing external host request stdin: {err}"),
+                ));
+                drain_node_host_runtime_requests_with_error(
+                    &mut receiver,
+                    "LOCAL_EXTERNAL_HOST_IO",
+                    "persistent external host runtime write failed".to_owned(),
+                );
+                break;
+            }
+
+            let response =
+                read_persistent_node_host_response(&mut stdout_reader, request.request_timeout_ms)
+                    .await;
+            let _ = request.respond_to.send(response);
+        }
+
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    });
+}
+
+async fn write_persistent_node_host_request(
+    stdin: &mut tokio::process::ChildStdin,
+    request_json: &str,
+) -> Result<(), std::io::Error> {
+    stdin.write_all(request_json.as_bytes()).await?;
+    stdin.write_all(b"\n").await?;
+    stdin.flush().await?;
+    Ok(())
+}
+
+async fn read_persistent_node_host_response<R>(
+    stdout_reader: &mut R,
+    timeout_ms: u64,
+) -> LocalNodeCommandExecution
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let mut line = String::new();
+    let timeout_ms = timeout_ms.clamp(500, 120_000);
+    let mut parse_attempts = 0usize;
+    loop {
+        line.clear();
+        let read = match tokio::time::timeout(
+            Duration::from_millis(timeout_ms),
+            stdout_reader.read_line(&mut line),
+        )
+        .await
+        {
+            Ok(Ok(read)) => read,
+            Ok(Err(err)) => {
+                return local_node_command_error(
+                    "LOCAL_EXTERNAL_HOST_IO",
+                    format!("failed reading external host response: {err}"),
+                );
+            }
+            Err(_) => {
+                return local_node_command_error(
+                    "LOCAL_EXTERNAL_HOST_TIMEOUT",
+                    format!("external host runtime timed out after {timeout_ms}ms"),
+                );
+            }
+        };
+        if read == 0 {
+            return local_node_command_error(
+                "LOCAL_EXTERNAL_HOST_IO",
+                "external host runtime closed stdout".to_owned(),
+            );
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            parse_attempts = parse_attempts.saturating_add(1);
+            if parse_attempts >= 8 {
+                return local_node_command_error(
+                    "LOCAL_EXTERNAL_HOST_EMPTY",
+                    "external host runtime returned empty stdout".to_owned(),
+                );
+            }
+            continue;
+        }
+        if trimmed.len() > LOCAL_NODE_HOST_EXTERNAL_RESPONSE_LINE_MAX_CHARS {
+            return local_node_command_error(
+                "LOCAL_EXTERNAL_HOST_INVALID_JSON",
+                "external host runtime response line exceeded size limit".to_owned(),
+            );
+        }
+        let parsed_stdout: Value = match serde_json::from_str(trimmed) {
+            Ok(value) => value,
+            Err(err) => {
+                parse_attempts = parse_attempts.saturating_add(1);
+                if parse_attempts >= 8 {
+                    return local_node_command_error(
+                        "LOCAL_EXTERNAL_HOST_INVALID_JSON",
+                        format!("external host runtime returned invalid JSON: {err}"),
+                    );
+                }
+                continue;
+            }
+        };
+        return parse_local_node_host_external_response(parsed_stdout);
+    }
+}
+
+fn drain_node_host_runtime_requests_with_error(
+    receiver: &mut mpsc::Receiver<NodeHostRuntimeRequest>,
+    code: &str,
+    message: String,
+) {
+    while let Ok(pending) = receiver.try_recv() {
+        let _ = pending
+            .respond_to
+            .send(local_node_command_error(code, message.clone()));
+    }
 }
 
 struct NodeRuntimeRegistry {
@@ -14682,6 +15092,91 @@ fn node_host_runtime_config_from_config(config: &Value) -> NodeHostRuntimeConfig
         .map(|value| value.clamp(500, 120_000))
         .unwrap_or(LOCAL_NODE_HOST_SYSTEM_RUN_TIMEOUT_MS);
 
+    let external_persistent = node_host
+        .and_then(|obj| {
+            read_config_bool(
+                obj,
+                &[
+                    "externalPersistent",
+                    "external_persistent",
+                    "hostPersistent",
+                    "host_persistent",
+                    "persistent",
+                ],
+            )
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_bool(
+                    obj,
+                    &[
+                        "nodeHostExternalPersistent",
+                        "node_host_external_persistent",
+                        "externalNodeHostPersistent",
+                    ],
+                )
+            })
+        })
+        .unwrap_or(false);
+
+    let external_queue_capacity = node_host
+        .and_then(|obj| {
+            read_config_usize(
+                obj,
+                &[
+                    "externalQueueCapacity",
+                    "external_queue_capacity",
+                    "hostQueueCapacity",
+                    "host_queue_capacity",
+                    "queueCapacity",
+                    "queue_capacity",
+                ],
+            )
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_usize(
+                    obj,
+                    &[
+                        "nodeHostExternalQueueCapacity",
+                        "node_host_external_queue_capacity",
+                        "externalNodeHostQueueCapacity",
+                    ],
+                )
+            })
+        })
+        .map(|value| value.clamp(1, 1_024))
+        .unwrap_or(LOCAL_NODE_HOST_EXTERNAL_QUEUE_CAPACITY);
+
+    let external_idle_timeout_ms = node_host
+        .and_then(|obj| {
+            read_config_u64(
+                obj,
+                &[
+                    "externalIdleTimeoutMs",
+                    "external_idle_timeout_ms",
+                    "hostIdleTimeoutMs",
+                    "host_idle_timeout_ms",
+                    "idleTimeoutMs",
+                    "idle_timeout_ms",
+                ],
+            )
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_u64(
+                    obj,
+                    &[
+                        "nodeHostExternalIdleTimeoutMs",
+                        "node_host_external_idle_timeout_ms",
+                        "externalNodeHostIdleTimeoutMs",
+                    ],
+                )
+            })
+        })
+        .map(|value| value.clamp(1_000, 600_000))
+        .unwrap_or(LOCAL_NODE_HOST_EXTERNAL_IDLE_TIMEOUT_MS);
+
     let external_command = node_host
         .and_then(|obj| {
             read_config_string(
@@ -14773,6 +15268,9 @@ fn node_host_runtime_config_from_config(config: &Value) -> NodeHostRuntimeConfig
         local_node_ids,
         allow_system_run,
         system_run_timeout_ms,
+        external_persistent,
+        external_queue_capacity,
+        external_idle_timeout_ms,
         external_command,
         external_args,
         external_commands,
@@ -30583,6 +31081,191 @@ mod tests {
                 .is_none(),
             "external-map local runtime should not leave pending invokes"
         );
+    }
+
+    #[tokio::test]
+    async fn dispatcher_local_node_host_runtime_command_override_can_run_without_global_command() {
+        let dispatcher = RpcDispatcher::new();
+        let (mapped_command, mapped_args): (&str, Vec<&str>) = if cfg!(windows) {
+            ("cmd", vec!["/C", "echo %OPENCLAW_NODE_HOST_REQUEST%"])
+        } else {
+            (
+                "sh",
+                vec!["-lc", "printf '%s' \"$OPENCLAW_NODE_HOST_REQUEST\""],
+            )
+        };
+        patch_config(
+            &dispatcher,
+            json!({
+                "nodeHost": {
+                    "localNodeIds": ["local-node-external-map-only-1"],
+                    "externalCommands": {
+                        "location.get": {
+                            "command": mapped_command,
+                            "args": mapped_args
+                        }
+                    }
+                }
+            }),
+        )
+        .await;
+
+        let pair = RpcRequestFrame {
+            id: "req-local-node-external-map-only-pair".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-external-map-only-1",
+                "displayName": "Local External Runtime Map Only Node",
+                "caps": ["host.local"],
+                "commands": ["location.get"]
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&pair).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("pair request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+        let approve = RpcRequestFrame {
+            id: "req-local-node-external-map-only-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        let out = dispatcher.handle_request(&approve).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        let invoke = RpcRequestFrame {
+            id: "req-local-node-external-map-only-invoke".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-external-map-only-1",
+                "command": "location.get",
+                "params": {},
+                "idempotencyKey": "local-node-external-map-only-location"
+            }),
+        };
+        match dispatcher.handle_request(&invoke).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(payload.pointer("/ok").and_then(Value::as_bool), Some(true));
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/command")
+                        .and_then(Value::as_str),
+                    Some("location.get")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/nodeId")
+                        .and_then(Value::as_str),
+                    Some("local-node-external-map-only-1")
+                );
+            }
+            _ => panic!("expected node.invoke handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_local_node_host_runtime_persistent_external_process_reuses_session() {
+        let dispatcher = RpcDispatcher::new();
+        let (external_command, external_args): (&str, Vec<&str>) = if cfg!(windows) {
+            (
+                "powershell",
+                vec![
+                    "-NoProfile",
+                    "-Command",
+                    "$reader=[Console]::In; while(($line=$reader.ReadLine()) -ne $null){ [Console]::Out.WriteLine($line) }",
+                ],
+            )
+        } else {
+            (
+                "sh",
+                vec![
+                    "-lc",
+                    "while IFS= read -r line; do printf '%s\\n' \"$line\"; done",
+                ],
+            )
+        };
+        patch_config(
+            &dispatcher,
+            json!({
+                "nodeHost": {
+                    "localNodeIds": ["local-node-external-persistent-1"],
+                    "externalCommand": external_command,
+                    "externalArgs": external_args,
+                    "externalPersistent": true,
+                    "externalQueueCapacity": 8,
+                    "externalIdleTimeoutMs": 60000
+                }
+            }),
+        )
+        .await;
+
+        let pair = RpcRequestFrame {
+            id: "req-local-node-external-persistent-pair".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-external-persistent-1",
+                "displayName": "Local External Persistent Runtime Node",
+                "caps": ["host.local"],
+                "commands": ["location.get"]
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&pair).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("pair request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+        let approve = RpcRequestFrame {
+            id: "req-local-node-external-persistent-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        let out = dispatcher.handle_request(&approve).await;
+        assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+
+        for idx in 0..2 {
+            let invoke = RpcRequestFrame {
+                id: format!("req-local-node-external-persistent-invoke-{idx}"),
+                method: "node.invoke".to_owned(),
+                params: serde_json::json!({
+                    "nodeId": "local-node-external-persistent-1",
+                    "command": "location.get",
+                    "params": {
+                        "index": idx
+                    },
+                    "idempotencyKey": format!("local-node-external-persistent-location-{idx}")
+                }),
+            };
+            match dispatcher.handle_request(&invoke).await {
+                RpcDispatchOutcome::Handled(payload) => {
+                    assert_eq!(payload.pointer("/ok").and_then(Value::as_bool), Some(true));
+                    assert_eq!(
+                        payload
+                            .pointer("/payload/result/command")
+                            .and_then(Value::as_str),
+                        Some("location.get")
+                    );
+                    assert_eq!(
+                        payload
+                            .pointer("/payload/result/nodeId")
+                            .and_then(Value::as_str),
+                        Some("local-node-external-persistent-1")
+                    );
+                }
+                _ => panic!("expected node.invoke handled"),
+            }
+        }
+
+        assert_eq!(dispatcher.node_host_runtime.active_session_count().await, 1);
     }
 
     #[tokio::test]

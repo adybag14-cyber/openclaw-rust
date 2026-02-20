@@ -1806,7 +1806,7 @@ mod tests {
         Ok(serde_json::from_slice(body)?)
     }
 
-    async fn http_post_json(bind: &str, path: &str, payload: &Value) -> Result<Value> {
+    async fn http_post_json_once(bind: &str, path: &str, payload: &Value) -> Result<Value> {
         let mut stream = TcpStream::connect(bind).await?;
         let body = serde_json::to_vec(payload)?;
         let request = format!(
@@ -1819,6 +1819,22 @@ mod tests {
         stream.read_to_end(&mut raw).await?;
         let response_body = response_body_slice(&raw)?;
         Ok(serde_json::from_slice(response_body)?)
+    }
+
+    async fn http_post_json(bind: &str, path: &str, payload: &Value) -> Result<Value> {
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 0..3 {
+            match http_post_json_once(bind, path, payload).await {
+                Ok(value) => return Ok(value),
+                Err(err) => {
+                    last_err = Some(err);
+                    if attempt < 2 {
+                        tokio::time::sleep(Duration::from_millis(30)).await;
+                    }
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("control-http POST failed")))
     }
 
     #[test]
