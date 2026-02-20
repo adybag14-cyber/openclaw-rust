@@ -10408,11 +10408,15 @@ fn classify_channel_lifecycle_event(event: &str) -> Option<ChannelLifecycleEvent
 fn classify_channel_activity_event(event: &str) -> Option<ChannelActivityEvent> {
     let normalized = normalize(event);
     let suffix = normalized.rsplit('.').next().unwrap_or(normalized.as_str());
-    match suffix {
-        "message" | "inbound" | "incoming" | "received" | "recv" => {
+    let normalized_suffix = suffix
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>();
+    match normalized_suffix.as_str() {
+        "message" | "inbound" | "incoming" | "received" | "recv" | "messagereceived" => {
             Some(ChannelActivityEvent::Inbound)
         }
-        "outbound" | "sent" | "delivered" | "delivery" | "ack" | "acknowledged" => {
+        "outbound" | "sent" | "delivered" | "delivery" | "ack" | "acknowledged" | "messagesent" => {
             Some(ChannelActivityEvent::Outbound)
         }
         _ => None,
@@ -10480,12 +10484,29 @@ fn lifecycle_last_error(payload: &Value) -> Option<String> {
 
 fn infer_channel_from_payload(payload: &Value) -> Option<String> {
     let map = payload.as_object()?;
+    if let Some(channel) = infer_channel_from_payload_map(map) {
+        return Some(channel);
+    }
+    for nested_key in ["meta", "context", "ctx", "runtime", "data", "source"] {
+        let Some(nested) = map.get(nested_key).and_then(Value::as_object) else {
+            continue;
+        };
+        if let Some(channel) = infer_channel_from_payload_map(nested) {
+            return Some(channel);
+        }
+    }
+    None
+}
+
+fn infer_channel_from_payload_map(map: &serde_json::Map<String, Value>) -> Option<String> {
     let raw = map
         .get("channel")
         .or_else(|| map.get("channelId"))
         .or_else(|| map.get("channel_id"))
         .or_else(|| map.get("provider"))
         .or_else(|| map.get("platform"))
+        .or_else(|| map.get("channelName"))
+        .or_else(|| map.get("channel_name"))
         .and_then(Value::as_str)?;
     normalize_channel_id(Some(raw)).or_else(|| Some(normalize(raw)))
 }
@@ -22955,6 +22976,74 @@ mod tests {
                 assert!(
                     payload
                         .pointer("/channelAccounts/whatsapp/0/lastInboundAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_tracks_nested_channel_alias_activity_events() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.message_sent",
+                "payload": {
+                    "context": {
+                        "channel": "tg",
+                        "accountId": "ops"
+                    }
+                }
+            }))
+            .await;
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.message-received",
+                "payload": {
+                    "meta": {
+                        "provider": "teams",
+                        "account_id": "desk"
+                    }
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-nested-channel-activity-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/telegram")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/lastOutboundAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/msteams")
+                        .and_then(serde_json::Value::as_str),
+                    Some("desk")
+                );
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/msteams/0/lastInboundAt")
                         .and_then(serde_json::Value::as_u64)
                         .unwrap_or(0)
                         > 0
