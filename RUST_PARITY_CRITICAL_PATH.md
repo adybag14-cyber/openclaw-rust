@@ -5,18 +5,18 @@ Repo: `adybag14-cyber/openclaw-rust`
 
 ## Current Baseline (Evidence-Based)
 
-- Overall completion estimate toward true end-to-end Rust replacement: **~68%**
-- Remaining gap: **~32%**
+- Overall completion estimate toward true end-to-end Rust replacement: **~72%**
+- Remaining gap: **~28%**
 - Rust feature-audit status counts:
-  - `Implemented`: 11
-  - `Partial`: 11
+  - `Implemented`: 12
+  - `Partial`: 10
   - `Deferred`: 0
   - Source: `OPENCLAW_FEATURE_AUDIT.md`
 - Rust gateway method surface: **103** supported RPC methods
   - Source: `src/gateway.rs` (`SUPPORTED_RPC_METHODS`)
 - Current validation depth:
-  - 246 tests pass (default)
-  - 249 tests pass with `sqlite-state`
+  - 249 tests pass (default)
+  - 252 tests pass with `sqlite-state`
   - Full matrix passing (`fmt`, `test`, `clippy`, `release`, `sqlite-state` variants)
 
 ## Definition of Done (100%)

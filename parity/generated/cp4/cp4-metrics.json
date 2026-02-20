@@ -2,7 +2,7 @@
   "gate": "cp4",
   "passed": 64,
   "totalFixtures": 64,
-  "totalDurationMs": 32868,
-  "avgFixtureDurationMs": 514,
+  "totalDurationMs": 23968,
+  "avgFixtureDurationMs": 374,
   "resultsTsv": "cp4-fixture-results.tsv"
 }

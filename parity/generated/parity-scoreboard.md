@@ -6,8 +6,8 @@ Generated (UTC): deterministic
 
 | Metric | Value |
 | --- | ---: |
-| Audit Implemented | 11 |
-| Audit Partial | 11 |
+| Audit Implemented | 12 |
+| Audit Partial | 10 |
 | Audit Deferred | 0 |
 | Audit Not Started | 0 |
 | Rust RPC Methods | 103 |
@@ -20,8 +20,8 @@ Generated (UTC): deterministic
 
 | Metric | Delta |
 | --- | ---: |
-| Implemented | +2 |
-| Partial | +2 |
+| Implemented | +3 |
+| Partial | +1 |
 | Deferred | -3 |
 | Not Started | 0 |
 | Rust RPC Methods | +2 |
@@ -33,6 +33,7 @@ Generated (UTC): deterministic
 ## Subsystem Status Deltas
 
 - CLI + control surface:  -> Implemented
+- Idempotency dedupe: Partial -> Implemented
 - Model/provider layer: Deferred -> Implemented
 - Nodes + device features: Deferred -> Partial
 - Tool execution layer: Deferred -> Partial

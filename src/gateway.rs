@@ -758,6 +758,8 @@ const AGENT_RUN_COMPLETE_DELAY_MS: u64 = 25;
 const MAX_CHAT_RUNS: usize = 4_096;
 const CHAT_RUN_COMPLETE_DELAY_MS: u64 = 25;
 const MAX_SEND_CACHE_ENTRIES: usize = 4_096;
+const SEND_CACHE_STORE_PATH: &str = "memory://idempotency/send-cache.json";
+const DEFAULT_SEND_CACHE_TTL_MS: u64 = 300_000;
 const DEFAULT_SEND_CHANNEL: &str = "whatsapp";
 const TTS_PREFS_PATH: &str = "memory://tts/prefs.json";
 const TTS_OPENAI_MODELS: &[&str] = &["gpt-4o-mini-tts", "tts-1", "tts-1-hd"];
@@ -934,6 +936,12 @@ impl RpcDispatcher {
     }
 
     pub async fn run_due_cron_jobs(&self, max_jobs: usize) -> usize {
+        if let Err(err) = self.sync_cron_runtime_from_config().await {
+            self.system
+                .log_line(format!("cron.runtime sync failed: {err}"))
+                .await;
+            return 0;
+        }
         let executions = self.cron.run_due_batch(max_jobs).await;
         let mut executed = 0usize;
         for execution in executions {
@@ -942,6 +950,28 @@ impl RpcDispatcher {
                 .await;
         }
         executed
+    }
+
+    async fn sync_cron_runtime_from_config(&self) -> Result<(), String> {
+        let runtime = self.config.cron_runtime_config().await;
+        self.cron
+            .apply_runtime_config(runtime)
+            .await
+            .map_err(|err| match err {
+                CronRegistryError::NotFound(message) | CronRegistryError::Invalid(message) => {
+                    message
+                }
+            })
+    }
+
+    async fn sync_send_runtime_from_config(&self) -> Result<(), String> {
+        let runtime = self.config.send_runtime_config().await;
+        self.send
+            .apply_runtime_config(runtime)
+            .await
+            .map_err(|err| match err {
+                SendRegistryError::Invalid(message) => message,
+            })
     }
 
     pub async fn handle_request(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
@@ -2006,6 +2036,9 @@ impl RpcDispatcher {
     }
 
     async fn handle_cron_list(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_cron_runtime_from_config().await {
+            return RpcDispatchOutcome::bad_request(err);
+        }
         let params = match decode_params::<CronListParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2022,6 +2055,9 @@ impl RpcDispatcher {
     }
 
     async fn handle_cron_status(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_cron_runtime_from_config().await {
+            return RpcDispatchOutcome::bad_request(err);
+        }
         if let Err(err) = decode_params::<CronStatusParams>(&req.params) {
             return RpcDispatchOutcome::bad_request(format!("invalid cron.status params: {err}"));
         }
@@ -2030,6 +2066,9 @@ impl RpcDispatcher {
     }
 
     async fn handle_cron_add(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_cron_runtime_from_config().await {
+            return RpcDispatchOutcome::bad_request(err);
+        }
         let params = match decode_params::<CronAddParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2052,6 +2091,9 @@ impl RpcDispatcher {
     }
 
     async fn handle_cron_update(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_cron_runtime_from_config().await {
+            return RpcDispatchOutcome::bad_request(err);
+        }
         let params = match decode_params::<CronUpdateParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2080,6 +2122,9 @@ impl RpcDispatcher {
     }
 
     async fn handle_cron_remove(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_cron_runtime_from_config().await {
+            return RpcDispatchOutcome::bad_request(err);
+        }
         let params = match decode_params::<CronRemoveParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2093,8 +2138,13 @@ impl RpcDispatcher {
             Err(err) => return RpcDispatchOutcome::bad_request(err),
         };
         let removed = match self.cron.remove(&job_id).await {
-            Some(removed) => removed,
-            None => return RpcDispatchOutcome::not_found(format!("cron job not found: {job_id}")),
+            Ok(removed) => removed,
+            Err(CronRegistryError::NotFound(message)) => {
+                return RpcDispatchOutcome::not_found(message)
+            }
+            Err(CronRegistryError::Invalid(message)) => {
+                return RpcDispatchOutcome::bad_request(message);
+            }
         };
         self.system
             .log_line(format!("cron.remove id={job_id}"))
@@ -2103,6 +2153,9 @@ impl RpcDispatcher {
     }
 
     async fn handle_cron_run(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_cron_runtime_from_config().await {
+            return RpcDispatchOutcome::bad_request(err);
+        }
         let params = match decode_params::<CronRunParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2131,6 +2184,9 @@ impl RpcDispatcher {
     }
 
     async fn handle_cron_runs(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_cron_runtime_from_config().await {
+            return RpcDispatchOutcome::bad_request(err);
+        }
         let params = match decode_params::<CronRunsParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -3796,6 +3852,12 @@ impl RpcDispatcher {
                 "invalid send params: idempotencyKey is required",
             );
         };
+        if let Err(err) = self.sync_send_runtime_from_config().await {
+            self.system
+                .log_line(format!("send.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("send runtime unavailable");
+        }
         if let Some(cached) = self.send.get(&idempotency_key).await {
             return RpcDispatchOutcome::Handled(cached);
         }
@@ -3898,7 +3960,12 @@ impl RpcDispatcher {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        self.send.set(cache_key, payload.clone()).await;
+        if let Err(err) = self.send.set(cache_key, payload.clone()).await {
+            self.system
+                .log_line(format!("send.cache persist failed: {err:?}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("send cache persistence failed");
+        }
         RpcDispatchOutcome::Handled(payload)
     }
 
@@ -3915,6 +3982,12 @@ impl RpcDispatcher {
                 "invalid poll params: idempotencyKey is required",
             );
         };
+        if let Err(err) = self.sync_send_runtime_from_config().await {
+            self.system
+                .log_line(format!("send.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("poll runtime unavailable");
+        }
         let cache_key = format!("poll:{idempotency_key}");
         if let Some(cached) = self.send.get(&cache_key).await {
             return RpcDispatchOutcome::Handled(cached);
@@ -4033,7 +4106,12 @@ impl RpcDispatcher {
         if let Some(thread_id) = thread_id {
             payload["threadId"] = json!(thread_id);
         }
-        self.send.set(cache_key, payload.clone()).await;
+        if let Err(err) = self.send.set(cache_key, payload.clone()).await {
+            self.system
+                .log_line(format!("poll.cache persist failed: {err:?}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("poll cache persistence failed");
+        }
         RpcDispatchOutcome::Handled(payload)
     }
 
@@ -5303,6 +5381,14 @@ impl RpcDispatchOutcome {
     fn not_found(message: impl Into<String>) -> Self {
         Self::Error {
             code: 404,
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    fn internal_error(message: impl Into<String>) -> Self {
+        Self::Error {
+            code: 500,
             message: message.into(),
             details: None,
         }
@@ -6611,6 +6697,7 @@ struct CronRegistry {
 #[derive(Debug, Clone)]
 struct CronState {
     enabled: bool,
+    store_path: String,
     jobs: HashMap<String, CronJob>,
     run_logs: HashMap<String, VecDeque<CronRunLogEntry>>,
 }
@@ -6662,6 +6749,19 @@ enum CronWebhookSource {
 struct CronWebhookDefaults {
     webhook: Option<String>,
     webhook_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CronRuntimeConfig {
+    enabled: Option<bool>,
+    store_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SendRuntimeConfig {
+    store_path: Option<String>,
+    ttl_ms: Option<u64>,
+    max_entries: Option<usize>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -6777,7 +6877,7 @@ struct CronRunLogEntry {
     next_run_at_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CronJob {
     id: String,
     #[serde(rename = "agentId", skip_serializing_if = "Option::is_none")]
@@ -6802,8 +6902,9 @@ struct CronJob {
     payload: CronPayload,
     #[serde(skip_serializing_if = "Option::is_none")]
     delivery: Option<CronDelivery>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     notify: Option<bool>,
+    #[serde(default)]
     state: CronJobState,
 }
 
@@ -6824,15 +6925,64 @@ struct CronStatusSnapshot {
     store_path: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct CronStoreDiskState {
+    version: u32,
+    enabled: bool,
+    jobs: Vec<CronJob>,
+}
+
+impl Default for CronStoreDiskState {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            enabled: true,
+            jobs: Vec::new(),
+        }
+    }
+}
+
 impl CronRegistry {
     fn new() -> Self {
         Self {
             state: Mutex::new(CronState {
                 enabled: true,
+                store_path: CRON_STORE_PATH.to_owned(),
                 jobs: HashMap::new(),
                 run_logs: HashMap::new(),
             }),
         }
+    }
+
+    async fn apply_runtime_config(
+        &self,
+        runtime: CronRuntimeConfig,
+    ) -> Result<(), CronRegistryError> {
+        let mut guard = self.state.lock().await;
+        if let Some(path) = runtime.store_path {
+            if guard.store_path != path {
+                let loaded = load_cron_store_disk_state(&path)?;
+                guard.store_path = path.clone();
+                guard.jobs = loaded
+                    .jobs
+                    .into_iter()
+                    .map(|job| (job.id.clone(), job))
+                    .collect::<HashMap<_, _>>();
+                let active_job_ids = guard.jobs.keys().cloned().collect::<HashSet<_>>();
+                guard
+                    .run_logs
+                    .retain(|job_id, _| active_job_ids.contains(job_id));
+                if runtime.enabled.is_none() {
+                    guard.enabled = loaded.enabled;
+                }
+            }
+        }
+        if let Some(enabled) = runtime.enabled {
+            guard.enabled = enabled;
+        }
+        persist_cron_store_disk_state(&guard)?;
+        Ok(())
     }
 
     async fn list(&self, include_disabled: bool) -> Vec<CronJob> {
@@ -6863,7 +7013,7 @@ impl CronRegistry {
             enabled: guard.enabled,
             jobs: guard.jobs.len(),
             next_wake_at_ms,
-            store_path: CRON_STORE_PATH.to_owned(),
+            store_path: guard.store_path.clone(),
         }
     }
 
@@ -6906,6 +7056,7 @@ impl CronRegistry {
         };
         let mut guard = self.state.lock().await;
         guard.jobs.insert(id, job.clone());
+        persist_cron_store_disk_state(&guard)?;
         Ok(job)
     }
 
@@ -6916,68 +7067,78 @@ impl CronRegistry {
     ) -> Result<CronJob, CronRegistryError> {
         let now = now_ms();
         let mut guard = self.state.lock().await;
-        let Some(job) = guard.jobs.get_mut(job_id) else {
+        let updated_job = {
+            let Some(job) = guard.jobs.get_mut(job_id) else {
+                return Err(CronRegistryError::NotFound(format!(
+                    "cron job not found: {job_id}"
+                )));
+            };
+            if let Some(value) = patch.name {
+                job.name = normalize_optional_text(Some(value), 128).ok_or_else(|| {
+                    CronRegistryError::Invalid("cron.update patch.name cannot be empty".to_owned())
+                })?;
+            }
+            if let Some(value) = patch.agent_id {
+                job.agent_id = normalize_optional_text(value, 64);
+            }
+            if let Some(value) = patch.session_key {
+                job.session_key = normalize_session_key_input(value);
+            }
+            if let Some(value) = patch.description {
+                job.description = normalize_optional_text(value, 512);
+            }
+            if let Some(value) = patch.enabled {
+                job.enabled = value;
+            }
+            if let Some(value) = patch.delete_after_run {
+                job.delete_after_run = Some(value);
+            }
+            if let Some(value) = patch.schedule {
+                let schedule = normalize_cron_schedule(value)?;
+                job.schedule = schedule.clone();
+                job.state.next_run_at_ms = estimate_next_run_at_ms(&schedule, now);
+            }
+            if let Some(value) = patch.session_target {
+                job.session_target = parse_cron_session_target(Some(value))?;
+            }
+            if let Some(value) = patch.wake_mode {
+                job.wake_mode = parse_cron_wake_mode(Some(value))?;
+            }
+            if let Some(payload_patch) = patch.payload {
+                let (payload, legacy_delivery) =
+                    apply_cron_payload_patch(&job.payload, payload_patch)?;
+                job.payload = payload;
+                if patch.delivery.is_none() {
+                    if let Some(raw) = legacy_delivery {
+                        job.delivery = Some(normalize_cron_delivery(raw, "cron.update")?);
+                    }
+                }
+            }
+            if let Some(delivery_patch) = patch.delivery {
+                job.delivery = apply_cron_delivery_patch(job.delivery.clone(), delivery_patch)?;
+            }
+            if let Some(value) = patch.notify {
+                job.notify = value;
+            }
+            if let Some(state_patch) = patch.state {
+                apply_cron_job_state_patch(&mut job.state, state_patch)?;
+            }
+            job.updated_at_ms = now;
+            job.clone()
+        };
+        persist_cron_store_disk_state(&guard)?;
+        Ok(updated_job)
+    }
+
+    async fn remove(&self, job_id: &str) -> Result<CronRemoveResult, CronRegistryError> {
+        let mut guard = self.state.lock().await;
+        if guard.jobs.remove(job_id).is_none() {
             return Err(CronRegistryError::NotFound(format!(
                 "cron job not found: {job_id}"
             )));
-        };
-        if let Some(value) = patch.name {
-            job.name = normalize_optional_text(Some(value), 128).ok_or_else(|| {
-                CronRegistryError::Invalid("cron.update patch.name cannot be empty".to_owned())
-            })?;
         }
-        if let Some(value) = patch.agent_id {
-            job.agent_id = normalize_optional_text(value, 64);
-        }
-        if let Some(value) = patch.session_key {
-            job.session_key = normalize_session_key_input(value);
-        }
-        if let Some(value) = patch.description {
-            job.description = normalize_optional_text(value, 512);
-        }
-        if let Some(value) = patch.enabled {
-            job.enabled = value;
-        }
-        if let Some(value) = patch.delete_after_run {
-            job.delete_after_run = Some(value);
-        }
-        if let Some(value) = patch.schedule {
-            let schedule = normalize_cron_schedule(value)?;
-            job.schedule = schedule.clone();
-            job.state.next_run_at_ms = estimate_next_run_at_ms(&schedule, now);
-        }
-        if let Some(value) = patch.session_target {
-            job.session_target = parse_cron_session_target(Some(value))?;
-        }
-        if let Some(value) = patch.wake_mode {
-            job.wake_mode = parse_cron_wake_mode(Some(value))?;
-        }
-        if let Some(payload_patch) = patch.payload {
-            let (payload, legacy_delivery) = apply_cron_payload_patch(&job.payload, payload_patch)?;
-            job.payload = payload;
-            if patch.delivery.is_none() {
-                if let Some(raw) = legacy_delivery {
-                    job.delivery = Some(normalize_cron_delivery(raw, "cron.update")?);
-                }
-            }
-        }
-        if let Some(delivery_patch) = patch.delivery {
-            job.delivery = apply_cron_delivery_patch(job.delivery.clone(), delivery_patch)?;
-        }
-        if let Some(value) = patch.notify {
-            job.notify = value;
-        }
-        if let Some(state_patch) = patch.state {
-            apply_cron_job_state_patch(&mut job.state, state_patch)?;
-        }
-        job.updated_at_ms = now;
-        Ok(job.clone())
-    }
-
-    async fn remove(&self, job_id: &str) -> Option<CronRemoveResult> {
-        let mut guard = self.state.lock().await;
-        guard.jobs.remove(job_id)?;
-        Some(CronRemoveResult {
+        persist_cron_store_disk_state(&guard)?;
+        Ok(CronRemoveResult {
             ok: true,
             id: job_id.to_owned(),
             removed: true,
@@ -7093,6 +7254,8 @@ impl CronRegistry {
                 job.updated_at_ms = now;
             }
         }
+
+        persist_cron_store_disk_state(&guard)?;
 
         Ok(CronRunExecution {
             entry,
@@ -9009,8 +9172,15 @@ struct SendRegistry {
     state: Mutex<SendState>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Clone)]
+enum SendRegistryError {
+    Invalid(String),
+}
+
 struct SendState {
+    store_path: String,
+    ttl_ms: u64,
+    max_entries: usize,
     cached_by_id: HashMap<String, SendCacheEntry>,
 }
 
@@ -9020,22 +9190,117 @@ struct SendCacheEntry {
     created_at_ms: u64,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct SendStoreDiskState {
+    version: u32,
+    #[serde(rename = "ttlMs")]
+    ttl_ms: u64,
+    #[serde(rename = "maxEntries")]
+    max_entries: usize,
+    entries: Vec<SendStoreDiskEntry>,
+}
+
+impl Default for SendStoreDiskState {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            ttl_ms: DEFAULT_SEND_CACHE_TTL_MS,
+            max_entries: MAX_SEND_CACHE_ENTRIES,
+            entries: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SendStoreDiskEntry {
+    #[serde(rename = "idempotencyKey")]
+    idempotency_key: String,
+    payload: Value,
+    #[serde(rename = "createdAtMs")]
+    created_at_ms: u64,
+}
+
 impl SendRegistry {
     fn new() -> Self {
         Self {
-            state: Mutex::new(SendState::default()),
+            state: Mutex::new(SendState {
+                store_path: SEND_CACHE_STORE_PATH.to_owned(),
+                ttl_ms: DEFAULT_SEND_CACHE_TTL_MS,
+                max_entries: MAX_SEND_CACHE_ENTRIES,
+                cached_by_id: HashMap::new(),
+            }),
         }
     }
 
+    async fn apply_runtime_config(
+        &self,
+        runtime: SendRuntimeConfig,
+    ) -> Result<(), SendRegistryError> {
+        let mut guard = self.state.lock().await;
+        let mut changed = false;
+        if let Some(path) = runtime.store_path {
+            if guard.store_path != path {
+                let loaded = load_send_store_disk_state(&path)?;
+                guard.store_path = path;
+                guard.cached_by_id = loaded
+                    .entries
+                    .into_iter()
+                    .filter_map(|entry| {
+                        let key = normalize_optional_text(Some(entry.idempotency_key), 256)?;
+                        Some((
+                            key,
+                            SendCacheEntry {
+                                payload: entry.payload,
+                                created_at_ms: entry.created_at_ms,
+                            },
+                        ))
+                    })
+                    .collect::<HashMap<_, _>>();
+                if runtime.ttl_ms.is_none() {
+                    guard.ttl_ms = loaded.ttl_ms.max(1_000);
+                }
+                if runtime.max_entries.is_none() {
+                    guard.max_entries = loaded.max_entries.max(32);
+                }
+                changed = true;
+            }
+        }
+        if let Some(ttl_ms) = runtime.ttl_ms {
+            let ttl_ms = ttl_ms.max(1_000);
+            if guard.ttl_ms != ttl_ms {
+                guard.ttl_ms = ttl_ms;
+                changed = true;
+            }
+        }
+        if let Some(max_entries) = runtime.max_entries {
+            let max_entries = max_entries.max(32);
+            if guard.max_entries != max_entries {
+                guard.max_entries = max_entries;
+                changed = true;
+            }
+        }
+        let before_len = guard.cached_by_id.len();
+        prune_send_cache_for_limits(&mut guard, now_ms());
+        if guard.cached_by_id.len() != before_len {
+            changed = true;
+        }
+        if changed {
+            persist_send_store_disk_state(&guard)?;
+        }
+        Ok(())
+    }
+
     async fn get(&self, idempotency_key: &str) -> Option<Value> {
-        let guard = self.state.lock().await;
+        let mut guard = self.state.lock().await;
+        prune_send_cache_for_limits(&mut guard, now_ms());
         guard
             .cached_by_id
             .get(idempotency_key)
             .map(|entry| entry.payload.clone())
     }
 
-    async fn set(&self, idempotency_key: String, payload: Value) {
+    async fn set(&self, idempotency_key: String, payload: Value) -> Result<(), SendRegistryError> {
         let mut guard = self.state.lock().await;
         guard.cached_by_id.insert(
             idempotency_key,
@@ -9044,7 +9309,8 @@ impl SendRegistry {
                 created_at_ms: now_ms(),
             },
         );
-        prune_oldest_send_cache(&mut guard.cached_by_id, MAX_SEND_CACHE_ENTRIES);
+        prune_send_cache_for_limits(&mut guard, now_ms());
+        persist_send_store_disk_state(&guard)
     }
 }
 
@@ -9059,6 +9325,13 @@ fn prune_oldest_send_cache(cached_by_id: &mut HashMap<String, SendCacheEntry>, m
         };
         let _ = cached_by_id.remove(&oldest_key);
     }
+}
+
+fn prune_send_cache_for_limits(state: &mut SendState, now: u64) {
+    state
+        .cached_by_id
+        .retain(|_, entry| now.saturating_sub(entry.created_at_ms) <= state.ttl_ms);
+    prune_oldest_send_cache(&mut state.cached_by_id, state.max_entries);
 }
 
 struct ChannelRuntimeRegistry {
@@ -11197,6 +11470,16 @@ impl ConfigRegistry {
         let guard = self.state.lock().await;
         cron_webhook_defaults_from_config(&guard.config)
     }
+
+    async fn cron_runtime_config(&self) -> CronRuntimeConfig {
+        let guard = self.state.lock().await;
+        cron_runtime_config_from_config(&guard.config)
+    }
+
+    async fn send_runtime_config(&self) -> SendRuntimeConfig {
+        let guard = self.state.lock().await;
+        send_runtime_config_from_config(&guard.config)
+    }
 }
 
 fn parse_config_raw(raw: String, method: &str) -> Result<Value, String> {
@@ -11258,6 +11541,124 @@ fn cron_webhook_defaults_from_config(config: &Value) -> CronWebhookDefaults {
     }
 }
 
+fn cron_runtime_config_from_config(config: &Value) -> CronRuntimeConfig {
+    let Some(cron) = config.get("cron").and_then(Value::as_object) else {
+        return CronRuntimeConfig::default();
+    };
+    let enabled = cron.get("enabled").and_then(Value::as_bool);
+    let store_path = cron
+        .get("storePath")
+        .or_else(|| cron.get("store_path"))
+        .and_then(Value::as_str)
+        .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 2048));
+    CronRuntimeConfig {
+        enabled,
+        store_path,
+    }
+}
+
+fn send_runtime_config_from_config(config: &Value) -> SendRuntimeConfig {
+    let runtime = config.get("runtime").and_then(Value::as_object);
+    let idempotency = config.get("idempotency").and_then(Value::as_object);
+
+    let store_path = idempotency
+        .and_then(|obj| {
+            read_config_string(
+                obj,
+                &[
+                    "sendStorePath",
+                    "send_store_path",
+                    "storePath",
+                    "store_path",
+                ],
+                2048,
+            )
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string(
+                    obj,
+                    &["idempotencyStorePath", "idempotency_store_path"],
+                    2048,
+                )
+            })
+        });
+
+    let ttl_ms = idempotency
+        .and_then(|obj| read_config_u64(obj, &["ttlMs", "ttl_ms"]))
+        .or_else(|| {
+            runtime
+                .and_then(|obj| read_config_u64(obj, &["idempotencyTtlMs", "idempotency_ttl_ms"]))
+        })
+        .or_else(|| {
+            idempotency
+                .and_then(|obj| read_config_u64(obj, &["ttlSecs", "ttl_secs"]))
+                .map(|value| value.saturating_mul(1_000))
+        })
+        .or_else(|| {
+            runtime
+                .and_then(|obj| {
+                    read_config_u64(obj, &["idempotencyTtlSecs", "idempotency_ttl_secs"])
+                })
+                .map(|value| value.saturating_mul(1_000))
+        })
+        .map(|value| value.max(1_000));
+
+    let max_entries = idempotency
+        .and_then(|obj| read_config_usize(obj, &["maxEntries", "max_entries"]))
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_usize(obj, &["idempotencyMaxEntries", "idempotency_max_entries"])
+            })
+        })
+        .map(|value| value.max(32));
+
+    SendRuntimeConfig {
+        store_path,
+        ttl_ms,
+        max_entries,
+    }
+}
+
+fn read_config_string(
+    object: &serde_json::Map<String, Value>,
+    keys: &[&str],
+    max_len: usize,
+) -> Option<String> {
+    keys.iter().find_map(|key| {
+        object
+            .get(*key)
+            .and_then(Value::as_str)
+            .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), max_len))
+    })
+}
+
+fn read_config_u64(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<u64> {
+    keys.iter()
+        .find_map(|key| object.get(*key).and_then(config_value_as_u64))
+}
+
+fn read_config_usize(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<usize> {
+    keys.iter()
+        .find_map(|key| object.get(*key).and_then(config_value_as_usize))
+}
+
+fn config_value_as_u64(value: &Value) -> Option<u64> {
+    match value {
+        Value::Number(number) => number.as_u64(),
+        Value::String(text) => text.trim().parse::<u64>().ok(),
+        _ => None,
+    }
+}
+
+fn config_value_as_usize(value: &Value) -> Option<usize> {
+    match value {
+        Value::Number(number) => number.as_u64().and_then(|n| usize::try_from(n).ok()),
+        Value::String(text) => text.trim().parse::<usize>().ok(),
+        _ => None,
+    }
+}
+
 fn normalize_http_webhook_url(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -11268,6 +11669,189 @@ fn normalize_http_webhook_url(raw: &str) -> Option<String> {
         "http" | "https" => Some(parsed.to_string()),
         _ => None,
     }
+}
+
+fn cron_store_path_is_memory(path: &str) -> bool {
+    path.trim().to_ascii_lowercase().starts_with("memory://")
+}
+
+fn load_cron_store_disk_state(path: &str) -> Result<CronStoreDiskState, CronRegistryError> {
+    if cron_store_path_is_memory(path) {
+        return Ok(CronStoreDiskState::default());
+    }
+    let store_path = PathBuf::from(path);
+    if !store_path.exists() {
+        return Ok(CronStoreDiskState::default());
+    }
+    let raw = std::fs::read_to_string(&store_path).map_err(|err| {
+        CronRegistryError::Invalid(format!(
+            "failed reading cron store {}: {err}",
+            store_path.display()
+        ))
+    })?;
+    let parsed = serde_json::from_str::<CronStoreDiskState>(&raw).map_err(|err| {
+        CronRegistryError::Invalid(format!(
+            "failed parsing cron store {}: {err}",
+            store_path.display()
+        ))
+    })?;
+    Ok(parsed)
+}
+
+fn persist_cron_store_disk_state(state: &CronState) -> Result<(), CronRegistryError> {
+    if cron_store_path_is_memory(&state.store_path) {
+        return Ok(());
+    }
+    let mut jobs = state.jobs.values().cloned().collect::<Vec<_>>();
+    jobs.sort_by(|a, b| {
+        a.created_at_ms
+            .cmp(&b.created_at_ms)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let snapshot = CronStoreDiskState {
+        version: 1,
+        enabled: state.enabled,
+        jobs,
+    };
+    let payload = serde_json::to_string_pretty(&snapshot).map_err(|err| {
+        CronRegistryError::Invalid(format!("failed serializing cron store: {err}"))
+    })?;
+    let store_path = PathBuf::from(&state.store_path);
+    if let Some(parent) = store_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|err| {
+                CronRegistryError::Invalid(format!(
+                    "failed creating cron store parent directory {}: {err}",
+                    parent.display()
+                ))
+            })?;
+        }
+    }
+
+    let mut temp_path = store_path.clone();
+    let temp_extension = format!(
+        "{}.tmp.{}",
+        store_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("json"),
+        now_ms()
+    );
+    temp_path.set_extension(temp_extension);
+
+    std::fs::write(&temp_path, payload).map_err(|err| {
+        CronRegistryError::Invalid(format!(
+            "failed writing cron store temp file {}: {err}",
+            temp_path.display()
+        ))
+    })?;
+
+    if store_path.exists() {
+        let _ = std::fs::remove_file(&store_path);
+    }
+    std::fs::rename(&temp_path, &store_path).map_err(|err| {
+        CronRegistryError::Invalid(format!(
+            "failed moving cron store temp file into place {}: {err}",
+            store_path.display()
+        ))
+    })?;
+    Ok(())
+}
+
+fn send_store_path_is_memory(path: &str) -> bool {
+    path.trim().to_ascii_lowercase().starts_with("memory://")
+}
+
+fn load_send_store_disk_state(path: &str) -> Result<SendStoreDiskState, SendRegistryError> {
+    if send_store_path_is_memory(path) {
+        return Ok(SendStoreDiskState::default());
+    }
+    let store_path = PathBuf::from(path);
+    if !store_path.exists() {
+        return Ok(SendStoreDiskState::default());
+    }
+    let raw = std::fs::read_to_string(&store_path).map_err(|err| {
+        SendRegistryError::Invalid(format!(
+            "failed reading send cache store {}: {err}",
+            store_path.display()
+        ))
+    })?;
+    let parsed = serde_json::from_str::<SendStoreDiskState>(&raw).map_err(|err| {
+        SendRegistryError::Invalid(format!(
+            "failed parsing send cache store {}: {err}",
+            store_path.display()
+        ))
+    })?;
+    Ok(parsed)
+}
+
+fn persist_send_store_disk_state(state: &SendState) -> Result<(), SendRegistryError> {
+    if send_store_path_is_memory(&state.store_path) {
+        return Ok(());
+    }
+    let mut entries = state
+        .cached_by_id
+        .iter()
+        .map(|(idempotency_key, entry)| SendStoreDiskEntry {
+            idempotency_key: idempotency_key.clone(),
+            payload: entry.payload.clone(),
+            created_at_ms: entry.created_at_ms,
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|a, b| {
+        a.created_at_ms
+            .cmp(&b.created_at_ms)
+            .then_with(|| a.idempotency_key.cmp(&b.idempotency_key))
+    });
+    let snapshot = SendStoreDiskState {
+        version: 1,
+        ttl_ms: state.ttl_ms,
+        max_entries: state.max_entries,
+        entries,
+    };
+    let payload = serde_json::to_string_pretty(&snapshot).map_err(|err| {
+        SendRegistryError::Invalid(format!("failed serializing send cache store: {err}"))
+    })?;
+    let store_path = PathBuf::from(&state.store_path);
+    if let Some(parent) = store_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|err| {
+                SendRegistryError::Invalid(format!(
+                    "failed creating send cache store parent directory {}: {err}",
+                    parent.display()
+                ))
+            })?;
+        }
+    }
+
+    let mut temp_path = store_path.clone();
+    let temp_extension = format!(
+        "{}.tmp.{}",
+        store_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("json"),
+        now_ms()
+    );
+    temp_path.set_extension(temp_extension);
+
+    std::fs::write(&temp_path, payload).map_err(|err| {
+        SendRegistryError::Invalid(format!(
+            "failed writing send cache store temp file {}: {err}",
+            temp_path.display()
+        ))
+    })?;
+
+    if store_path.exists() {
+        let _ = std::fs::remove_file(&store_path);
+    }
+    std::fs::rename(&temp_path, &store_path).map_err(|err| {
+        SendRegistryError::Invalid(format!(
+            "failed moving send cache store temp file into place {}: {err}",
+            store_path.display()
+        ))
+    })?;
+    Ok(())
 }
 
 fn apply_merge_patch(target: Value, patch: Value) -> Value {
@@ -14860,6 +15444,7 @@ fn next_wizard_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::fs;
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -16003,6 +16588,157 @@ mod tests {
             }
             _ => panic!("expected send with context handled"),
         }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_send_store_path_persists_and_recovers_idempotency_across_dispatchers() {
+        let root = std::env::temp_dir().join(format!("openclaw-rs-send-store-{}", now_ms()));
+        fs::create_dir_all(&root).expect("create temp send root");
+        let store_path = root.join("idempotency").join("send-cache.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "idempotency": {
+                    "sendStorePath": store_path_text,
+                    "ttlSecs": 600,
+                    "maxEntries": 1024
+                }
+            }),
+        )
+        .await;
+
+        let send = RpcRequestFrame {
+            id: "req-send-persist".to_owned(),
+            method: "send".to_owned(),
+            params: serde_json::json!({
+                "to": "+15550003333",
+                "message": "persist this send result",
+                "idempotencyKey": "send-persist-1"
+            }),
+        };
+        let first_message_id = match dispatcher.handle_request(&send).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/messageId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .expect("message id"),
+            _ => panic!("expected send handled response"),
+        };
+
+        assert!(store_path.exists(), "send idempotency store should exist");
+        let disk_snapshot = fs::read_to_string(&store_path).expect("read send cache store");
+        let disk_json = serde_json::from_str::<Value>(&disk_snapshot).expect("parse send cache");
+        let disk_entries = disk_json
+            .pointer("/entries")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(disk_entries.iter().any(|entry| {
+            entry
+                .pointer("/idempotencyKey")
+                .and_then(Value::as_str)
+                .map(|value| value == "send-persist-1")
+                .unwrap_or(false)
+        }));
+
+        let restarted = RpcDispatcher::new();
+        patch_config(
+            &restarted,
+            json!({
+                "idempotency": {
+                    "sendStorePath": store_path.to_string_lossy().to_string()
+                }
+            }),
+        )
+        .await;
+
+        match restarted.handle_request(&send).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/messageId").and_then(Value::as_str),
+                    Some(first_message_id.as_str())
+                );
+            }
+            _ => panic!("expected persisted send replay"),
+        }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_send_store_prunes_expired_entries_before_replay() {
+        let root = std::env::temp_dir().join(format!("openclaw-rs-send-expire-{}", now_ms()));
+        fs::create_dir_all(&root).expect("create temp send root");
+        let store_path = root.join("idempotency").join("send-cache.json");
+        if let Some(parent) = store_path.parent() {
+            fs::create_dir_all(parent).expect("create send store parent");
+        }
+        let seeded = json!({
+            "version": 1,
+            "ttlMs": 100,
+            "maxEntries": 128,
+            "entries": [
+                {
+                    "idempotencyKey": "send-expired-1",
+                    "payload": {
+                        "runId": "send-expired-1",
+                        "messageId": "old-message-id",
+                        "channel": "whatsapp"
+                    },
+                    "createdAtMs": now_ms().saturating_sub(2_000)
+                }
+            ]
+        });
+        fs::write(
+            &store_path,
+            serde_json::to_string_pretty(&seeded).expect("serialize seeded send cache"),
+        )
+        .expect("write seeded send cache");
+
+        let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "idempotency": {
+                    "sendStorePath": store_path.to_string_lossy().to_string()
+                }
+            }),
+        )
+        .await;
+
+        let send = RpcRequestFrame {
+            id: "req-send-expired".to_owned(),
+            method: "send".to_owned(),
+            params: serde_json::json!({
+                "to": "+15550004444",
+                "message": "should bypass expired cache",
+                "idempotencyKey": "send-expired-1"
+            }),
+        };
+        let first_message_id = match dispatcher.handle_request(&send).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/messageId")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .expect("message id"),
+            _ => panic!("expected send handled response"),
+        };
+        assert_ne!(first_message_id, "old-message-id");
+
+        match dispatcher.handle_request(&send).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/messageId").and_then(Value::as_str),
+                    Some(first_message_id.as_str())
+                );
+            }
+            _ => panic!("expected send replay response"),
+        }
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
@@ -25273,7 +26009,7 @@ mod tests {
         assert!(matches!(out, RpcDispatchOutcome::Error { code: 400, .. }));
     }
 
-    async fn patch_config_cron(dispatcher: &RpcDispatcher, patch: Value) {
+    async fn patch_config(dispatcher: &RpcDispatcher, patch: Value) {
         let get = RpcRequestFrame {
             id: "req-config-cron-get".to_owned(),
             method: "config.get".to_owned(),
@@ -25297,6 +26033,112 @@ mod tests {
         };
         let out = dispatcher.handle_request(&patch).await;
         assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
+    }
+
+    async fn patch_config_cron(dispatcher: &RpcDispatcher, patch: Value) {
+        patch_config(dispatcher, patch).await;
+    }
+
+    #[tokio::test]
+    async fn dispatcher_cron_store_path_persists_and_recovers_jobs_across_dispatchers() {
+        let root = std::env::temp_dir().join(format!("openclaw-rs-cron-store-{}", now_ms()));
+        fs::create_dir_all(&root).expect("create temp cron root");
+        let store_path = root.join("cron").join("jobs.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        let dispatcher = RpcDispatcher::new();
+        patch_config_cron(
+            &dispatcher,
+            json!({
+                "cron": {
+                    "storePath": store_path_text
+                }
+            }),
+        )
+        .await;
+
+        let add = RpcRequestFrame {
+            id: "req-cron-persist-add".to_owned(),
+            method: "cron.add".to_owned(),
+            params: json!({
+                "name": "Persisted job",
+                "enabled": true,
+                "schedule": {
+                    "kind": "every",
+                    "everyMs": 60_000
+                },
+                "sessionTarget": "main",
+                "wakeMode": "next-heartbeat",
+                "payload": {
+                    "kind": "systemEvent",
+                    "text": "persist me"
+                }
+            }),
+        };
+        let job_id = match dispatcher.handle_request(&add).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("persisted cron job id"),
+            _ => panic!("expected cron.add handled"),
+        };
+
+        assert!(store_path.exists(), "cron store should be created on disk");
+        let disk_snapshot = fs::read_to_string(&store_path).expect("read cron store");
+        let disk_json =
+            serde_json::from_str::<Value>(&disk_snapshot).expect("parse cron store JSON");
+        let disk_jobs = disk_json
+            .pointer("/jobs")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            disk_jobs.iter().any(|job| {
+                job.pointer("/id")
+                    .and_then(Value::as_str)
+                    .map(|value| value == job_id)
+                    .unwrap_or(false)
+            }),
+            "cron store should include newly added job"
+        );
+
+        let restarted = RpcDispatcher::new();
+        patch_config_cron(
+            &restarted,
+            json!({
+                "cron": {
+                    "storePath": store_path.to_string_lossy().to_string()
+                }
+            }),
+        )
+        .await;
+
+        let list = RpcRequestFrame {
+            id: "req-cron-persist-list".to_owned(),
+            method: "cron.list".to_owned(),
+            params: json!({
+                "includeDisabled": true
+            }),
+        };
+        match restarted.handle_request(&list).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                let jobs = payload
+                    .pointer("/jobs")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                assert!(jobs.iter().any(|job| {
+                    job.pointer("/id")
+                        .and_then(Value::as_str)
+                        .map(|value| value == job_id)
+                        .unwrap_or(false)
+                }));
+            }
+            _ => panic!("expected cron.list handled"),
+        }
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[tokio::test]

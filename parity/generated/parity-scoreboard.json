@@ -23,8 +23,8 @@
     "audit": {
       "counts": {
         "total": 22,
-        "implemented": 11,
-        "partial": 11,
+        "implemented": 12,
+        "partial": 10,
         "deferred": 0,
         "notStarted": 0,
         "unknown": 0
@@ -46,7 +46,7 @@
         "VirusTotal integration": "Implemented",
         "Decision policy engine": "Implemented",
         "Tool/channel policy controls": "Implemented",
-        "Idempotency dedupe": "Partial",
+        "Idempotency dedupe": "Implemented",
         "Channel driver abstraction": "Partial",
         "Quarantine records": "Implemented",
         "Backpressure + memory controls": "Implemented",
@@ -58,8 +58,8 @@
   "baselinePresent": true,
   "delta": {
     "audit": {
-      "implemented": 2,
-      "partial": 2,
+      "implemented": 3,
+      "partial": 1,
       "deferred": -3,
       "notStarted": 0
     },
@@ -74,6 +74,11 @@
       {
         "subsystem": "CLI + control surface",
         "baseline": null,
+        "current": "Implemented"
+      },
+      {
+        "subsystem": "Idempotency dedupe",
+        "baseline": "Partial",
         "current": "Implemented"
       },
       {

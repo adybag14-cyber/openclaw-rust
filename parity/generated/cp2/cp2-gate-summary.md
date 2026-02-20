@@ -3,9 +3,9 @@
 - Default fixtures passed: 15
 - SQLite feature fixtures passed: 2
 - Total fixtures: 17
-- Total duration: 19697 ms
-- Avg fixture duration: 1159 ms
+- Total duration: 15464 ms
+- Avg fixture duration: 910 ms
 - Soak/order fixtures: 3
-- Soak/order fixture duration: 10923 ms
+- Soak/order fixture duration: 9929 ms
 - Artifact log: cp2-gate.log
 - Artifact metrics: cp2-metrics.json

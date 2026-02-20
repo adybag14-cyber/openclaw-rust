@@ -2,7 +2,7 @@
   "gate": "cp5",
   "passed": 10,
   "totalFixtures": 10,
-  "totalDurationMs": 9479,
-  "avgFixtureDurationMs": 948,
+  "totalDurationMs": 3650,
+  "avgFixtureDurationMs": 365,
   "resultsTsv": "cp5-fixture-results.tsv"
 }
