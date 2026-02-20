@@ -86,6 +86,7 @@ CP4 increment (2026-02-19):
 - Added CP4 transport lifecycle event parity for lightweight channel events (`*.connected`, `*.reconnecting`, `*.error`, `*.disconnected`) so runtime account state updates correctly even when events do not include full runtime maps.
 - Added CP4 cross-wave acceptance/canary fixture coverage (`gateway::tests::dispatcher_channel_acceptance_canary_covers_wave_channels`) validating alias canonicalization + runtime lifecycle + outbound activity + logout semantics across all wave channels.
 - Added durable channel-runtime parity: runtime now supports config-driven channel runtime store paths (`channels.runtimeStorePath`/`runtime_store_path`, `channelRuntime.storePath`/`store_path`, and `runtime.channelRuntimeStorePath`) with disk-backed channel/account lifecycle snapshot persistence and restart recovery across dispatcher instances.
+- Added CP4 channel activity-suffix parity for `*.sent`/`*.outbound`/`*.delivery` and `*.received`/`*.incoming` event shapes (including nested account-id aliases under `meta/context/ctx/runtime/data`) so webhook ingress updates `lastOutboundAt`/`lastInboundAt` consistently beyond plain `*.message` events.
 
 CP5 increment (2026-02-19):
 

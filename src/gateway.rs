@@ -9972,15 +9972,8 @@ impl ChannelRuntimeRegistry {
                 .as_deref()
                 .or(inferred_payload_channel.as_deref())
             {
-                let account_id = payload
-                    .as_object()
-                    .and_then(|map| {
-                        map.get("accountId")
-                            .or_else(|| map.get("account_id"))
-                            .or_else(|| map.get("account"))
-                    })
-                    .and_then(value_as_account_id)
-                    .unwrap_or_else(|| "default".to_owned());
+                let account_id =
+                    infer_runtime_account_id(payload).unwrap_or_else(|| "default".to_owned());
                 apply_channel_lifecycle_event(
                     &mut guard,
                     channel,
@@ -9988,23 +9981,30 @@ impl ChannelRuntimeRegistry {
                     lifecycle_event,
                     payload,
                 );
+                guard.set_default_account(channel, account_id.as_str());
             }
         }
 
-        if event.ends_with(".message") {
+        if let Some(activity_event) = classify_channel_activity_event(event) {
             if let Some(channel) = inferred_channel
                 .as_deref()
                 .or(inferred_payload_channel.as_deref())
             {
-                let account_id = payload
-                    .as_object()
-                    .and_then(|map| map.get("accountId").or_else(|| map.get("account_id")))
-                    .and_then(Value::as_str)
-                    .unwrap_or("default");
-                let account = guard.account_mut(channel, account_id);
-                account.last_inbound_at = Some(now_ms());
+                let account_id =
+                    infer_runtime_account_id(payload).unwrap_or_else(|| "default".to_owned());
+                let account = guard.account_mut(channel, account_id.as_str());
+                let ts = now_ms();
+                match activity_event {
+                    ChannelActivityEvent::Inbound => {
+                        account.last_inbound_at = Some(ts);
+                    }
+                    ChannelActivityEvent::Outbound => {
+                        account.last_outbound_at = Some(ts);
+                    }
+                }
                 account.connected = account.connected.or(Some(true));
                 account.running = account.running.or(Some(true));
+                guard.set_default_account(channel, account_id.as_str());
             }
         }
 
@@ -10387,6 +10387,12 @@ enum ChannelLifecycleEvent {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChannelActivityEvent {
+    Inbound,
+    Outbound,
+}
+
 fn classify_channel_lifecycle_event(event: &str) -> Option<ChannelLifecycleEvent> {
     let normalized = normalize(event);
     let suffix = normalized.rsplit('.').next().unwrap_or(normalized.as_str());
@@ -10395,6 +10401,20 @@ fn classify_channel_lifecycle_event(event: &str) -> Option<ChannelLifecycleEvent
         "disconnected" | "stopped" | "offline" => Some(ChannelLifecycleEvent::Disconnected),
         "reconnecting" | "reconnect" | "retrying" => Some(ChannelLifecycleEvent::Reconnecting),
         "error" | "failed" | "failure" => Some(ChannelLifecycleEvent::Error),
+        _ => None,
+    }
+}
+
+fn classify_channel_activity_event(event: &str) -> Option<ChannelActivityEvent> {
+    let normalized = normalize(event);
+    let suffix = normalized.rsplit('.').next().unwrap_or(normalized.as_str());
+    match suffix {
+        "message" | "inbound" | "incoming" | "received" | "recv" => {
+            Some(ChannelActivityEvent::Inbound)
+        }
+        "outbound" | "sent" | "delivered" | "delivery" | "ack" | "acknowledged" => {
+            Some(ChannelActivityEvent::Outbound)
+        }
         _ => None,
     }
 }
@@ -10479,6 +10499,33 @@ fn infer_channel_from_event(event: &str, known_channels: &[&str]) -> Option<Stri
             .any(|channel| channel.eq_ignore_ascii_case(&candidate))
         {
             return Some(candidate);
+        }
+    }
+    None
+}
+
+fn infer_runtime_account_id(payload: &Value) -> Option<String> {
+    let map = payload.as_object()?;
+    if let Some(account_id) = map
+        .get("accountId")
+        .or_else(|| map.get("account_id"))
+        .or_else(|| map.get("account"))
+        .and_then(value_as_account_id)
+    {
+        return Some(account_id);
+    }
+
+    for nested_key in ["meta", "context", "ctx", "runtime", "data"] {
+        let Some(nested) = map.get(nested_key).and_then(Value::as_object) else {
+            continue;
+        };
+        if let Some(account_id) = nested
+            .get("accountId")
+            .or_else(|| nested.get("account_id"))
+            .or_else(|| nested.get("account"))
+            .and_then(value_as_account_id)
+        {
+            return Some(account_id);
         }
     }
     None
@@ -22778,6 +22825,136 @@ mod tests {
                 assert!(
                     payload
                         .pointer("/channelAccounts/signal/0/lastStopAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_tracks_activity_event_suffixes() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "telegram.message.sent",
+                "payload": {
+                    "accountId": "ops"
+                }
+            }))
+            .await;
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "telegram.message.received",
+                "payload": {
+                    "accountId": "ops"
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-activity-suffix-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/telegram")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/lastOutboundAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/lastInboundAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/running")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_tracks_activity_suffixes_with_nested_account_aliases() {
+        let dispatcher = RpcDispatcher::new();
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.outbound",
+                "payload": {
+                    "channel": "wa",
+                    "meta": {
+                        "account_id": "sales"
+                    }
+                }
+            }))
+            .await;
+        dispatcher
+            .ingest_event_frame(&serde_json::json!({
+                "type": "event",
+                "event": "gateway.received",
+                "payload": {
+                    "channel": "wa",
+                    "ctx": {
+                        "account": "sales"
+                    }
+                }
+            }))
+            .await;
+
+        let status = RpcRequestFrame {
+            id: "req-channels-activity-nested-account-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/whatsapp")
+                        .and_then(serde_json::Value::as_str),
+                    Some("sales")
+                );
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/whatsapp/0/lastOutboundAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/whatsapp/0/lastInboundAt")
                         .and_then(serde_json::Value::as_u64)
                         .unwrap_or(0)
                         > 0

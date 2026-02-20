@@ -69,6 +69,8 @@ tests=(
   "gateway::tests::dispatcher_channels_status_ingests_snake_case_extended_metadata_fields"
   "gateway::tests::dispatcher_channels_status_parses_allow_from_string_list"
   "gateway::tests::dispatcher_channels_status_tracks_lifecycle_event_suffixes"
+  "gateway::tests::dispatcher_channels_status_tracks_activity_event_suffixes"
+  "gateway::tests::dispatcher_channels_status_tracks_activity_suffixes_with_nested_account_aliases"
   "gateway::tests::dispatcher_send_accepts_wave2_channel_aliases"
   "gateway::tests::dispatcher_send_accepts_wave3_channel_aliases"
   "gateway::tests::dispatcher_send_accepts_wave4_channel_aliases"
