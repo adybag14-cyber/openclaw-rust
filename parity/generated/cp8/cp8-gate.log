@@ -1,14 +1,14 @@
 [parity] running CP8 fixture: bridge::tests::replay_harness_with_real_defender
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.41s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.40s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test bridge::tests::replay_harness_with_real_defender ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 0.09s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 0.08s
 
 [parity] running CP8 fixture: bridge::tests::multi_session_soak_preserves_per_session_fifo_without_duplicates
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -17,16 +17,16 @@ test bridge::tests::multi_session_soak_preserves_per_session_fifo_without_duplic
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 1.52s
 
 [parity] running CP8 fixture: bridge::tests::followup_queue_pressure_preserves_order_without_duplicates
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.40s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test bridge::tests::followup_queue_pressure_preserves_order_without_duplicates ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 2.61s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 2.62s
 
 [parity] running CP8 fixture: scheduler::tests::drops_when_pending_capacity_is_exhausted
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.41s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -35,7 +35,7 @@ test scheduler::tests::drops_when_pending_capacity_is_exhausted ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 0.00s
 
 [parity] running CP8 fixture: gateway_server::tests::broadcaster_backpressure_drop_if_slow_semantics
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.40s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -44,7 +44,7 @@ test gateway_server::tests::broadcaster_backpressure_drop_if_slow_semantics ... 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 0.00s
 
 [parity] running CP8 fixture: channels::tests::retry_backoff_policy_scales_and_caps
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -53,7 +53,7 @@ test channels::tests::retry_backoff_policy_scales_and_caps ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 0.00s
 
 [parity] running CP8 fixture: gateway::tests::dispatcher_status_benchmark_emits_latency_profile
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.38s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -62,7 +62,7 @@ test gateway::tests::dispatcher_status_benchmark_emits_latency_profile ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 0.03s
 
 [parity] running CP8 fixture: security::prompt_guard::tests::scores_prompt_injection_patterns
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.38s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -71,7 +71,7 @@ test security::prompt_guard::tests::scores_prompt_injection_patterns ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 0.01s
 
 [parity] running CP8 fixture: security::command_guard::tests::blocks_known_destructive_patterns
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.37s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -80,7 +80,7 @@ test security::command_guard::tests::blocks_known_destructive_patterns ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 0.02s
 
 [parity] running CP8 fixture: security::tests::tool_loop_detection_escalates_warning_then_critical
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.40s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.37s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -89,12 +89,12 @@ test security::tests::tool_loop_detection_escalates_warning_then_critical ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 0.03s
 
 [parity] running CP8 fixture: security::policy_bundle::tests::loads_valid_signed_bundle_and_applies_policy_patch
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
 test security::policy_bundle::tests::loads_valid_signed_bundle_and_applies_policy_patch ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 232 filtered out; finished in 0.00s
 
 [parity] CP8 gate passed

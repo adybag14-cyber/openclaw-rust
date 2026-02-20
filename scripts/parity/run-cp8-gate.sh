@@ -114,9 +114,22 @@ done
 benchmark_summary="- Benchmark latency(us): unavailable"
 benchmark_json_fragment='null'
 if [[ -f "${benchmark_file}" ]]; then
+  python_cmd=()
+  python_available=true
+  if command -v python3 >/dev/null 2>&1 && python3 -V >/dev/null 2>&1; then
+    python_cmd=(python3)
+  elif command -v python >/dev/null 2>&1 && python -V >/dev/null 2>&1; then
+    python_cmd=(python)
+  elif command -v py >/dev/null 2>&1 && py -3 -V >/dev/null 2>&1; then
+    python_cmd=(py -3)
+  else
+    python_available=false
+  fi
+
   benchmark_json_fragment="$(cat "${benchmark_file}")"
-  benchmark_summary="$(
-    python3 - "${benchmark_file}" <<'PY'
+  if [[ "${python_available}" == true ]]; then
+    benchmark_summary="$(
+      "${python_cmd[@]}" - "${benchmark_file}" <<'PY'
 import json
 import sys
 
@@ -136,7 +149,10 @@ print(
     f"rssKiB={rss}"
 )
 PY
-  )"
+    )"
+  else
+    benchmark_summary="- Benchmark latency(us): unavailable (python runtime missing)"
+  fi
 fi
 
 cat > "${summary_file}" <<EOF
