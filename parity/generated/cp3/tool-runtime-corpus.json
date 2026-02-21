@@ -293,6 +293,57 @@
       }
     },
     {
+      "name": "message-pin",
+      "request": {
+        "request_id": "cp3-message-pin-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "pin"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"pinned\":true"
+      }
+    },
+    {
+      "name": "message-pins",
+      "request": {
+        "request_id": "cp3-message-pins-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "pins"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"count\":1"
+      }
+    },
+    {
+      "name": "message-unpin",
+      "request": {
+        "request_id": "cp3-message-unpin-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "unpin"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"unpinned\":true"
+      }
+    },
+    {
       "name": "message-delete",
       "request": {
         "request_id": "cp3-message-delete-1",

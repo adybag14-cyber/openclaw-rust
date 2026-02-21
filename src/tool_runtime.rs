@@ -128,6 +128,7 @@ struct ToolRuntimeSessionEntry {
     created_at_ms: u64,
     edited_at_ms: Option<u64>,
     deleted_at_ms: Option<u64>,
+    pinned_at_ms: Option<u64>,
     reactions: Vec<ToolRuntimeSessionReaction>,
 }
 
@@ -786,6 +787,9 @@ impl ToolRuntimeHost {
             "delete" | "remove" => self.execute_message_delete(request).await,
             "react" | "reaction" => self.execute_message_react(request).await,
             "reactions" => self.execute_message_reactions(request).await,
+            "pin" => self.execute_message_pin(request).await,
+            "unpin" => self.execute_message_unpin(request).await,
+            "pins" | "list-pins" | "list_pins" => self.execute_message_list_pins(request).await,
             "history" | "list" | "reset" | "clear" => {
                 let mut translated = request.clone();
                 let mut map = translated.args.as_object().cloned().unwrap_or_default();
@@ -1062,6 +1066,7 @@ impl ToolRuntimeHost {
         } else {
             entry.deleted_at_ms = Some(now);
             entry.message = "[deleted]".to_owned();
+            entry.pinned_at_ms = None;
             entry.reactions.clear();
             true
         };
@@ -1073,6 +1078,156 @@ impl ToolRuntimeHost {
             "messageId": message_id,
             "deleted": deleted,
             "entry": serialize_session_entry(entry)
+        }))
+    }
+
+    async fn execute_message_pin(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let explicit_message_id =
+            first_string_arg(&request.args, &["messageId", "message_id", "id"]);
+        let mut timelines = self.session_timelines.lock().await;
+        let timeline = timelines.get_mut(&session_id).ok_or_else(|| {
+            ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                format!("session not found: {session_id}"),
+            )
+        })?;
+        let message_id =
+            resolve_target_message_id(timeline, explicit_message_id).ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    "missing required parameter `messageId`",
+                )
+            })?;
+        let now = now_ms();
+        let entry = timeline
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == message_id)
+            .ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    format!("message not found: {message_id}"),
+                )
+            })?;
+        if entry.deleted_at_ms.is_some() {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "cannot pin a deleted message",
+            ));
+        }
+        let pinned = if entry.pinned_at_ms.is_some() {
+            false
+        } else {
+            entry.pinned_at_ms = Some(now);
+            true
+        };
+        timeline.updated_at_ms = now;
+        Ok(json!({
+            "status": "completed",
+            "action": "pin",
+            "sessionId": session_id,
+            "messageId": message_id,
+            "pinned": pinned,
+            "entry": serialize_session_entry(entry)
+        }))
+    }
+
+    async fn execute_message_unpin(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let explicit_message_id =
+            first_string_arg(&request.args, &["messageId", "message_id", "id"]);
+        let mut timelines = self.session_timelines.lock().await;
+        let timeline = timelines.get_mut(&session_id).ok_or_else(|| {
+            ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                format!("session not found: {session_id}"),
+            )
+        })?;
+        let message_id =
+            resolve_target_message_id(timeline, explicit_message_id).ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    "missing required parameter `messageId`",
+                )
+            })?;
+        let now = now_ms();
+        let entry = timeline
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == message_id)
+            .ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    format!("message not found: {message_id}"),
+                )
+            })?;
+        let unpinned = if entry.pinned_at_ms.is_some() {
+            entry.pinned_at_ms = None;
+            true
+        } else {
+            false
+        };
+        timeline.updated_at_ms = now;
+        Ok(json!({
+            "status": "completed",
+            "action": "unpin",
+            "sessionId": session_id,
+            "messageId": message_id,
+            "unpinned": unpinned,
+            "entry": serialize_session_entry(entry)
+        }))
+    }
+
+    async fn execute_message_list_pins(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let limit = request
+            .args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(50)
+            .clamp(1, 200) as usize;
+        let timelines = self.session_timelines.lock().await;
+        let Some(timeline) = timelines.get(&session_id) else {
+            return Ok(json!({
+                "status": "completed",
+                "action": "pins",
+                "sessionId": session_id,
+                "pins": [],
+                "count": 0
+            }));
+        };
+        let mut pinned_entries = timeline
+            .entries
+            .iter()
+            .filter(|entry| entry.pinned_at_ms.is_some() && entry.deleted_at_ms.is_none())
+            .collect::<Vec<_>>();
+        pinned_entries.sort_by(|left, right| {
+            right
+                .pinned_at_ms
+                .cmp(&left.pinned_at_ms)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        if pinned_entries.len() > limit {
+            pinned_entries.truncate(limit);
+        }
+        let pins = pinned_entries
+            .into_iter()
+            .map(serialize_session_entry)
+            .collect::<Vec<_>>();
+        Ok(json!({
+            "status": "completed",
+            "action": "pins",
+            "sessionId": session_id,
+            "pins": pins,
+            "count": pins.len(),
+            "limit": limit
         }))
     }
 
@@ -1649,6 +1804,7 @@ impl ToolRuntimeHost {
             created_at_ms: now_ms(),
             edited_at_ms: None,
             deleted_at_ms: None,
+            pinned_at_ms: None,
             reactions: Vec::new(),
         };
         let mut timelines = self.session_timelines.lock().await;
@@ -1848,6 +2004,8 @@ fn serialize_session_entry(entry: &ToolRuntimeSessionEntry) -> Value {
         "editedAt": entry.edited_at_ms,
         "deleted": entry.deleted_at_ms.is_some(),
         "deletedAt": entry.deleted_at_ms,
+        "pinned": entry.pinned_at_ms.is_some(),
+        "pinnedAt": entry.pinned_at_ms,
         "reactionCount": reactions.len(),
         "reactions": reactions
     })
@@ -3042,6 +3200,96 @@ mod tests {
                 .pointer("/messages/0/message")
                 .and_then(serde_json::Value::as_str),
             Some("hello parity edited")
+        );
+
+        let pin = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-pin-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "pin"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message pin");
+        assert_eq!(
+            pin.result
+                .get("pinned")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let pins = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-pins-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "pins"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message pins");
+        assert_eq!(
+            pins.result.get("count").and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pins.result
+                .pointer("/pins/0/id")
+                .and_then(serde_json::Value::as_str),
+            Some(message_id.as_str())
+        );
+
+        let unpin = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-unpin-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "unpin"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message unpin");
+        assert_eq!(
+            unpin
+                .result
+                .get("unpinned")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let pins_after_unpin = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-pins-2".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "list-pins"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message pins after unpin");
+        assert_eq!(
+            pins_after_unpin
+                .result
+                .get("count")
+                .and_then(serde_json::Value::as_u64),
+            Some(0)
         );
 
         let delete = host
