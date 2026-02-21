@@ -787,6 +787,42 @@
       }
     },
     {
+      "name": "message-permissions-discord-channel",
+      "request": {
+        "request_id": "cp3-message-permissions-discord-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "permissions",
+          "channel": "discord",
+          "target": "channel:ops"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"threadCreate\":true"
+      }
+    },
+    {
+      "name": "message-permissions-discord-missing-target",
+      "request": {
+        "request_id": "cp3-message-permissions-discord-missing-target-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "permissions",
+          "channel": "discord"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "invalid_args"
+      }
+    },
+    {
       "name": "message-permissions-telegram-channel",
       "request": {
         "request_id": "cp3-message-permissions-telegram-1",

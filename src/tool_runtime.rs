@@ -1637,6 +1637,15 @@ impl ToolRuntimeHost {
                     "permissions": permissions
                 }));
             };
+            if capability.name == "discord"
+                && first_string_arg(&request.args, &["target", "channelId", "channel_id"])
+                    .is_none()
+            {
+                return Err(ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    "missing required parameter `target`",
+                ));
+            }
             permissions["poll"] =
                 Value::Bool(Self::message_channel_supports_action(capability, "poll"));
             permissions["react"] =
@@ -5854,7 +5863,8 @@ mod tests {
                 session_id: "agent:main:discord:group:ops".to_owned(),
                 tool_name: "message".to_owned(),
                 args: serde_json::json!({
-                    "action": "permissions"
+                    "action": "permissions",
+                    "target": "channel:ops"
                 }),
                 sandboxed: false,
                 model_provider: None,
@@ -5897,6 +5907,25 @@ mod tests {
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );
+
+        let permissions_discord_missing_target = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-permissions-discord-missing-target-1".to_owned(),
+                session_id: "agent:main:discord:group:ops".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "permissions"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect_err("permissions on discord requires target");
+        assert_eq!(permissions_discord_missing_target.code.as_str(), "invalid_args");
+        assert!(permissions_discord_missing_target
+            .message
+            .contains("missing required parameter `target`"));
 
         let role_add_unsupported = host
             .execute(ToolRuntimeRequest {
