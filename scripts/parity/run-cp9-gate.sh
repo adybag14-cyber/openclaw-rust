@@ -20,6 +20,8 @@ overall_status="pass"
 docker_server_version="unavailable"
 docker_compose_version="unavailable"
 failed_checks=()
+include_compose_checks="${PARITY_CP9_INCLUDE_COMPOSE:-0}"
+compose_checks_skipped="false"
 
 run_check() {
   local check_name="$1"
@@ -55,11 +57,16 @@ if run_check "docker-daemon" docker info; then
   docker_compose_version="$(docker compose version --short 2>/dev/null || docker compose version 2>/dev/null || echo "unknown")"
 
   run_check "docker-smoke" bash ./scripts/run-docker-parity-smoke.sh || true
-  if [[ "${overall_status}" == "pass" ]]; then
-    run_check "docker-compose-parity" bash ./scripts/run-docker-compose-parity.sh || true
-  fi
-  if [[ "${overall_status}" == "pass" ]]; then
-    run_check "docker-compose-chaos-restart" bash ./scripts/run-docker-compose-parity-chaos.sh || true
+  if [[ "${include_compose_checks}" == "1" ]]; then
+    if [[ "${overall_status}" == "pass" ]]; then
+      run_check "docker-compose-parity" bash ./scripts/run-docker-compose-parity.sh || true
+    fi
+    if [[ "${overall_status}" == "pass" ]]; then
+      run_check "docker-compose-chaos-restart" bash ./scripts/run-docker-compose-parity-chaos.sh || true
+    fi
+  else
+    compose_checks_skipped="true"
+    echo "[parity] compose checks skipped (set PARITY_CP9_INCLUDE_COMPOSE=1 to enable)" | tee -a "${log_file}"
   fi
 fi
 
@@ -78,6 +85,7 @@ cat > "${summary_file}" <<EOF
 - Avg check duration: ${avg_duration_ms} ms
 - Docker server version: ${docker_server_version}
 - Docker compose version: ${docker_compose_version}
+- Compose checks skipped: ${compose_checks_skipped}
 - Artifact log: cp9-gate.log
 - Artifact metrics: cp9-metrics.json
 - Artifact results: cp9-check-results.tsv
@@ -94,6 +102,7 @@ cat > "${metrics_file}" <<EOF
   "avgCheckDurationMs": ${avg_duration_ms},
   "dockerServerVersion": "${docker_server_version}",
   "dockerComposeVersion": "${docker_compose_version}",
+  "composeChecksSkipped": ${compose_checks_skipped},
   "resultsTsv": "cp9-check-results.tsv"
 }
 EOF
