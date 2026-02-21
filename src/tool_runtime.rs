@@ -1024,6 +1024,17 @@ impl ToolRuntimeHost {
         }
         let channel = self.enforce_message_channel_action_support(request, "send")?;
         let target = first_string_arg(&request.args, &["target", "to"]);
+        let has_explicit_channel = request
+            .args
+            .get("channel")
+            .and_then(Value::as_str)
+            .is_some();
+        if has_explicit_channel && target.is_none() {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "missing required parameter `target`",
+            ));
+        }
         let reply_to = first_string_arg(&request.args, &["replyTo", "reply_to"]);
         let dry_run = first_bool_arg(&request.args, &["dryRun", "dry_run"]).unwrap_or(false);
         let session_id = resolve_message_session_id(request);
@@ -5598,6 +5609,7 @@ mod tests {
                 args: serde_json::json!({
                     "action": "send",
                     "channel": "discord",
+                    "target": "channel:ops",
                     "threadId": "thread-alpha",
                     "role": "user",
                     "message": "deploy alpha ready"
@@ -5617,6 +5629,7 @@ mod tests {
                 args: serde_json::json!({
                     "action": "send",
                     "channel": "discord",
+                    "target": "channel:ops",
                     "threadId": "thread-beta",
                     "role": "assistant",
                     "message": "deploy beta ready"
@@ -5915,7 +5928,8 @@ mod tests {
                 args: serde_json::json!({
                     "action": "send",
                     "message": "deploy checklist ready",
-                    "channel": "discord"
+                    "channel": "discord",
+                    "target": "channel:ops"
                 }),
                 sandboxed: false,
                 model_provider: None,

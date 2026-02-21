@@ -833,6 +833,7 @@
         "args": {
           "action": "send",
           "channel": "discord",
+          "target": "channel:ops",
           "message": "deploy checklist ready"
         },
         "sandboxed": false
@@ -872,6 +873,7 @@
         "args": {
           "action": "send",
           "channel": "discord",
+          "target": "channel:ops",
           "threadId": "thread-alpha",
           "role": "user",
           "message": "deploy alpha ready"
@@ -893,6 +895,7 @@
         "args": {
           "action": "send",
           "channel": "discord",
+          "target": "channel:ops",
           "threadId": "thread-beta",
           "role": "assistant",
           "message": "deploy beta ready"
