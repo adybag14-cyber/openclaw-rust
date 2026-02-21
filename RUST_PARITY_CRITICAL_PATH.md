@@ -234,3 +234,4 @@ Use this checklist for active tracking:
 1. Keep parity locked with CI drift checks (`parity/generated/parity-scoreboard.*`, corpus fixtures, and CP gate runners) on every PR.
 2. Treat new work as post-parity optimization/security hardening (throughput benchmarking automation, pooled fanout buffers, expanded chaos/fault-injection scenarios).
 3. Keep release/readiness artifacts current (cutover runbook, benchmark trends, and defender attestation/telemetry operational docs).
+4. Continue local Ubuntu-on-WSL validation/profiling once host virtualization prerequisites are enabled on contributor workstations.

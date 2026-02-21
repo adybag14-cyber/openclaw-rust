@@ -1,10 +1,16 @@
-# Rust Rewrite Plan (Feature-Parity First)
+# Rust Rewrite Plan (Completed + Post-Parity Optimization)
 
 ## Goal alignment
 
 1. Ubuntu 20.04 production runtime in Rust.
 2. Better memory behavior and predictable throughput.
 3. Defender layer against prompt injection, unsafe commands, and tampered host/runtime state.
+
+## Status snapshot (2026-02-21)
+
+1. End-to-end parity status: **complete** for required OpenClaw surfaces.
+2. Audit status: `22 implemented`, `0 partial`, `0 deferred`.
+3. Validation status: full default + `sqlite-state` matrix passing.
 
 ## Phase strategy
 
@@ -60,7 +66,7 @@
 - VirusTotal signal integration for URL/file indicators.
 - Quarantine ledger for blocked actions.
 
-### Phase 2 (in progress)
+### Phase 2 (completed)
 
 - Move session scheduler and idempotency dedupe cache to Rust.
 - Implemented first-pass session FIFO scheduler with configurable queue modes:
@@ -74,17 +80,23 @@
   - JSON (default)
   - SQLite WAL backend behind `sqlite-state` feature (auto-selected for `.db/.sqlite/.sqlite3` paths)
 - Introduce a compact internal event model (`bytes` + pooled buffers).
-- Keep advanced routing parity (group isolation/activation policies/reply-back) in progress.
+- Advanced routing parity (group isolation/activation policies/reply-back) completed.
 
-### Phase 3 (in progress)
+### Phase 3 (completed)
 
 - Migrate core channel adapters incrementally behind trait drivers.
 - Added trait-based channel adapter scaffold (`whatsapp`, `telegram`, `slack`, `discord`, generic fallback) with capability descriptors.
 - Keep protocol schema stable for existing clients (macOS/iOS/Android/Web/CLI).
 
-### Phase 4 (next)
+### Phase 4 (completed)
 
 - Decommission TypeScript runtime path after parity tests pass.
+
+### Phase 5 (post-parity roadmap)
+
+- Throughput trend automation (upstream-vs-Rust benchmarks in CI).
+- Memory hot-path tuning (event fanout pooling and queue pressure profiling).
+- Expanded real-transport and failure-injection integration coverage.
 
 ## Performance design choices
 

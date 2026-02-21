@@ -4,7 +4,17 @@ This directory contains the Rust rewrite foundation for the OpenClaw runtime.
 
 Minimum supported Rust version: `1.83`.
 
-What is implemented now:
+## Current parity status (February 21, 2026)
+
+- End-to-end Rust parity program status: **complete**.
+- Feature audit scoreboard: `22 implemented`, `0 partial`, `0 deferred`.
+- RPC method-surface parity: `103` Rust methods, `100%` coverage vs upstream base + handlers.
+- Latest full validation matrix:
+  - `cargo +1.83.0-x86_64-pc-windows-gnu test` -> `313` passed
+  - `cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state` -> `317` passed
+  - `clippy -D warnings` + `release` builds pass for default and `sqlite-state`
+
+## Implemented runtime coverage
 
 - Native Rust runtime suitable for Ubuntu 20.04 deployment.
 - Gateway compatibility bridge over OpenClaw's WebSocket protocol.
@@ -18,10 +28,11 @@ What is implemented now:
 - Typed protocol frame foundation (`req`/`resp`/`event` classification).
 - Gateway RPC parity scaffold for `sessions.list`, `sessions.preview`, `sessions.patch`, `sessions.resolve`, `sessions.reset`, `sessions.delete`, `sessions.compact`, `sessions.usage`, `sessions.usage.timeseries`, `sessions.usage.logs`, `sessions.history`, `sessions.send`, and `session.status`.
 - Channel adapter scaffold (`telegram`, `whatsapp`, `discord`, `irc`, `slack`, `signal`, `imessage`, `webchat`, `bluebubbles`, `googlechat`, `msteams`, `matrix`, `zalo`, `zalouser`, `feishu`, `mattermost`, `line`, `nextcloud-talk`, `nostr`, `tlon`, generic) with wave-1/wave-2/wave-3/wave-4 channel-runtime helpers (chat-type normalization, mention gating, chunking, retry/backoff, alias canonicalization) and event-driven runtime snapshot ingestion for `channels.status`.
+- Runtime defender hardening extensions including EDR telemetry ingestion and runtime binary attestation checks.
 
-This is intentionally phase 1: it keeps feature coverage by integrating with the
-existing Gateway protocol while replacing high-risk runtime and guardrail logic
-with Rust.
+Rust is now the primary runtime implementation for required parity surfaces; this
+repository tracks post-parity optimization and hardening work rather than parity
+bootstrapping.
 
 ## Ubuntu 20.04 setup
 

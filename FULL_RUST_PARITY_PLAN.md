@@ -3,6 +3,13 @@
 Date: 2026-02-17  
 Scope baseline: upstream `openclaw/openclaw` `main` + current `rust-agent/` implementation (`c3e646bcd`)
 
+Status update (2026-02-21): **Completed**
+
+- Parity scoreboard is fully green (`22 implemented`, `0 partial`, `0 deferred`).
+- RPC method coverage remains `100%` vs upstream base + handlers.
+- Full validation matrix passes for default + `sqlite-state`.
+- This document is retained as the historical implementation plan and completion record.
+
 ## 1) Objective
 
 Deliver a production Rust implementation that can fully replace the current TypeScript OpenClaw runtime stack while preserving feature behavior and operational compatibility across:
@@ -31,22 +38,18 @@ Feature parity is achieved only when all required checks pass:
 
 Already implemented in Rust:
 
-1. Gateway-compatible sidecar bridge for action evaluation.
-2. Defender pipeline (prompt, command, host integrity, VirusTotal).
-3. Per-tool policy floors and tool/channel risk weighting.
-4. Idempotency cache and session state persistence (JSON interim store).
-5. Trait-based channel adapter scaffold (`discord` + generic fallback).
-6. Replay harness with asserted decision outcomes.
+1. Full standalone gateway runtime and full required RPC parity surface.
+2. Session scheduler/routing parity (queue modes, delivery-context routing, persistence).
+3. Tool runtime parity (`exec/process/read/write/edit/apply_patch` + gateway/sessions/message/browser/canvas/nodes families).
+4. Channel parity across wave-1/wave-2/wave-3/wave-4 adapters and runtime lifecycle semantics.
+5. Node/browser/canvas/device parity flows with persistence and runtime invoke/result behavior.
+6. Voice runtime parity including live capture/playback lifecycle fixtures.
+7. Provider/auth/failover parity, CLI/control parity, and dockerized parity validation gates.
+8. Defender hardening layers (prompt/command/host checks, VT fusion, policy bundles, EDR telemetry, runtime attestation).
 
-Not yet implemented:
+Remaining parity gap:
 
-1. Full Gateway runtime and RPC surface.
-2. Full session scheduler/routing semantics.
-3. Full tool runtime parity.
-4. Full channel adapter parity.
-5. Node/browser/canvas/voice parity runtime in Rust.
-6. Provider/auth/catalog parity.
-7. Full CLI/control UI parity wiring.
+1. None for required parity surfaces; follow-on work is now post-parity optimization/hardening depth.
 
 ## 4) Target Rust Architecture
 
