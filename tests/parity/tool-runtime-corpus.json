@@ -1087,6 +1087,23 @@
       }
     },
     {
+      "name": "message-emoji-list-discord-missing-guild",
+      "request": {
+        "request_id": "cp3-message-emoji-list-discord-missing-guild-1",
+        "session_id": "cp3-search-discord",
+        "tool_name": "message",
+        "args": {
+          "action": "emoji-list",
+          "channel": "discord"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "invalid_args"
+      }
+    },
+    {
       "name": "message-emoji-upload-slack-unsupported-channel",
       "request": {
         "request_id": "cp3-message-emoji-upload-slack-unsupported-1",
@@ -1117,6 +1134,9 @@
           "channel": "discord",
           "guildId": "guild-ops",
           "emojiName": "opsok",
+          "roleIds": [
+            "role-ops"
+          ],
           "media": "/tmp/opsok.png"
         },
         "sandboxed": false
@@ -1124,7 +1144,7 @@
       "expect": {
         "ok": true,
         "status": "completed",
-        "contains": "\"action\":\"emoji-upload\""
+        "contains": "role-ops"
       }
     },
     {

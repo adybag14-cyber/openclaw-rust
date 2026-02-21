@@ -183,6 +183,7 @@ struct ToolRuntimeMessageEmoji {
     guild_id: Option<String>,
     name: String,
     media: Option<String>,
+    role_ids: Vec<String>,
     created_at_ms: u64,
 }
 
@@ -2218,6 +2219,12 @@ impl ToolRuntimeHost {
             .clamp(1, 250) as usize;
 
         let channel = resolved_channel.unwrap_or_else(|| "discord".to_owned());
+        if channel == "discord" && guild_id.is_none() {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "missing required parameter `guildId`",
+            ));
+        }
         let mut rows = match channel.as_str() {
             "slack" => vec![
                 json!({
@@ -2313,12 +2320,19 @@ impl ToolRuntimeHost {
             "emojiName",
         )?;
         let media = required_string_arg(&request.args, &["media", "file", "path"], "media")?;
+        let mut role_ids = first_string_list_arg(&request.args, &["roleIds", "role_ids"], 64, 128);
+        if let Some(role_id) = first_string_arg(&request.args, &["roleId", "role_id"]) {
+            if !role_ids.iter().any(|value| value == &role_id) {
+                role_ids.push(role_id);
+            }
+        }
 
         let emoji = ToolRuntimeMessageEmoji {
             id: self.next_emoji_id().await,
             guild_id: Some(guild_id.clone()),
             name: emoji_name,
             media: Some(media),
+            role_ids,
             created_at_ms: now_ms(),
         };
         let mut registry = self.message_emojis.lock().await;
@@ -3720,6 +3734,7 @@ fn serialize_message_emoji(emoji: &ToolRuntimeMessageEmoji) -> Value {
         "guildId": emoji.guild_id,
         "name": emoji.name,
         "media": emoji.media,
+        "roleIds": emoji.role_ids,
         "animated": false,
         "ts": emoji.created_at_ms
     })
@@ -6160,6 +6175,7 @@ mod tests {
                     "channel": "discord",
                     "guildId": "guild-ops",
                     "emojiName": "opsok",
+                    "roleIds": ["role-ops"],
                     "media": "/tmp/opsok.png"
                 }),
                 sandboxed: false,
@@ -6174,6 +6190,13 @@ mod tests {
                 .pointer("/emoji/name")
                 .and_then(serde_json::Value::as_str),
             Some("opsok")
+        );
+        assert_eq!(
+            emoji_upload_discord
+                .result
+                .pointer("/emoji/roleIds/0")
+                .and_then(serde_json::Value::as_str),
+            Some("role-ops")
         );
 
         let emoji_list_discord = host
@@ -6193,6 +6216,26 @@ mod tests {
             .await
             .expect("emoji list on discord");
         assert!(emoji_list_discord.result.to_string().contains("opsok"));
+
+        let emoji_list_discord_missing_guild = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-emoji-list-discord-missing-guild-1".to_owned(),
+                session_id: "agent:main:discord:group:ops".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "emoji-list",
+                    "channel": "discord"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect_err("emoji list requires guild id on discord");
+        assert_eq!(emoji_list_discord_missing_guild.code.as_str(), "invalid_args");
+        assert!(emoji_list_discord_missing_guild
+            .message
+            .contains("missing required parameter `guildId`"));
 
         let sticker_upload_discord = host
             .execute(ToolRuntimeRequest {
