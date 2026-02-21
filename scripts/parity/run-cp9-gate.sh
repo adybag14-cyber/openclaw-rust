@@ -19,6 +19,7 @@ passed=0
 overall_status="pass"
 docker_server_version="unavailable"
 docker_compose_version="unavailable"
+failed_checks=()
 
 run_check() {
   local check_name="$1"
@@ -36,6 +37,7 @@ run_check() {
     total_duration_ms=$((total_duration_ms + duration_ms))
     echo -e "${check_name}\t${duration_ms}\tfail" >> "${results_file}"
     overall_status="fail"
+    failed_checks+=("${check_name}")
     return 1
   fi
 
@@ -97,6 +99,14 @@ cat > "${metrics_file}" <<EOF
 EOF
 
 if [[ "${overall_status}" != "pass" ]]; then
+  failed_checks_csv="none"
+  if [[ "${#failed_checks[@]}" -gt 0 ]]; then
+    failed_checks_csv="$(IFS=, ; echo "${failed_checks[*]}")"
+  fi
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    echo "::error title=CP9 parity gate failed::checks=${failed_checks_csv} (see cp9-check-results.tsv and cp9-gate.log artifacts)"
+  fi
+  echo "[parity] CP9 failed checks: ${failed_checks_csv}" | tee -a "${log_file}"
   echo "[parity] CP9 gate failed" | tee -a "${log_file}"
   exit 1
 fi
