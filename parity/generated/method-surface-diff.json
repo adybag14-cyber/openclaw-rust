@@ -1,6 +1,6 @@
 {
   "rustGatewayPath": "src/gateway.rs",
-  "upstreamRepoPath": "..\\openclaw",
+  "upstreamRepoPath": "..\\\\openclaw",
   "rustCount": 103,
   "surfaces": {
     "base": {

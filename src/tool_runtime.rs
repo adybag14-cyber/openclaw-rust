@@ -207,11 +207,15 @@ const TOOL_RUNTIME_NODE_COMMANDS: &[&str] = &[
     "device.info",
     "device.status",
     "contacts.search",
+    "contacts.add",
     "calendar.events",
+    "calendar.add",
     "reminders.list",
+    "reminders.add",
     "photos.latest",
     "motion.activity",
     "motion.pedometer",
+    "sms.send",
     "system.run",
     "system.which",
     "system.notify",
@@ -1080,8 +1084,12 @@ impl ToolRuntimeHost {
                 "broadcast requires `message` or `media`",
             ));
         }
-        let mut targets =
-            first_string_list_arg(&request.args, &["targets", "targetList", "target_list"], 32, 256);
+        let mut targets = first_string_list_arg(
+            &request.args,
+            &["targets", "targetList", "target_list"],
+            32,
+            256,
+        );
         if targets.is_empty() {
             if let Some(target) = first_string_arg(&request.args, &["target", "to"]) {
                 targets.push(target);
@@ -1638,8 +1646,7 @@ impl ToolRuntimeHost {
                 }));
             };
             if capability.name == "discord"
-                && first_string_arg(&request.args, &["target", "channelId", "channel_id"])
-                    .is_none()
+                && first_string_arg(&request.args, &["target", "channelId", "channel_id"]).is_none()
             {
                 return Err(ToolRuntimeError::new(
                     ToolRuntimeErrorCode::InvalidArgs,
@@ -1670,8 +1677,10 @@ impl ToolRuntimeHost {
                 capability,
                 "permissions",
             ));
-            permissions["broadcast"] =
-                Value::Bool(Self::message_channel_supports_action(capability, "broadcast"));
+            permissions["broadcast"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "broadcast",
+            ));
             permissions["search"] =
                 Value::Bool(Self::message_channel_supports_action(capability, "search"));
             permissions["threadCreate"] = Value::Bool(Self::message_channel_supports_action(
@@ -1769,23 +1778,15 @@ impl ToolRuntimeHost {
             .clamp(1, 200) as usize;
         let include_deleted =
             first_bool_arg(&request.args, &["includeDeleted", "include_deleted"]).unwrap_or(false);
-        let mut channel_ids = first_string_list_arg(
-            &request.args,
-            &["channelIds", "channel_ids"],
-            32,
-            128,
-        );
+        let mut channel_ids =
+            first_string_list_arg(&request.args, &["channelIds", "channel_ids"], 32, 128);
         if let Some(channel_id) = first_string_arg(&request.args, &["channelId", "channel_id"]) {
             if !channel_ids.iter().any(|value| value == &channel_id) {
                 channel_ids.push(channel_id);
             }
         }
-        let mut author_ids = first_string_list_arg(
-            &request.args,
-            &["authorIds", "author_ids"],
-            32,
-            128,
-        );
+        let mut author_ids =
+            first_string_list_arg(&request.args, &["authorIds", "author_ids"], 32, 128);
         if let Some(author_id) = first_string_arg(&request.args, &["authorId", "author_id"]) {
             if !author_ids.iter().any(|value| value == &author_id) {
                 author_ids.push(author_id);
@@ -3136,6 +3137,35 @@ impl ToolRuntimeHost {
                             "count": 1
                         })
                     }
+                    "contacts.add" => {
+                        let name = params
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or("New Contact");
+                        let phone = params
+                            .get("phone")
+                            .or_else(|| params.get("number"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty());
+                        let email = params
+                            .get("email")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty());
+                        let created_at_ms = now_ms();
+                        json!({
+                            "contact": {
+                                "id": format!("contact-{created_at_ms}"),
+                                "name": name,
+                                "phone": phone,
+                                "email": email,
+                                "createdAtMs": created_at_ms
+                            }
+                        })
+                    }
                     "calendar.events" => json!({
                         "events": [{
                             "id": "evt-1",
@@ -3145,6 +3175,51 @@ impl ToolRuntimeHost {
                         }],
                         "count": 1
                     }),
+                    "calendar.add" => {
+                        let title = params
+                            .get("title")
+                            .or_else(|| params.get("eventName"))
+                            .or_else(|| params.get("summary"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or("Untitled Event");
+                        let start_time = params
+                            .get("startTime")
+                            .or_else(|| params.get("start"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or("2026-02-21T20:00:00Z");
+                        let end_time = params
+                            .get("endTime")
+                            .or_else(|| params.get("end"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty());
+                        let location = params
+                            .get("location")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty());
+                        let all_day = params
+                            .get("allDay")
+                            .or_else(|| params.get("all_day"))
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        let created_at_ms = now_ms();
+                        json!({
+                            "event": {
+                                "id": format!("evt-{created_at_ms}"),
+                                "title": title,
+                                "startTime": start_time,
+                                "endTime": end_time,
+                                "location": location,
+                                "allDay": all_day,
+                                "createdAtMs": created_at_ms
+                            }
+                        })
+                    }
                     "reminders.list" => json!({
                         "reminders": [{
                             "id": "rem-1",
@@ -3153,6 +3228,46 @@ impl ToolRuntimeHost {
                         }],
                         "count": 1
                     }),
+                    "reminders.add" => {
+                        let title = params
+                            .get("title")
+                            .or_else(|| params.get("text"))
+                            .or_else(|| params.get("message"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or("Reminder");
+                        let due_time = params
+                            .get("dueTime")
+                            .or_else(|| params.get("due"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty());
+                        let list = params
+                            .get("list")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or("default");
+                        let priority = params
+                            .get("priority")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or("medium");
+                        let created_at_ms = now_ms();
+                        json!({
+                            "reminder": {
+                                "id": format!("rem-{created_at_ms}"),
+                                "title": title,
+                                "dueTime": due_time,
+                                "list": list,
+                                "priority": priority,
+                                "completed": false,
+                                "createdAtMs": created_at_ms
+                            }
+                        })
+                    }
                     "photos.latest" => {
                         let limit = params
                             .get("limit")
@@ -3185,6 +3300,39 @@ impl ToolRuntimeHost {
                         "floorsDescended": 0,
                         "ts": now_ms()
                     }),
+                    "sms.send" => {
+                        let to = params
+                            .get("to")
+                            .or_else(|| params.get("phone"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .ok_or_else(|| {
+                                ToolRuntimeError::new(
+                                    ToolRuntimeErrorCode::InvalidArgs,
+                                    "sms.send requires `to`",
+                                )
+                            })?;
+                        let message = params
+                            .get("message")
+                            .or_else(|| params.get("text"))
+                            .or_else(|| params.get("body"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .ok_or_else(|| {
+                                ToolRuntimeError::new(
+                                    ToolRuntimeErrorCode::InvalidArgs,
+                                    "sms.send requires `message`",
+                                )
+                            })?;
+                        json!({
+                            "messageId": format!("sms-{}", now_ms()),
+                            "to": to,
+                            "message": message,
+                            "queued": true
+                        })
+                    }
                     "browser.proxy" => {
                         let method = params
                             .get("method")
@@ -5922,7 +6070,10 @@ mod tests {
             })
             .await
             .expect_err("permissions on discord requires target");
-        assert_eq!(permissions_discord_missing_target.code.as_str(), "invalid_args");
+        assert_eq!(
+            permissions_discord_missing_target.code.as_str(),
+            "invalid_args"
+        );
         assert!(permissions_discord_missing_target
             .message
             .contains("missing required parameter `target`"));
@@ -6275,7 +6426,10 @@ mod tests {
             })
             .await
             .expect_err("emoji list requires guild id on discord");
-        assert_eq!(emoji_list_discord_missing_guild.code.as_str(), "invalid_args");
+        assert_eq!(
+            emoji_list_discord_missing_guild.code.as_str(),
+            "invalid_args"
+        );
         assert!(emoji_list_discord_missing_guild
             .message
             .contains("missing required parameter `guildId`"));
@@ -6517,6 +6671,111 @@ mod tests {
             Some(100)
         );
 
+        let contacts_add = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-contacts-add-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "invoke",
+                    "nodeId": "node-a",
+                    "command": "contacts.add",
+                    "params": {
+                        "name": "Ops Contact",
+                        "phone": "+15550002222"
+                    }
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("contacts.add invoke");
+        assert_eq!(
+            contacts_add
+                .result
+                .pointer("/result/contact/name")
+                .and_then(serde_json::Value::as_str),
+            Some("Ops Contact")
+        );
+        assert_eq!(
+            contacts_add
+                .result
+                .pointer("/result/contact/phone")
+                .and_then(serde_json::Value::as_str),
+            Some("+15550002222")
+        );
+
+        let calendar_add = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-calendar-add-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "invoke",
+                    "nodeId": "node-a",
+                    "command": "calendar.add",
+                    "params": {
+                        "title": "Ops Review",
+                        "startTime": "2026-02-21T21:00:00Z"
+                    }
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("calendar.add invoke");
+        assert_eq!(
+            calendar_add
+                .result
+                .pointer("/result/event/title")
+                .and_then(serde_json::Value::as_str),
+            Some("Ops Review")
+        );
+        assert_eq!(
+            calendar_add
+                .result
+                .pointer("/result/event/startTime")
+                .and_then(serde_json::Value::as_str),
+            Some("2026-02-21T21:00:00Z")
+        );
+
+        let reminders_add = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-reminders-add-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "invoke",
+                    "nodeId": "node-a",
+                    "command": "reminders.add",
+                    "params": {
+                        "title": "Ship parity",
+                        "dueTime": "2026-02-22T09:00:00Z"
+                    }
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("reminders.add invoke");
+        assert_eq!(
+            reminders_add
+                .result
+                .pointer("/result/reminder/title")
+                .and_then(serde_json::Value::as_str),
+            Some("Ship parity")
+        );
+        assert_eq!(
+            reminders_add
+                .result
+                .pointer("/result/reminder/completed")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+
         let canvas_snapshot = host
             .execute(ToolRuntimeRequest {
                 request_id: "nodes-canvas-snapshot-1".to_owned(),
@@ -6690,6 +6949,72 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("overlay")
         );
+
+        let sms_send = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-sms-send-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "invoke",
+                    "nodeId": "node-a",
+                    "command": "sms.send",
+                    "params": {
+                        "to": "+15550003333",
+                        "message": "parity gate notification"
+                    }
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("sms.send invoke");
+        assert_eq!(
+            sms_send
+                .result
+                .pointer("/result/to")
+                .and_then(serde_json::Value::as_str),
+            Some("+15550003333")
+        );
+        assert_eq!(
+            sms_send
+                .result
+                .pointer("/result/message")
+                .and_then(serde_json::Value::as_str),
+            Some("parity gate notification")
+        );
+        assert_eq!(
+            sms_send
+                .result
+                .pointer("/result/queued")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let sms_send_missing_to = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-sms-send-missing-to-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "invoke",
+                    "nodeId": "node-a",
+                    "command": "sms.send",
+                    "params": {
+                        "message": "missing to"
+                    }
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect_err("sms.send should reject missing `to`");
+        assert_eq!(sms_send_missing_to.code.as_str(), "invalid_args");
+        assert!(sms_send_missing_to
+            .message
+            .contains("sms.send requires `to`"));
     }
 
     #[tokio::test]

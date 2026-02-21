@@ -4348,6 +4348,38 @@ impl RpcDispatcher {
                     "source": "local-host-runtime"
                 }))
             }
+            "contacts.add" => {
+                let object = params.as_ref().and_then(Value::as_object);
+                let name = object
+                    .and_then(|obj| obj.get("name"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("New Contact");
+                let phone = object
+                    .and_then(|obj| obj.get("phone").or_else(|| obj.get("number")))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let email = object
+                    .and_then(|obj| obj.get("email"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let created_at_ms = now_ms();
+                local_node_command_ok(json!({
+                    "ok": true,
+                    "nodeId": node_id,
+                    "contact": {
+                        "id": format!("contact-{created_at_ms}"),
+                        "name": name,
+                        "phone": phone,
+                        "email": email,
+                        "createdAtMs": created_at_ms
+                    },
+                    "source": "local-host-runtime"
+                }))
+            }
             "calendar.events" => local_node_command_ok(json!({
                 "ok": true,
                 "nodeId": node_id,
@@ -4360,6 +4392,54 @@ impl RpcDispatcher {
                 "count": 1,
                 "source": "local-host-runtime"
             })),
+            "calendar.add" => {
+                let object = params.as_ref().and_then(Value::as_object);
+                let title = object
+                    .and_then(|obj| {
+                        obj.get("title")
+                            .or_else(|| obj.get("eventName"))
+                            .or_else(|| obj.get("summary"))
+                    })
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("Untitled Event");
+                let start_time = object
+                    .and_then(|obj| obj.get("startTime").or_else(|| obj.get("start")))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("2026-02-21T20:00:00Z");
+                let end_time = object
+                    .and_then(|obj| obj.get("endTime").or_else(|| obj.get("end")))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let location = object
+                    .and_then(|obj| obj.get("location"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let all_day = object
+                    .and_then(|obj| obj.get("allDay").or_else(|| obj.get("all_day")))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let created_at_ms = now_ms();
+                local_node_command_ok(json!({
+                    "ok": true,
+                    "nodeId": node_id,
+                    "event": {
+                        "id": format!("evt-{created_at_ms}"),
+                        "title": title,
+                        "startTime": start_time,
+                        "endTime": end_time,
+                        "location": location,
+                        "allDay": all_day,
+                        "createdAtMs": created_at_ms
+                    },
+                    "source": "local-host-runtime"
+                }))
+            }
             "reminders.list" => local_node_command_ok(json!({
                 "ok": true,
                 "nodeId": node_id,
@@ -4371,6 +4451,90 @@ impl RpcDispatcher {
                 "count": 1,
                 "source": "local-host-runtime"
             })),
+            "reminders.add" => {
+                let object = params.as_ref().and_then(Value::as_object);
+                let title = object
+                    .and_then(|obj| {
+                        obj.get("title")
+                            .or_else(|| obj.get("text"))
+                            .or_else(|| obj.get("message"))
+                    })
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("Reminder");
+                let due_time = object
+                    .and_then(|obj| obj.get("dueTime").or_else(|| obj.get("due")))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let list = object
+                    .and_then(|obj| obj.get("list"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("default");
+                let priority = object
+                    .and_then(|obj| obj.get("priority"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("medium");
+                let created_at_ms = now_ms();
+                local_node_command_ok(json!({
+                    "ok": true,
+                    "nodeId": node_id,
+                    "reminder": {
+                        "id": format!("rem-{created_at_ms}"),
+                        "title": title,
+                        "dueTime": due_time,
+                        "list": list,
+                        "priority": priority,
+                        "completed": false,
+                        "createdAtMs": created_at_ms
+                    },
+                    "source": "local-host-runtime"
+                }))
+            }
+            "sms.send" => {
+                let object = params.as_ref().and_then(Value::as_object);
+                let Some(to) = object
+                    .and_then(|obj| obj.get("to").or_else(|| obj.get("phone")))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return local_node_command_error(
+                        "LOCAL_COMMAND_INVALID_ARGS",
+                        "sms.send requires `to`".to_owned(),
+                    );
+                };
+                let Some(message) = object
+                    .and_then(|obj| {
+                        obj.get("message")
+                            .or_else(|| obj.get("text"))
+                            .or_else(|| obj.get("body"))
+                    })
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return local_node_command_error(
+                        "LOCAL_COMMAND_INVALID_ARGS",
+                        "sms.send requires `message`".to_owned(),
+                    );
+                };
+                let message_id = format!("sms-{}", now_ms());
+                local_node_command_ok(json!({
+                    "ok": true,
+                    "nodeId": node_id,
+                    "messageId": message_id,
+                    "to": to,
+                    "message": message,
+                    "queued": true,
+                    "source": "local-host-runtime"
+                }))
+            }
             "photos.latest" => {
                 let limit = params
                     .as_ref()
@@ -13287,14 +13451,9 @@ fn classify_channel_activity_token(token: &str) -> Option<ChannelActivityEvent> 
         "edit" | "edited" | "messageedit" | "messageedited" | "updated" | "messageupdated" => {
             Some(ChannelActivityEvent::Edit)
         }
-        "delete" | "deleted" | "messagedelete" | "messagedeleted" | "removed" | "messageremoved" => {
-            Some(ChannelActivityEvent::Delete)
-        }
-        "thread"
-        | "threadcreate"
-        | "threadcreated"
-        | "threadreply"
-        | "threadreplied"
+        "delete" | "deleted" | "messagedelete" | "messagedeleted" | "removed"
+        | "messageremoved" => Some(ChannelActivityEvent::Delete),
+        "thread" | "threadcreate" | "threadcreated" | "threadreply" | "threadreplied"
         | "threadlist" => Some(ChannelActivityEvent::Thread),
         _ => None,
     }
@@ -31810,11 +31969,15 @@ mod tests {
                     "device.info",
                     "device.status",
                     "contacts.search",
+                    "contacts.add",
                     "calendar.events",
+                    "calendar.add",
                     "reminders.list",
+                    "reminders.add",
                     "photos.latest",
                     "motion.activity",
                     "motion.pedometer",
+                    "sms.send",
                     "canvas.hide",
                     "canvas.navigate",
                     "canvas.eval",
@@ -31858,11 +32021,36 @@ mod tests {
             ("device.info", serde_json::json!({})),
             ("device.status", serde_json::json!({})),
             ("contacts.search", serde_json::json!({ "query": "ops" })),
+            (
+                "contacts.add",
+                serde_json::json!({ "name": "Ops Contact", "phone": "+15550002222" }),
+            ),
             ("calendar.events", serde_json::json!({})),
+            (
+                "calendar.add",
+                serde_json::json!({
+                    "title": "Ops Review",
+                    "startTime": "2026-02-21T21:00:00Z"
+                }),
+            ),
             ("reminders.list", serde_json::json!({})),
+            (
+                "reminders.add",
+                serde_json::json!({
+                    "title": "Ship parity",
+                    "dueTime": "2026-02-22T09:00:00Z"
+                }),
+            ),
             ("photos.latest", serde_json::json!({ "limit": 2 })),
             ("motion.activity", serde_json::json!({})),
             ("motion.pedometer", serde_json::json!({})),
+            (
+                "sms.send",
+                serde_json::json!({
+                    "to": "+15550003333",
+                    "message": "parity gate notification"
+                }),
+            ),
             ("canvas.hide", serde_json::json!({})),
             (
                 "canvas.navigate",
@@ -31963,11 +32151,15 @@ mod tests {
                     "device.info",
                     "device.status",
                     "contacts.search",
+                    "contacts.add",
                     "calendar.events",
+                    "calendar.add",
                     "reminders.list",
+                    "reminders.add",
                     "photos.latest",
                     "motion.activity",
                     "motion.pedometer",
+                    "sms.send",
                     "canvas.hide",
                     "canvas.navigate",
                     "canvas.eval",
@@ -32154,6 +32346,105 @@ mod tests {
             _ => panic!("expected node.invoke handled"),
         }
 
+        let invoke_contacts_add = RpcRequestFrame {
+            id: "req-local-node-runtime-contacts-add".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-runtime-1",
+                "command": "contacts.add",
+                "params": {
+                    "name": "Ops Contact",
+                    "phone": "+15550002222"
+                },
+                "idempotencyKey": "local-node-contacts-add"
+            }),
+        };
+        match dispatcher.handle_request(&invoke_contacts_add).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/contact/name")
+                        .and_then(Value::as_str),
+                    Some("Ops Contact")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/contact/phone")
+                        .and_then(Value::as_str),
+                    Some("+15550002222")
+                );
+            }
+            _ => panic!("expected node.invoke handled"),
+        }
+
+        let invoke_calendar_add = RpcRequestFrame {
+            id: "req-local-node-runtime-calendar-add".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-runtime-1",
+                "command": "calendar.add",
+                "params": {
+                    "title": "Ops Review",
+                    "startTime": "2026-02-21T21:00:00Z"
+                },
+                "idempotencyKey": "local-node-calendar-add"
+            }),
+        };
+        match dispatcher.handle_request(&invoke_calendar_add).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/event/title")
+                        .and_then(Value::as_str),
+                    Some("Ops Review")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/event/startTime")
+                        .and_then(Value::as_str),
+                    Some("2026-02-21T21:00:00Z")
+                );
+            }
+            _ => panic!("expected node.invoke handled"),
+        }
+
+        let invoke_reminders_add = RpcRequestFrame {
+            id: "req-local-node-runtime-reminders-add".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-runtime-1",
+                "command": "reminders.add",
+                "params": {
+                    "title": "Ship parity",
+                    "dueTime": "2026-02-22T09:00:00Z"
+                },
+                "idempotencyKey": "local-node-reminders-add"
+            }),
+        };
+        match dispatcher.handle_request(&invoke_reminders_add).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/reminder/title")
+                        .and_then(Value::as_str),
+                    Some("Ship parity")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/reminder/dueTime")
+                        .and_then(Value::as_str),
+                    Some("2026-02-22T09:00:00Z")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/reminder/completed")
+                        .and_then(Value::as_bool),
+                    Some(false)
+                );
+            }
+            _ => panic!("expected node.invoke handled"),
+        }
+
         let invoke_photos_latest = RpcRequestFrame {
             id: "req-local-node-runtime-photos-latest".to_owned(),
             method: "node.invoke".to_owned(),
@@ -32179,6 +32470,43 @@ mod tests {
                         .pointer("/payload/result/photos/1/id")
                         .and_then(Value::as_str),
                     Some("photo-1")
+                );
+            }
+            _ => panic!("expected node.invoke handled"),
+        }
+
+        let invoke_sms_send = RpcRequestFrame {
+            id: "req-local-node-runtime-sms-send".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-runtime-1",
+                "command": "sms.send",
+                "params": {
+                    "to": "+15550003333",
+                    "message": "parity gate notification"
+                },
+                "idempotencyKey": "local-node-sms-send"
+            }),
+        };
+        match dispatcher.handle_request(&invoke_sms_send).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/to")
+                        .and_then(Value::as_str),
+                    Some("+15550003333")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/message")
+                        .and_then(Value::as_str),
+                    Some("parity gate notification")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/queued")
+                        .and_then(Value::as_bool),
+                    Some(true)
                 );
             }
             _ => panic!("expected node.invoke handled"),

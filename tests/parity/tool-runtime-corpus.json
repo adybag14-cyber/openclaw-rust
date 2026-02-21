@@ -1326,6 +1326,98 @@
       }
     },
     {
+      "name": "nodes-contacts-add-invoke",
+      "request": {
+        "request_id": "cp3-nodes-contacts-add-1",
+        "session_id": "cp3-node",
+        "tool_name": "nodes",
+        "args": {
+          "action": "invoke",
+          "nodeId": "cp3-node-a",
+          "command": "contacts.add",
+          "params": {
+            "name": "Ops Contact",
+            "phone": "+15550002222"
+          }
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "Ops Contact"
+      }
+    },
+    {
+      "name": "nodes-calendar-add-invoke",
+      "request": {
+        "request_id": "cp3-nodes-calendar-add-1",
+        "session_id": "cp3-node",
+        "tool_name": "nodes",
+        "args": {
+          "action": "invoke",
+          "nodeId": "cp3-node-a",
+          "command": "calendar.add",
+          "params": {
+            "title": "Ops Review",
+            "startTime": "2026-02-21T21:00:00Z"
+          }
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "Ops Review"
+      }
+    },
+    {
+      "name": "nodes-reminders-add-invoke",
+      "request": {
+        "request_id": "cp3-nodes-reminders-add-1",
+        "session_id": "cp3-node",
+        "tool_name": "nodes",
+        "args": {
+          "action": "invoke",
+          "nodeId": "cp3-node-a",
+          "command": "reminders.add",
+          "params": {
+            "title": "Ship parity",
+            "dueTime": "2026-02-22T09:00:00Z"
+          }
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "Ship parity"
+      }
+    },
+    {
+      "name": "nodes-sms-send-invoke",
+      "request": {
+        "request_id": "cp3-nodes-sms-send-1",
+        "session_id": "cp3-node",
+        "tool_name": "nodes",
+        "args": {
+          "action": "invoke",
+          "nodeId": "cp3-node-a",
+          "command": "sms.send",
+          "params": {
+            "to": "+15550003333",
+            "message": "parity gate notification"
+          }
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "parity gate notification"
+      }
+    },
+    {
       "name": "nodes-canvas-snapshot-invoke",
       "request": {
         "request_id": "cp3-nodes-canvas-snapshot-1",
