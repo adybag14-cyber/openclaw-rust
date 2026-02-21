@@ -1405,37 +1405,66 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let mut permissions = json!({
+            "send": true,
+            "poll": true,
+            "react": true,
+            "reactions": true,
+            "read": true,
+            "edit": true,
+            "delete": true,
+            "pin": true,
+            "unpin": true,
+            "pins": true,
+            "threadCreate": true,
+            "threadList": true,
+            "threadReply": true,
+            "memberInfo": true,
+            "roleInfo": true,
+            "channelInfo": true,
+            "channelList": true,
+            "voiceStatus": true,
+            "eventList": true,
+            "eventCreate": true,
+            "roleAdd": true,
+            "roleRemove": true,
+            "timeout": true,
+            "kick": true,
+            "ban": true
+        });
+        let mut resolved_channel: Option<String> = None;
+        if let Some((channel, explicit)) = self.resolve_message_channel_for_capability(request) {
+            resolved_channel = Some(channel.clone());
+            let Some(capability) = self.message_channel_capabilities.get(channel.as_str()) else {
+                if explicit {
+                    return Err(ToolRuntimeError::new(
+                        ToolRuntimeErrorCode::InvalidArgs,
+                        format!("unsupported channel: {channel}"),
+                    ));
+                }
+                return Ok(json!({
+                    "status": "completed",
+                    "action": "permissions",
+                    "sessionId": session_id,
+                    "channel": channel,
+                    "permissions": permissions
+                }));
+            };
+            permissions["poll"] = Value::Bool(capability.supports_polls);
+            permissions["edit"] = Value::Bool(capability.supports_edit);
+            permissions["delete"] = Value::Bool(capability.supports_delete);
+            permissions["react"] = Value::Bool(capability.supports_reactions);
+            permissions["reactions"] = Value::Bool(capability.supports_reactions);
+            permissions["threadCreate"] = Value::Bool(capability.supports_threads);
+            permissions["threadList"] = Value::Bool(capability.supports_threads);
+            permissions["threadReply"] = Value::Bool(capability.supports_threads);
+        }
         Ok(json!({
             "status": "completed",
             "action": "permissions",
             "sessionId": session_id,
-            "permissions": {
-                "send": true,
-                "poll": true,
-                "react": true,
-                "reactions": true,
-                "read": true,
-                "edit": true,
-                "delete": true,
-                "pin": true,
-                "unpin": true,
-                "pins": true,
-                "threadCreate": true,
-                "threadList": true,
-                "threadReply": true,
-                "memberInfo": true,
-                "roleInfo": true,
-                "channelInfo": true,
-                "channelList": true,
-                "voiceStatus": true,
-                "eventList": true,
-                "eventCreate": true,
-                "roleAdd": true,
-                "roleRemove": true,
-                "timeout": true,
-                "kick": true,
-                "ban": true
-            }
+            "channel": resolved_channel,
+            "permissions": permissions
         }))
     }
 
@@ -4808,6 +4837,64 @@ mod tests {
         assert!(thread_unsupported
             .message
             .contains("unsupported thread channel: telegram"));
+
+        let permissions_slack = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-permissions-slack-1".to_owned(),
+                session_id: "agent:main:slack:dm:operator".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "permissions"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("permissions for slack");
+        assert_eq!(
+            permissions_slack
+                .result
+                .pointer("/permissions/poll")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            permissions_slack
+                .result
+                .pointer("/permissions/threadCreate")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let permissions_telegram = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-permissions-telegram-1".to_owned(),
+                session_id: "agent:main:telegram:dm:+15550001111".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "permissions"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("permissions for telegram");
+        assert_eq!(
+            permissions_telegram
+                .result
+                .pointer("/permissions/poll")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            permissions_telegram
+                .result
+                .pointer("/permissions/threadCreate")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
 
         let unknown_channel = host
             .execute(ToolRuntimeRequest {

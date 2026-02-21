@@ -708,6 +708,42 @@
       }
     },
     {
+      "name": "message-permissions-slack-channel",
+      "request": {
+        "request_id": "cp3-message-permissions-slack-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "permissions",
+          "channel": "slack"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"poll\":false"
+      }
+    },
+    {
+      "name": "message-permissions-telegram-channel",
+      "request": {
+        "request_id": "cp3-message-permissions-telegram-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "permissions",
+          "channel": "telegram"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"threadCreate\":false"
+      }
+    },
+    {
       "name": "browser-open",
       "request": {
         "request_id": "cp3-browser-open-1",
