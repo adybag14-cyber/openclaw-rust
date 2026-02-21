@@ -222,6 +222,116 @@
       }
     },
     {
+      "name": "message-react",
+      "request": {
+        "request_id": "cp3-message-react-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "react",
+          "emoji": "✅"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "reactionCount"
+      }
+    },
+    {
+      "name": "message-reactions",
+      "request": {
+        "request_id": "cp3-message-reactions-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "reactions"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "✅"
+      }
+    },
+    {
+      "name": "message-edit",
+      "request": {
+        "request_id": "cp3-message-edit-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "edit",
+          "message": "hello from message tool edited"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "editedAt"
+      }
+    },
+    {
+      "name": "message-read",
+      "request": {
+        "request_id": "cp3-message-read-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "read",
+          "limit": 5
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "hello from message tool edited"
+      }
+    },
+    {
+      "name": "message-delete",
+      "request": {
+        "request_id": "cp3-message-delete-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "delete"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"deleted\":true"
+      }
+    },
+    {
+      "name": "message-poll",
+      "request": {
+        "request_id": "cp3-message-poll-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "poll",
+          "question": "Lunch?",
+          "options": [
+            "Pizza",
+            "Sushi"
+          ]
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"poll\""
+      }
+    },
+    {
       "name": "browser-open",
       "request": {
         "request_id": "cp3-browser-open-1",

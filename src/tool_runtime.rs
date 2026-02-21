@@ -126,6 +126,16 @@ struct ToolRuntimeSessionEntry {
     role: String,
     message: String,
     created_at_ms: u64,
+    edited_at_ms: Option<u64>,
+    deleted_at_ms: Option<u64>,
+    reactions: Vec<ToolRuntimeSessionReaction>,
+}
+
+#[derive(Debug, Clone)]
+struct ToolRuntimeSessionReaction {
+    emoji: String,
+    actor: String,
+    created_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -699,9 +709,15 @@ impl ToolRuntimeHost {
                 let (entry, count) = self
                     .append_session_entry(session_id.clone(), role, message)
                     .await;
+                let message_id = entry
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
                 Ok(json!({
                     "status": "completed",
                     "sessionId": session_id,
+                    "messageId": message_id,
                     "entry": entry,
                     "count": count
                 }))
@@ -743,20 +759,465 @@ impl ToolRuntimeHost {
     }
 
     async fn execute_message(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
-        let mut translated = request.clone();
-        if translated
+        let action = request
             .args
             .get("action")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .is_none()
-        {
-            let mut map = translated.args.as_object().cloned().unwrap_or_default();
-            map.insert("action".to_owned(), Value::String("send".to_owned()));
-            translated.args = Value::Object(map);
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_else(|| {
+                if request.args.get("pollQuestion").is_some()
+                    || request.args.get("poll_question").is_some()
+                    || request.args.get("pollOptions").is_some()
+                    || request.args.get("poll_options").is_some()
+                {
+                    "poll".to_owned()
+                } else {
+                    "send".to_owned()
+                }
+            });
+
+        match action.as_str() {
+            "send" | "append" => self.execute_message_send(request).await,
+            "poll" => self.execute_message_poll(request).await,
+            "read" => self.execute_message_read(request).await,
+            "edit" => self.execute_message_edit(request).await,
+            "delete" | "remove" => self.execute_message_delete(request).await,
+            "react" | "reaction" => self.execute_message_react(request).await,
+            "reactions" => self.execute_message_reactions(request).await,
+            "history" | "list" | "reset" | "clear" => {
+                let mut translated = request.clone();
+                let mut map = translated.args.as_object().cloned().unwrap_or_default();
+                map.insert("action".to_owned(), Value::String(action));
+                translated.args = Value::Object(map);
+                self.execute_sessions(&translated).await
+            }
+            _ => Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                format!("unsupported message action `{action}`"),
+            )),
         }
-        self.execute_sessions(&translated).await
+    }
+
+    async fn execute_message_send(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
+        let message = first_string_arg(&request.args, &["message", "content", "text", "prompt"])
+            .ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    "missing required parameter `message`",
+                )
+            })?;
+        let session_id = resolve_message_session_id(request);
+        let role =
+            normalize_message_role(first_string_arg(&request.args, &["role", "author"]).as_deref());
+        let (entry, count) = self
+            .append_session_entry(session_id.clone(), role, message)
+            .await;
+        let message_id = entry
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        Ok(json!({
+            "status": "completed",
+            "action": "send",
+            "sessionId": session_id,
+            "messageId": message_id,
+            "entry": entry,
+            "count": count
+        }))
+    }
+
+    async fn execute_message_poll(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
+        let question = first_string_arg(
+            &request.args,
+            &["question", "pollQuestion", "poll_question", "title"],
+        )
+        .ok_or_else(|| {
+            ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "missing required parameter `question`",
+            )
+        })?;
+        let options = first_string_list_arg(
+            &request.args,
+            &[
+                "options",
+                "pollOptions",
+                "poll_options",
+                "pollOption",
+                "poll_option",
+            ],
+            12,
+            256,
+        );
+        if options.len() < 2 {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "poll requires at least two options",
+            ));
+        }
+        let multi =
+            first_bool_arg(&request.args, &["multi", "pollMulti", "poll_multi"]).unwrap_or(false);
+        let anonymous = first_bool_arg(
+            &request.args,
+            &["anonymous", "pollAnonymous", "poll_anonymous"],
+        )
+        .unwrap_or(false);
+        let duration_seconds = request
+            .args
+            .get("durationSeconds")
+            .or_else(|| request.args.get("pollDurationSeconds"))
+            .or_else(|| request.args.get("poll_duration_seconds"))
+            .and_then(Value::as_u64)
+            .map(|value| value.clamp(5, 86_400));
+        let session_id = resolve_message_session_id(request);
+        let (entry, count) = self
+            .append_session_entry(
+                session_id.clone(),
+                "user".to_owned(),
+                format!("[poll] {question}"),
+            )
+            .await;
+        let message_id = entry
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        Ok(json!({
+            "status": "completed",
+            "action": "poll",
+            "sessionId": session_id,
+            "messageId": message_id,
+            "entry": entry,
+            "count": count,
+            "poll": {
+                "id": format!("poll-{}", now_ms()),
+                "question": question,
+                "options": options,
+                "multi": multi,
+                "anonymous": anonymous,
+                "durationSeconds": duration_seconds
+            }
+        }))
+    }
+
+    async fn execute_message_read(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let limit = request
+            .args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(50)
+            .clamp(1, 200) as usize;
+        let include_deleted =
+            first_bool_arg(&request.args, &["includeDeleted", "include_deleted"]).unwrap_or(false);
+        let before_id = first_string_arg(&request.args, &["before", "beforeId", "before_id"]);
+        let after_id = first_string_arg(&request.args, &["after", "afterId", "after_id"]);
+
+        let timelines = self.session_timelines.lock().await;
+        let Some(timeline) = timelines.get(&session_id) else {
+            return Ok(json!({
+                "status": "completed",
+                "action": "read",
+                "sessionId": session_id,
+                "messages": [],
+                "count": 0,
+                "hasMore": false
+            }));
+        };
+
+        let entries = timeline.entries.iter().collect::<Vec<_>>();
+        let mut start = 0usize;
+        let mut end = entries.len();
+        if let Some(after_id) = after_id.as_deref() {
+            if let Some(pos) = entries.iter().position(|entry| entry.id == after_id) {
+                start = pos.saturating_add(1);
+            }
+        }
+        if let Some(before_id) = before_id.as_deref() {
+            if let Some(pos) = entries.iter().position(|entry| entry.id == before_id) {
+                end = end.min(pos);
+            }
+        }
+        if start > end {
+            start = end;
+        }
+        let mut selected = entries[start..end]
+            .iter()
+            .copied()
+            .filter(|entry| include_deleted || entry.deleted_at_ms.is_none())
+            .collect::<Vec<_>>();
+        let has_more = selected.len() > limit;
+        if has_more {
+            selected = selected.split_off(selected.len() - limit);
+        }
+        let messages = selected
+            .into_iter()
+            .map(serialize_session_entry)
+            .collect::<Vec<_>>();
+        Ok(json!({
+            "status": "completed",
+            "action": "read",
+            "sessionId": session_id,
+            "messages": messages,
+            "count": messages.len(),
+            "hasMore": has_more,
+            "limit": limit
+        }))
+    }
+
+    async fn execute_message_edit(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let message = first_string_arg(&request.args, &["message", "content", "text", "prompt"])
+            .ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    "missing required parameter `message`",
+                )
+            })?;
+        let explicit_message_id =
+            first_string_arg(&request.args, &["messageId", "message_id", "id"]);
+
+        let mut timelines = self.session_timelines.lock().await;
+        let timeline = timelines.get_mut(&session_id).ok_or_else(|| {
+            ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                format!("session not found: {session_id}"),
+            )
+        })?;
+        let message_id =
+            resolve_target_message_id(timeline, explicit_message_id).ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    "missing required parameter `messageId`",
+                )
+            })?;
+        let now = now_ms();
+        let entry = timeline
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == message_id)
+            .ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    format!("message not found: {message_id}"),
+                )
+            })?;
+        if entry.deleted_at_ms.is_some() {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "cannot edit a deleted message",
+            ));
+        }
+        entry.message = message;
+        entry.edited_at_ms = Some(now);
+        timeline.updated_at_ms = now;
+        Ok(json!({
+            "status": "completed",
+            "action": "edit",
+            "sessionId": session_id,
+            "messageId": message_id,
+            "entry": serialize_session_entry(entry),
+            "edited": true
+        }))
+    }
+
+    async fn execute_message_delete(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let explicit_message_id =
+            first_string_arg(&request.args, &["messageId", "message_id", "id"]);
+
+        let mut timelines = self.session_timelines.lock().await;
+        let timeline = timelines.get_mut(&session_id).ok_or_else(|| {
+            ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                format!("session not found: {session_id}"),
+            )
+        })?;
+        let message_id =
+            resolve_target_message_id(timeline, explicit_message_id).ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    "missing required parameter `messageId`",
+                )
+            })?;
+        let now = now_ms();
+        let entry = timeline
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == message_id)
+            .ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    format!("message not found: {message_id}"),
+                )
+            })?;
+        let deleted = if entry.deleted_at_ms.is_some() {
+            false
+        } else {
+            entry.deleted_at_ms = Some(now);
+            entry.message = "[deleted]".to_owned();
+            entry.reactions.clear();
+            true
+        };
+        timeline.updated_at_ms = now;
+        Ok(json!({
+            "status": "completed",
+            "action": "delete",
+            "sessionId": session_id,
+            "messageId": message_id,
+            "deleted": deleted,
+            "entry": serialize_session_entry(entry)
+        }))
+    }
+
+    async fn execute_message_react(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let explicit_message_id =
+            first_string_arg(&request.args, &["messageId", "message_id", "id"]);
+        let remove = first_bool_arg(&request.args, &["remove", "delete"]).unwrap_or(false);
+        let emoji = first_string_arg(&request.args, &["emoji", "reaction"]);
+        if !remove && emoji.is_none() {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "missing required parameter `emoji`",
+            ));
+        }
+        let actor = first_string_arg(
+            &request.args,
+            &[
+                "actor",
+                "participant",
+                "user",
+                "targetAuthor",
+                "target_author",
+            ],
+        )
+        .unwrap_or_else(|| "self".to_owned());
+
+        let mut timelines = self.session_timelines.lock().await;
+        let timeline = timelines.get_mut(&session_id).ok_or_else(|| {
+            ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                format!("session not found: {session_id}"),
+            )
+        })?;
+        let message_id =
+            resolve_target_message_id(timeline, explicit_message_id).ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    "missing required parameter `messageId`",
+                )
+            })?;
+        let now = now_ms();
+        let entry = timeline
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == message_id)
+            .ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    format!("message not found: {message_id}"),
+                )
+            })?;
+        if entry.deleted_at_ms.is_some() {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "cannot react to a deleted message",
+            ));
+        }
+
+        let emoji_for_output = emoji.clone();
+        let applied = if remove {
+            let previous_len = entry.reactions.len();
+            if let Some(emoji) = emoji.as_deref() {
+                entry
+                    .reactions
+                    .retain(|reaction| !(reaction.actor == actor && reaction.emoji == emoji));
+            } else {
+                entry.reactions.retain(|reaction| reaction.actor != actor);
+            }
+            previous_len != entry.reactions.len()
+        } else {
+            let emoji = emoji.clone().unwrap_or_default();
+            let duplicate = entry
+                .reactions
+                .iter()
+                .any(|reaction| reaction.actor == actor && reaction.emoji == emoji);
+            if duplicate {
+                false
+            } else {
+                entry.reactions.push(ToolRuntimeSessionReaction {
+                    emoji,
+                    actor: actor.clone(),
+                    created_at_ms: now,
+                });
+                true
+            }
+        };
+        timeline.updated_at_ms = now;
+        let reactions = serialize_session_reactions(&entry.reactions);
+        Ok(json!({
+            "status": "completed",
+            "action": "react",
+            "sessionId": session_id,
+            "messageId": message_id,
+            "emoji": emoji_for_output,
+            "remove": remove,
+            "applied": applied,
+            "reactionCount": reactions.len(),
+            "reactions": reactions
+        }))
+    }
+
+    async fn execute_message_reactions(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let explicit_message_id =
+            first_string_arg(&request.args, &["messageId", "message_id", "id"]);
+        let timelines = self.session_timelines.lock().await;
+        let timeline = timelines.get(&session_id).ok_or_else(|| {
+            ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                format!("session not found: {session_id}"),
+            )
+        })?;
+        let message_id =
+            resolve_target_message_id(timeline, explicit_message_id).ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    "missing required parameter `messageId`",
+                )
+            })?;
+        let entry = timeline
+            .entries
+            .iter()
+            .find(|entry| entry.id == message_id)
+            .ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    format!("message not found: {message_id}"),
+                )
+            })?;
+        let reactions = serialize_session_reactions(&entry.reactions);
+        Ok(json!({
+            "status": "completed",
+            "action": "reactions",
+            "sessionId": session_id,
+            "messageId": message_id,
+            "count": reactions.len(),
+            "reactions": reactions
+        }))
     }
 
     async fn execute_browser(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
@@ -1186,6 +1647,9 @@ impl ToolRuntimeHost {
             role,
             message,
             created_at_ms: now_ms(),
+            edited_at_ms: None,
+            deleted_at_ms: None,
+            reactions: Vec::new(),
         };
         let mut timelines = self.session_timelines.lock().await;
         let timeline = timelines.entry(session_id.clone()).or_default();
@@ -1208,15 +1672,7 @@ impl ToolRuntimeHost {
             .get(&session_id)
             .map(|value| value.entries.len())
             .unwrap_or(0);
-        (
-            json!({
-                "id": entry.id,
-                "role": entry.role,
-                "message": entry.message,
-                "ts": entry.created_at_ms
-            }),
-            count,
-        )
+        (serialize_session_entry(&entry), count)
     }
 
     async fn session_history(&self, session_id: &str) -> (Vec<Value>, usize) {
@@ -1227,14 +1683,7 @@ impl ToolRuntimeHost {
         let entries = timeline
             .entries
             .iter()
-            .map(|entry| {
-                json!({
-                    "id": entry.id,
-                    "role": entry.role,
-                    "message": entry.message,
-                    "ts": entry.created_at_ms
-                })
-            })
+            .map(serialize_session_entry)
             .collect::<Vec<_>>();
         (entries, timeline.entries.len())
     }
@@ -1354,6 +1803,56 @@ fn normalize_message_role(value: Option<&str>) -> String {
     }
 }
 
+fn resolve_message_session_id(request: &ToolRuntimeRequest) -> String {
+    first_string_arg(
+        &request.args,
+        &["sessionId", "session_id", "threadId", "thread_id"],
+    )
+    .unwrap_or_else(|| request.session_id.clone())
+}
+
+fn resolve_target_message_id(
+    timeline: &ToolRuntimeSessionTimeline,
+    explicit_message_id: Option<String>,
+) -> Option<String> {
+    explicit_message_id.or_else(|| {
+        timeline
+            .entries
+            .iter()
+            .rev()
+            .find(|entry| entry.deleted_at_ms.is_none())
+            .map(|entry| entry.id.clone())
+    })
+}
+
+fn serialize_session_reactions(reactions: &[ToolRuntimeSessionReaction]) -> Vec<Value> {
+    reactions
+        .iter()
+        .map(|reaction| {
+            json!({
+                "emoji": reaction.emoji,
+                "actor": reaction.actor,
+                "ts": reaction.created_at_ms
+            })
+        })
+        .collect::<Vec<_>>()
+}
+
+fn serialize_session_entry(entry: &ToolRuntimeSessionEntry) -> Value {
+    let reactions = serialize_session_reactions(&entry.reactions);
+    json!({
+        "id": entry.id,
+        "role": entry.role,
+        "message": entry.message,
+        "ts": entry.created_at_ms,
+        "editedAt": entry.edited_at_ms,
+        "deleted": entry.deleted_at_ms.is_some(),
+        "deletedAt": entry.deleted_at_ms,
+        "reactionCount": reactions.len(),
+        "reactions": reactions
+    })
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1371,6 +1870,42 @@ fn first_string_arg(root: &Value, keys: &[&str]) -> Option<String> {
         }
     }
     None
+}
+
+fn first_bool_arg(root: &Value, keys: &[&str]) -> Option<bool> {
+    for key in keys {
+        if let Some(value) = root.get(*key).and_then(Value::as_bool) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn first_string_list_arg(
+    root: &Value,
+    keys: &[&str],
+    max_items: usize,
+    max_len: usize,
+) -> Vec<String> {
+    for key in keys {
+        let Some(value) = root.get(*key) else {
+            continue;
+        };
+        if let Some(single) = value.as_str() {
+            return normalize_text(Some(single.to_owned()), max_len)
+                .into_iter()
+                .collect::<Vec<_>>();
+        }
+        if let Some(items) = value.as_array() {
+            return items
+                .iter()
+                .filter_map(Value::as_str)
+                .filter_map(|item| normalize_text(Some(item.to_owned()), max_len))
+                .take(max_items)
+                .collect::<Vec<_>>();
+        }
+    }
+    Vec::new()
 }
 
 fn normalize_text(value: Option<String>, max_chars: usize) -> Option<String> {
@@ -2365,6 +2900,223 @@ mod tests {
                 .get("removed")
                 .and_then(serde_json::Value::as_bool),
             Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_runtime_message_tool_supports_poll_read_edit_delete_and_reactions() {
+        let host = build_host(default_policy()).await;
+
+        let send = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-send-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "send",
+                    "message": "hello parity"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message send");
+        let message_id = send
+            .result
+            .get("messageId")
+            .and_then(serde_json::Value::as_str)
+            .expect("message id")
+            .to_owned();
+        assert_eq!(
+            send.result
+                .get("action")
+                .and_then(serde_json::Value::as_str),
+            Some("send")
+        );
+
+        let react = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-react-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "react",
+                    "messageId": message_id,
+                    "emoji": "✅"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message react");
+        assert_eq!(
+            react
+                .result
+                .get("reactionCount")
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            react
+                .result
+                .get("applied")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let reactions = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-reactions-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "reactions"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message reactions");
+        assert_eq!(
+            reactions
+                .result
+                .get("count")
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            reactions
+                .result
+                .pointer("/reactions/0/emoji")
+                .and_then(serde_json::Value::as_str),
+            Some("✅")
+        );
+
+        let edit = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-edit-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "edit",
+                    "message": "hello parity edited"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message edit");
+        assert_eq!(
+            edit.result
+                .pointer("/entry/message")
+                .and_then(serde_json::Value::as_str),
+            Some("hello parity edited")
+        );
+        assert!(edit
+            .result
+            .pointer("/entry/editedAt")
+            .and_then(serde_json::Value::as_u64)
+            .is_some());
+
+        let read = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-read-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "read",
+                    "limit": 10
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message read");
+        assert_eq!(
+            read.result
+                .pointer("/messages/0/message")
+                .and_then(serde_json::Value::as_str),
+            Some("hello parity edited")
+        );
+
+        let delete = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-delete-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "delete"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message delete");
+        assert_eq!(
+            delete
+                .result
+                .get("deleted")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let poll = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-poll-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "poll",
+                    "question": "Lunch?",
+                    "options": ["Pizza", "Sushi"],
+                    "multi": true
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message poll");
+        assert_eq!(
+            poll.result
+                .pointer("/poll/question")
+                .and_then(serde_json::Value::as_str),
+            Some("Lunch?")
+        );
+        assert_eq!(
+            poll.result
+                .pointer("/poll/multi")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let read_after_delete = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-read-2".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "read",
+                    "limit": 10
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message read after delete");
+        assert_eq!(
+            read_after_delete
+                .result
+                .pointer("/messages/0/message")
+                .and_then(serde_json::Value::as_str),
+            Some("[poll] Lunch?")
         );
     }
 
