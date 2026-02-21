@@ -820,6 +820,86 @@
       }
     },
     {
+      "name": "message-broadcast-discord-channel",
+      "request": {
+        "request_id": "cp3-message-broadcast-discord-1",
+        "session_id": "cp3-search-discord",
+        "tool_name": "message",
+        "args": {
+          "action": "broadcast",
+          "channel": "discord",
+          "targets": [
+            "channel:ops",
+            "user:123"
+          ],
+          "message": "maintenance notice"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"action\":\"broadcast\""
+      }
+    },
+    {
+      "name": "message-broadcast-all-channels",
+      "request": {
+        "request_id": "cp3-message-broadcast-all-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "broadcast",
+          "channel": "all",
+          "target": "ops-room",
+          "message": "global notice"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"deliveryCount\":"
+      }
+    },
+    {
+      "name": "message-broadcast-missing-target",
+      "request": {
+        "request_id": "cp3-message-broadcast-missing-target-1",
+        "session_id": "cp3-search-discord",
+        "tool_name": "message",
+        "args": {
+          "action": "broadcast",
+          "channel": "discord",
+          "message": "maintenance notice"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "invalid_args"
+      }
+    },
+    {
+      "name": "message-broadcast-unsupported-channel",
+      "request": {
+        "request_id": "cp3-message-broadcast-unsupported-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "broadcast",
+          "channel": "custom-bridge",
+          "target": "ops-room",
+          "message": "maintenance notice"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "invalid_args"
+      }
+    },
+    {
       "name": "message-emoji-list-slack-channel",
       "request": {
         "request_id": "cp3-message-emoji-list-slack-1",

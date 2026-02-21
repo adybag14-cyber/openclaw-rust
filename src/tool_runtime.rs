@@ -886,6 +886,7 @@ impl ToolRuntimeHost {
 
         match action.as_str() {
             "send" | "append" => self.execute_message_send(request).await,
+            "broadcast" => self.execute_message_broadcast(request).await,
             "poll" => self.execute_message_poll(request).await,
             "read" => self.execute_message_read(request).await,
             "edit" => self.execute_message_edit(request).await,
@@ -1039,6 +1040,94 @@ impl ToolRuntimeHost {
             "threadId": thread_id,
             "entry": entry,
             "count": count
+        }))
+    }
+
+    async fn execute_message_broadcast(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let message = first_string_arg(&request.args, &["message", "content", "text", "prompt"])
+            .ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    "missing required parameter `message`",
+                )
+            })?;
+        let mut targets =
+            first_string_list_arg(&request.args, &["targets", "targetList", "target_list"], 32, 256);
+        if targets.is_empty() {
+            if let Some(target) = first_string_arg(&request.args, &["target", "to"]) {
+                targets.push(target);
+            }
+        }
+        if targets.is_empty() {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "broadcast requires at least one target",
+            ));
+        }
+
+        let requested_channel = first_string_arg(&request.args, &["channel"])
+            .unwrap_or_else(|| "all".to_owned())
+            .to_ascii_lowercase();
+        let channels = if requested_channel == "all" {
+            let mut values = self
+                .message_channel_capabilities
+                .keys()
+                .filter(|value| value.as_str() != "generic")
+                .cloned()
+                .collect::<Vec<_>>();
+            values.sort();
+            values
+        } else {
+            let normalized = normalize_channel_id(Some(requested_channel.as_str()))
+                .unwrap_or_else(|| requested_channel.clone());
+            if !self.message_channel_capabilities.contains_key(&normalized) {
+                return Err(ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    format!("unsupported channel: {normalized}"),
+                ));
+            }
+            vec![normalized]
+        };
+
+        let session_id = resolve_message_session_id(request);
+        let thread_id = first_string_arg(&request.args, &["threadId", "thread_id", "thread"]);
+        let role =
+            normalize_message_role(first_string_arg(&request.args, &["role", "author"]).as_deref());
+        let (entry, count) = self
+            .append_session_entry(session_id.clone(), role, message, thread_id.clone())
+            .await;
+        let message_id = entry
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let mut deliveries = Vec::new();
+        for channel in &channels {
+            for target in &targets {
+                deliveries.push(json!({
+                    "channel": channel,
+                    "target": target,
+                    "status": "sent",
+                    "ok": true
+                }));
+            }
+        }
+
+        Ok(json!({
+            "status": "completed",
+            "action": "broadcast",
+            "sessionId": session_id,
+            "messageId": message_id,
+            "threadId": thread_id,
+            "entry": entry,
+            "count": count,
+            "targets": targets,
+            "channels": channels,
+            "deliveries": deliveries,
+            "deliveryCount": deliveries.len()
         }))
     }
 
@@ -1466,6 +1555,7 @@ impl ToolRuntimeHost {
         let session_id = resolve_message_session_id(request);
         let mut permissions = json!({
             "send": true,
+            "broadcast": true,
             "poll": true,
             "react": true,
             "reactions": true,
@@ -1538,6 +1628,8 @@ impl ToolRuntimeHost {
                 capability,
                 "permissions",
             ));
+            permissions["broadcast"] =
+                Value::Bool(Self::message_channel_supports_action(capability, "broadcast"));
             permissions["search"] =
                 Value::Bool(Self::message_channel_supports_action(capability, "search"));
             permissions["threadCreate"] = Value::Bool(Self::message_channel_supports_action(
@@ -5569,6 +5661,112 @@ mod tests {
         assert!(search_unsupported
             .message
             .contains("unsupported search channel: slack"));
+
+        let broadcast_discord = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-broadcast-discord-1".to_owned(),
+                session_id: "agent:main:discord:group:ops".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "broadcast",
+                    "channel": "discord",
+                    "targets": ["channel:ops", "user:123"],
+                    "message": "maintenance notice"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("broadcast on discord");
+        assert_eq!(
+            broadcast_discord
+                .result
+                .get("deliveryCount")
+                .and_then(serde_json::Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            broadcast_discord
+                .result
+                .pointer("/channels/0")
+                .and_then(serde_json::Value::as_str),
+            Some("discord")
+        );
+
+        let broadcast_all_channels = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-broadcast-all-1".to_owned(),
+                session_id: "message-parity-channel-cap".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "broadcast",
+                    "channel": "all",
+                    "target": "ops-room",
+                    "message": "global notice"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("broadcast on all channels");
+        let channel_count = broadcast_all_channels
+            .result
+            .get("channels")
+            .and_then(serde_json::Value::as_array)
+            .map_or(0usize, |items| items.len());
+        assert!(channel_count > 1);
+        assert_eq!(
+            broadcast_all_channels
+                .result
+                .get("deliveryCount")
+                .and_then(serde_json::Value::as_u64),
+            Some(channel_count as u64)
+        );
+
+        let broadcast_missing_target = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-broadcast-missing-target-1".to_owned(),
+                session_id: "agent:main:discord:group:ops".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "broadcast",
+                    "channel": "discord",
+                    "message": "maintenance notice"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect_err("broadcast requires target");
+        assert_eq!(broadcast_missing_target.code.as_str(), "invalid_args");
+        assert!(broadcast_missing_target
+            .message
+            .contains("broadcast requires at least one target"));
+
+        let broadcast_unknown_channel = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-broadcast-unknown-channel-1".to_owned(),
+                session_id: "agent:main:discord:group:ops".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "broadcast",
+                    "channel": "custom-bridge",
+                    "target": "ops-room",
+                    "message": "maintenance notice"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect_err("broadcast unknown channel rejected");
+        assert_eq!(broadcast_unknown_channel.code.as_str(), "invalid_args");
+        assert!(broadcast_unknown_channel
+            .message
+            .contains("unsupported channel: custom-bridge"));
 
         let emoji_list_slack = host
             .execute(ToolRuntimeRequest {
