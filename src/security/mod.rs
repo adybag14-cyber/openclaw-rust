@@ -474,6 +474,17 @@ mod tests {
         }
     }
 
+    fn compose_parity_like_config() -> Config {
+        let mut cfg = test_config(false);
+        let defaults = Config::default();
+        cfg.security.allowed_command_prefixes = defaults.security.allowed_command_prefixes;
+        cfg.security.blocked_command_patterns = defaults.security.blocked_command_patterns;
+        cfg.security.prompt_injection_patterns = defaults.security.prompt_injection_patterns;
+        cfg.security.tool_risk_bonus = defaults.security.tool_risk_bonus;
+        cfg.security.channel_risk_bonus = defaults.security.channel_risk_bonus;
+        cfg
+    }
+
     #[tokio::test]
     async fn blocks_high_risk_action() {
         let cfg = test_config(false);
@@ -647,6 +658,51 @@ mod tests {
         let decision = engine.evaluate(req).await;
         assert_eq!(decision.action, DecisionAction::Block);
         assert!(decision.tags.iter().any(|tag| tag == "tool_policy_deny"));
+    }
+
+    #[tokio::test]
+    async fn compose_parity_discord_exec_sudo_is_blocked() {
+        let cfg = compose_parity_like_config();
+        let engine: Arc<dyn ActionEvaluator> = DefenderEngine::new(cfg).await.expect("engine");
+        let req = ActionRequest {
+            id: "compose-sudo-1".to_owned(),
+            source: "parity".to_owned(),
+            session_id: Some("agent:main:discord:group:g-compose".to_owned()),
+            prompt: Some("restart ssh service now".to_owned()),
+            command: Some("sudo systemctl restart sshd".to_owned()),
+            tool_name: Some("exec".to_owned()),
+            channel: Some("discord".to_owned()),
+            url: None,
+            file_path: None,
+            raw: serde_json::json!({}),
+        };
+
+        let decision = engine.evaluate(req).await;
+        assert_eq!(decision.action, DecisionAction::Block);
+        assert!(decision.risk_score >= 65);
+    }
+
+    #[tokio::test]
+    async fn compose_parity_signal_exec_chmod_is_review() {
+        let cfg = compose_parity_like_config();
+        let engine: Arc<dyn ActionEvaluator> = DefenderEngine::new(cfg).await.expect("engine");
+        let req = ActionRequest {
+            id: "compose-chmod-1".to_owned(),
+            source: "parity".to_owned(),
+            session_id: Some("agent:main:signal:group:g-compose".to_owned()),
+            prompt: Some("make test file world writable".to_owned()),
+            command: Some("chmod 777 /tmp/test".to_owned()),
+            tool_name: Some("exec".to_owned()),
+            channel: Some("signal".to_owned()),
+            url: None,
+            file_path: None,
+            raw: serde_json::json!({}),
+        };
+
+        let decision = engine.evaluate(req).await;
+        assert_eq!(decision.action, DecisionAction::Review);
+        assert!(decision.risk_score >= 35);
+        assert!(decision.risk_score < 65);
     }
 
     #[tokio::test]
