@@ -125,6 +125,7 @@ struct ToolRuntimeSessionEntry {
     id: String,
     role: String,
     message: String,
+    thread_id: Option<String>,
     created_at_ms: u64,
     edited_at_ms: Option<u64>,
     deleted_at_ms: Option<u64>,
@@ -145,6 +146,21 @@ struct ToolRuntimeSessionTimeline {
     updated_at_ms: u64,
 }
 
+#[derive(Debug, Clone)]
+struct ToolRuntimeMessageThread {
+    id: String,
+    name: String,
+    created_at_ms: u64,
+    source_message_id: Option<String>,
+    archived: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ToolRuntimeThreadRegistry {
+    threads: VecDeque<ToolRuntimeMessageThread>,
+    updated_at_ms: u64,
+}
+
 pub struct ToolRuntimeHost {
     workspace_root: PathBuf,
     sandbox_root: PathBuf,
@@ -156,8 +172,10 @@ pub struct ToolRuntimeHost {
     transcript: Mutex<VecDeque<ToolTranscriptEntry>>,
     process_counter: Mutex<u64>,
     session_entry_counter: Mutex<u64>,
+    thread_counter: Mutex<u64>,
     process_sessions: Mutex<HashMap<String, ToolRuntimeProcessSession>>,
     session_timelines: Mutex<HashMap<String, ToolRuntimeSessionTimeline>>,
+    session_threads: Mutex<HashMap<String, ToolRuntimeThreadRegistry>>,
 }
 
 impl ToolRuntimeHost {
@@ -202,8 +220,10 @@ impl ToolRuntimeHost {
             transcript: Mutex::new(VecDeque::new()),
             process_counter: Mutex::new(0),
             session_entry_counter: Mutex::new(0),
+            thread_counter: Mutex::new(0),
             process_sessions: Mutex::new(HashMap::new()),
             session_timelines: Mutex::new(HashMap::new()),
+            session_threads: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -708,7 +728,7 @@ impl ToolRuntimeHost {
                     first_string_arg(&request.args, &["role", "author", "sender"]).as_deref(),
                 );
                 let (entry, count) = self
-                    .append_session_entry(session_id.clone(), role, message)
+                    .append_session_entry(session_id.clone(), role, message, None)
                     .await;
                 let message_id = entry
                     .get("id")
@@ -790,6 +810,10 @@ impl ToolRuntimeHost {
             "pin" => self.execute_message_pin(request).await,
             "unpin" => self.execute_message_unpin(request).await,
             "pins" | "list-pins" | "list_pins" => self.execute_message_list_pins(request).await,
+            "permissions" => self.execute_message_permissions(request).await,
+            "thread-create" | "thread_create" => self.execute_message_thread_create(request).await,
+            "thread-list" | "thread_list" => self.execute_message_thread_list(request).await,
+            "thread-reply" | "thread_reply" => self.execute_message_thread_reply(request).await,
             "history" | "list" | "reset" | "clear" => {
                 let mut translated = request.clone();
                 let mut map = translated.args.as_object().cloned().unwrap_or_default();
@@ -813,10 +837,11 @@ impl ToolRuntimeHost {
                 )
             })?;
         let session_id = resolve_message_session_id(request);
+        let thread_id = first_string_arg(&request.args, &["threadId", "thread_id", "thread"]);
         let role =
             normalize_message_role(first_string_arg(&request.args, &["role", "author"]).as_deref());
         let (entry, count) = self
-            .append_session_entry(session_id.clone(), role, message)
+            .append_session_entry(session_id.clone(), role, message, thread_id.clone())
             .await;
         let message_id = entry
             .get("id")
@@ -828,6 +853,7 @@ impl ToolRuntimeHost {
             "action": "send",
             "sessionId": session_id,
             "messageId": message_id,
+            "threadId": thread_id,
             "entry": entry,
             "count": count
         }))
@@ -877,11 +903,13 @@ impl ToolRuntimeHost {
             .and_then(Value::as_u64)
             .map(|value| value.clamp(5, 86_400));
         let session_id = resolve_message_session_id(request);
+        let thread_id = first_string_arg(&request.args, &["threadId", "thread_id", "thread"]);
         let (entry, count) = self
             .append_session_entry(
                 session_id.clone(),
                 "user".to_owned(),
                 format!("[poll] {question}"),
+                thread_id.clone(),
             )
             .await;
         let message_id = entry
@@ -894,6 +922,7 @@ impl ToolRuntimeHost {
             "action": "poll",
             "sessionId": session_id,
             "messageId": message_id,
+            "threadId": thread_id,
             "entry": entry,
             "count": count,
             "poll": {
@@ -919,6 +948,8 @@ impl ToolRuntimeHost {
             first_bool_arg(&request.args, &["includeDeleted", "include_deleted"]).unwrap_or(false);
         let before_id = first_string_arg(&request.args, &["before", "beforeId", "before_id"]);
         let after_id = first_string_arg(&request.args, &["after", "afterId", "after_id"]);
+        let thread_id_filter =
+            first_string_arg(&request.args, &["threadId", "thread_id", "thread"]);
 
         let timelines = self.session_timelines.lock().await;
         let Some(timeline) = timelines.get(&session_id) else {
@@ -951,7 +982,13 @@ impl ToolRuntimeHost {
         let mut selected = entries[start..end]
             .iter()
             .copied()
-            .filter(|entry| include_deleted || entry.deleted_at_ms.is_none())
+            .filter(|entry| {
+                (include_deleted || entry.deleted_at_ms.is_none())
+                    && match thread_id_filter.as_deref() {
+                        Some(filter) => entry.thread_id.as_deref() == Some(filter),
+                        None => true,
+                    }
+            })
             .collect::<Vec<_>>();
         let has_more = selected.len() > limit;
         if has_more {
@@ -968,7 +1005,8 @@ impl ToolRuntimeHost {
             "messages": messages,
             "count": messages.len(),
             "hasMore": has_more,
-            "limit": limit
+            "limit": limit,
+            "threadId": thread_id_filter
         }))
     }
 
@@ -1228,6 +1266,199 @@ impl ToolRuntimeHost {
             "pins": pins,
             "count": pins.len(),
             "limit": limit
+        }))
+    }
+
+    async fn execute_message_permissions(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        Ok(json!({
+            "status": "completed",
+            "action": "permissions",
+            "sessionId": session_id,
+            "permissions": {
+                "send": true,
+                "poll": true,
+                "react": true,
+                "reactions": true,
+                "read": true,
+                "edit": true,
+                "delete": true,
+                "pin": true,
+                "unpin": true,
+                "pins": true,
+                "threadCreate": true,
+                "threadList": true,
+                "threadReply": true
+            }
+        }))
+    }
+
+    async fn execute_message_thread_create(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let name = first_string_arg(
+            &request.args,
+            &["threadName", "thread_name", "name", "title"],
+        )
+        .ok_or_else(|| {
+            ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "missing required parameter `threadName`",
+            )
+        })?;
+        let source_message_id = first_string_arg(&request.args, &["messageId", "message_id"]);
+        let thread = ToolRuntimeMessageThread {
+            id: self.next_thread_id().await,
+            name,
+            created_at_ms: now_ms(),
+            source_message_id,
+            archived: false,
+        };
+        let mut threads = self.session_threads.lock().await;
+        let registry = threads.entry(session_id.clone()).or_default();
+        registry.updated_at_ms = thread.created_at_ms;
+        registry.threads.push_back(thread.clone());
+        while registry.threads.len() > self.session_history_limit {
+            registry.threads.pop_front();
+        }
+        if threads.len() > self.session_bucket_limit {
+            let evict = threads
+                .iter()
+                .filter(|(key, _)| key.as_str() != session_id.as_str())
+                .min_by_key(|(_, value)| value.updated_at_ms)
+                .map(|(key, _)| key.clone());
+            if let Some(evict) = evict {
+                let _ = threads.remove(&evict);
+            }
+        }
+        Ok(json!({
+            "status": "completed",
+            "action": "thread-create",
+            "sessionId": session_id,
+            "thread": serialize_message_thread(&thread)
+        }))
+    }
+
+    async fn execute_message_thread_list(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let include_archived =
+            first_bool_arg(&request.args, &["includeArchived", "include_archived"])
+                .unwrap_or(false);
+        let limit = request
+            .args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(100)
+            .clamp(1, 250) as usize;
+        let threads = self.session_threads.lock().await;
+        let Some(registry) = threads.get(&session_id) else {
+            return Ok(json!({
+                "status": "completed",
+                "action": "thread-list",
+                "sessionId": session_id,
+                "threads": [],
+                "count": 0
+            }));
+        };
+        let mut rows = registry
+            .threads
+            .iter()
+            .filter(|thread| include_archived || !thread.archived)
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|left, right| right.created_at_ms.cmp(&left.created_at_ms));
+        if rows.len() > limit {
+            rows.truncate(limit);
+        }
+        let payload = rows
+            .iter()
+            .map(serialize_message_thread)
+            .collect::<Vec<_>>();
+        Ok(json!({
+            "status": "completed",
+            "action": "thread-list",
+            "sessionId": session_id,
+            "threads": payload,
+            "count": payload.len(),
+            "limit": limit
+        }))
+    }
+
+    async fn execute_message_thread_reply(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let explicit_thread_id =
+            first_string_arg(&request.args, &["threadId", "thread_id", "thread"]);
+        let thread_id = {
+            let threads = self.session_threads.lock().await;
+            let Some(registry) = threads.get(&session_id) else {
+                return Err(ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    format!("session thread registry not found: {session_id}"),
+                ));
+            };
+            let resolved = explicit_thread_id.or_else(|| {
+                registry
+                    .threads
+                    .iter()
+                    .rev()
+                    .find(|thread| !thread.archived)
+                    .map(|thread| thread.id.clone())
+            });
+            let Some(thread_id) = resolved else {
+                return Err(ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    "missing required parameter `threadId`",
+                ));
+            };
+            if !registry
+                .threads
+                .iter()
+                .any(|thread| thread.id == thread_id && !thread.archived)
+            {
+                return Err(ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    format!("thread not found: {thread_id}"),
+                ));
+            }
+            thread_id
+        };
+
+        let message = first_string_arg(&request.args, &["message", "content", "text", "prompt"])
+            .ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    "missing required parameter `message`",
+                )
+            })?;
+        let role =
+            normalize_message_role(first_string_arg(&request.args, &["role", "author"]).as_deref());
+        let (entry, count) = self
+            .append_session_entry(session_id.clone(), role, message, Some(thread_id.clone()))
+            .await;
+        let message_id = entry
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        Ok(json!({
+            "status": "completed",
+            "action": "thread-reply",
+            "sessionId": session_id,
+            "threadId": thread_id,
+            "messageId": message_id,
+            "entry": entry,
+            "count": count
         }))
     }
 
@@ -1791,16 +2022,24 @@ impl ToolRuntimeHost {
         format!("msg-{:08}", *counter)
     }
 
+    async fn next_thread_id(&self) -> String {
+        let mut counter = self.thread_counter.lock().await;
+        *counter += 1;
+        format!("thread-{:06}", *counter)
+    }
+
     async fn append_session_entry(
         &self,
         session_id: String,
         role: String,
         message: String,
+        thread_id: Option<String>,
     ) -> (Value, usize) {
         let entry = ToolRuntimeSessionEntry {
             id: self.next_session_entry_id().await,
             role,
             message,
+            thread_id,
             created_at_ms: now_ms(),
             edited_at_ms: None,
             deleted_at_ms: None,
@@ -1874,7 +2113,11 @@ impl ToolRuntimeHost {
 
     async fn remove_session_timeline(&self, session_id: &str) -> bool {
         let mut timelines = self.session_timelines.lock().await;
-        timelines.remove(session_id).is_some()
+        let removed_timeline = timelines.remove(session_id).is_some();
+        drop(timelines);
+        let mut threads = self.session_threads.lock().await;
+        let removed_threads = threads.remove(session_id).is_some();
+        removed_timeline || removed_threads
     }
 
     async fn refresh_process_session(&self, session: &mut ToolRuntimeProcessSession) {
@@ -1960,11 +2203,8 @@ fn normalize_message_role(value: Option<&str>) -> String {
 }
 
 fn resolve_message_session_id(request: &ToolRuntimeRequest) -> String {
-    first_string_arg(
-        &request.args,
-        &["sessionId", "session_id", "threadId", "thread_id"],
-    )
-    .unwrap_or_else(|| request.session_id.clone())
+    first_string_arg(&request.args, &["sessionId", "session_id"])
+        .unwrap_or_else(|| request.session_id.clone())
 }
 
 fn resolve_target_message_id(
@@ -1994,12 +2234,23 @@ fn serialize_session_reactions(reactions: &[ToolRuntimeSessionReaction]) -> Vec<
         .collect::<Vec<_>>()
 }
 
+fn serialize_message_thread(thread: &ToolRuntimeMessageThread) -> Value {
+    json!({
+        "id": thread.id,
+        "name": thread.name,
+        "ts": thread.created_at_ms,
+        "sourceMessageId": thread.source_message_id,
+        "archived": thread.archived
+    })
+}
+
 fn serialize_session_entry(entry: &ToolRuntimeSessionEntry) -> Value {
     let reactions = serialize_session_reactions(&entry.reactions);
     json!({
         "id": entry.id,
         "role": entry.role,
         "message": entry.message,
+        "threadId": entry.thread_id,
         "ts": entry.created_at_ms,
         "editedAt": entry.edited_at_ms,
         "deleted": entry.deleted_at_ms.is_some(),
@@ -3180,6 +3431,121 @@ mod tests {
             .and_then(serde_json::Value::as_u64)
             .is_some());
 
+        let permissions = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-permissions-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "permissions"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message permissions");
+        assert_eq!(
+            permissions
+                .result
+                .pointer("/permissions/threadCreate")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let thread_create = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-thread-create-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "thread-create",
+                    "threadName": "ops-thread",
+                    "messageId": message_id
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message thread-create");
+        let thread_id = thread_create
+            .result
+            .pointer("/thread/id")
+            .and_then(serde_json::Value::as_str)
+            .expect("thread id")
+            .to_owned();
+
+        let thread_reply = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-thread-reply-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "thread-reply",
+                    "threadId": thread_id.clone(),
+                    "message": "threaded parity message"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message thread-reply");
+        assert_eq!(
+            thread_reply
+                .result
+                .pointer("/entry/threadId")
+                .and_then(serde_json::Value::as_str),
+            Some(thread_id.as_str())
+        );
+
+        let thread_list = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-thread-list-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "thread-list"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message thread-list");
+        assert_eq!(
+            thread_list
+                .result
+                .pointer("/threads/0/id")
+                .and_then(serde_json::Value::as_str),
+            Some(thread_id.as_str())
+        );
+
+        let thread_read = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-thread-read-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "read",
+                    "threadId": thread_id.clone(),
+                    "limit": 10
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message thread read");
+        assert_eq!(
+            thread_read
+                .result
+                .pointer("/messages/0/message")
+                .and_then(serde_json::Value::as_str),
+            Some("threaded parity message")
+        );
+
         let read = host
             .execute(ToolRuntimeRequest {
                 request_id: "message-parity-read-1".to_owned(),
@@ -3208,7 +3574,8 @@ mod tests {
                 session_id: "message-parity".to_owned(),
                 tool_name: "message".to_owned(),
                 args: serde_json::json!({
-                    "action": "pin"
+                    "action": "pin",
+                    "messageId": message_id.clone()
                 }),
                 sandboxed: false,
                 model_provider: None,
@@ -3254,7 +3621,8 @@ mod tests {
                 session_id: "message-parity".to_owned(),
                 tool_name: "message".to_owned(),
                 args: serde_json::json!({
-                    "action": "unpin"
+                    "action": "unpin",
+                    "messageId": message_id.clone()
                 }),
                 sandboxed: false,
                 model_provider: None,
@@ -3359,13 +3727,10 @@ mod tests {
             })
             .await
             .expect("message read after delete");
-        assert_eq!(
-            read_after_delete
-                .result
-                .pointer("/messages/0/message")
-                .and_then(serde_json::Value::as_str),
-            Some("[poll] Lunch?")
-        );
+        assert!(read_after_delete
+            .result
+            .to_string()
+            .contains("[poll] Lunch?"));
     }
 
     #[tokio::test]

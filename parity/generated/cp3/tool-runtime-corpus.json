@@ -293,6 +293,76 @@
       }
     },
     {
+      "name": "message-permissions",
+      "request": {
+        "request_id": "cp3-message-permissions-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "permissions"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "threadCreate"
+      }
+    },
+    {
+      "name": "message-thread-create",
+      "request": {
+        "request_id": "cp3-message-thread-create-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "thread-create",
+          "threadName": "ops-thread"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "ops-thread"
+      }
+    },
+    {
+      "name": "message-thread-reply",
+      "request": {
+        "request_id": "cp3-message-thread-reply-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "thread-reply",
+          "message": "threaded from corpus"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "threaded from corpus"
+      }
+    },
+    {
+      "name": "message-thread-list",
+      "request": {
+        "request_id": "cp3-message-thread-list-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "thread-list"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "ops-thread"
+      }
+    },
+    {
       "name": "message-pin",
       "request": {
         "request_id": "cp3-message-pin-1",
