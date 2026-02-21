@@ -763,6 +763,26 @@
         "status": "completed",
         "contains": "location.get"
       }
+    },
+    {
+      "name": "nodes-device-status-invoke",
+      "request": {
+        "request_id": "cp3-nodes-device-status-1",
+        "session_id": "cp3-node",
+        "tool_name": "nodes",
+        "args": {
+          "action": "invoke",
+          "nodeId": "cp3-node-a",
+          "command": "device.status",
+          "params": {}
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"batteryPercent\":100"
+      }
     }
   ]
 }

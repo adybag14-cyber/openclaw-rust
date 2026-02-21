@@ -4192,6 +4192,26 @@ impl RpcDispatcher {
             }
         }
         let result = match command_key.as_str() {
+            "camera.list" => local_node_command_ok(json!({
+                "ok": true,
+                "nodeId": node_id,
+                "cameras": [
+                    {
+                        "id": "camera-front",
+                        "name": "Front Camera",
+                        "facing": "front",
+                        "formats": ["jpeg", "png"]
+                    },
+                    {
+                        "id": "camera-rear",
+                        "name": "Rear Camera",
+                        "facing": "rear",
+                        "formats": ["jpeg", "png", "heic"]
+                    }
+                ],
+                "count": 2,
+                "source": "local-host-runtime"
+            })),
             "camera.snap" => {
                 let quality = params
                     .as_ref()
@@ -4274,6 +4294,113 @@ impl RpcDispatcher {
                 "lon": 0.0,
                 "accuracyMeters": 50000.0,
                 "ts": now_ms()
+            })),
+            "device.info" => local_node_command_ok(json!({
+                "ok": true,
+                "nodeId": node_id,
+                "name": "Local Node",
+                "platform": std::env::consts::OS,
+                "os": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+                "source": "local-host-runtime"
+            })),
+            "device.status" => local_node_command_ok(json!({
+                "ok": true,
+                "nodeId": node_id,
+                "online": true,
+                "batteryPercent": 100,
+                "charging": true,
+                "network": "wifi",
+                "ts": now_ms(),
+                "source": "local-host-runtime"
+            })),
+            "contacts.search" => {
+                let query = params
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|obj| obj.get("query"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("contact");
+                local_node_command_ok(json!({
+                    "ok": true,
+                    "nodeId": node_id,
+                    "query": query,
+                    "results": [{
+                        "id": "contact-1",
+                        "name": format!("{query} result"),
+                        "phone": "+15550001111"
+                    }],
+                    "count": 1,
+                    "source": "local-host-runtime"
+                }))
+            }
+            "calendar.events" => local_node_command_ok(json!({
+                "ok": true,
+                "nodeId": node_id,
+                "events": [{
+                    "id": "evt-1",
+                    "title": "Parity Checkpoint",
+                    "startTime": "2026-02-21T20:00:00Z",
+                    "endTime": "2026-02-21T20:30:00Z"
+                }],
+                "count": 1,
+                "source": "local-host-runtime"
+            })),
+            "reminders.list" => local_node_command_ok(json!({
+                "ok": true,
+                "nodeId": node_id,
+                "reminders": [{
+                    "id": "rem-1",
+                    "title": "Review parity artifacts",
+                    "completed": false
+                }],
+                "count": 1,
+                "source": "local-host-runtime"
+            })),
+            "photos.latest" => {
+                let limit = params
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|obj| obj.get("limit"))
+                    .and_then(config_value_as_u64)
+                    .unwrap_or(1)
+                    .clamp(1, 10) as usize;
+                let photos = (0..limit)
+                    .map(|idx| {
+                        json!({
+                            "id": format!("photo-{idx}"),
+                            "mimeType": "image/jpeg",
+                            "path": format!("memory://nodes/{node_id}/photos/{idx}.jpg")
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                local_node_command_ok(json!({
+                    "ok": true,
+                    "nodeId": node_id,
+                    "photos": photos,
+                    "count": limit,
+                    "source": "local-host-runtime"
+                }))
+            }
+            "motion.activity" => local_node_command_ok(json!({
+                "ok": true,
+                "nodeId": node_id,
+                "activity": "stationary",
+                "confidence": 0.95,
+                "ts": now_ms(),
+                "source": "local-host-runtime"
+            })),
+            "motion.pedometer" => local_node_command_ok(json!({
+                "ok": true,
+                "nodeId": node_id,
+                "steps": 0,
+                "distanceMeters": 0.0,
+                "floorsAscended": 0,
+                "floorsDescended": 0,
+                "ts": now_ms(),
+                "source": "local-host-runtime"
             })),
             "browser.proxy" => {
                 let method = params
@@ -31349,10 +31476,19 @@ mod tests {
             params: serde_json::json!({
                 "nodeId": "node-sensors-1",
                 "commands": [
+                    "camera.list",
                     "camera.snap",
                     "camera.clip",
                     "screen.record",
                     "location.get",
+                    "device.info",
+                    "device.status",
+                    "contacts.search",
+                    "calendar.events",
+                    "reminders.list",
+                    "photos.latest",
+                    "motion.activity",
+                    "motion.pedometer",
                     "system.run",
                     "system.which",
                     "system.notify"
@@ -31378,6 +31514,7 @@ mod tests {
         assert!(matches!(out, RpcDispatchOutcome::Handled(_)));
 
         for (idx, (command, params)) in [
+            ("camera.list", serde_json::json!({})),
             ("camera.snap", serde_json::json!({ "quality": "high" })),
             (
                 "camera.clip",
@@ -31385,6 +31522,14 @@ mod tests {
             ),
             ("screen.record", serde_json::json!({ "seconds": 1 })),
             ("location.get", serde_json::json!({})),
+            ("device.info", serde_json::json!({})),
+            ("device.status", serde_json::json!({})),
+            ("contacts.search", serde_json::json!({ "query": "ops" })),
+            ("calendar.events", serde_json::json!({})),
+            ("reminders.list", serde_json::json!({})),
+            ("photos.latest", serde_json::json!({ "limit": 2 })),
+            ("motion.activity", serde_json::json!({})),
+            ("motion.pedometer", serde_json::json!({})),
             (
                 "system.run",
                 serde_json::json!({
@@ -31462,9 +31607,18 @@ mod tests {
                 "displayName": "Local Host Runtime Node",
                 "caps": ["host.local"],
                 "commands": [
+                    "camera.list",
                     "camera.snap",
                     "camera.clip",
                     "location.get",
+                    "device.info",
+                    "device.status",
+                    "contacts.search",
+                    "calendar.events",
+                    "reminders.list",
+                    "photos.latest",
+                    "motion.activity",
+                    "motion.pedometer",
                     "system.run",
                     "system.which",
                     "system.notify"
@@ -31583,6 +31737,92 @@ mod tests {
                         .pointer("/payload/result/durationMs")
                         .and_then(Value::as_u64),
                     Some(1500)
+                );
+            }
+            _ => panic!("expected node.invoke handled"),
+        }
+
+        let invoke_camera_list = RpcRequestFrame {
+            id: "req-local-node-runtime-camera-list".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-runtime-1",
+                "command": "camera.list",
+                "params": {},
+                "idempotencyKey": "local-node-camera-list"
+            }),
+        };
+        match dispatcher.handle_request(&invoke_camera_list).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/count")
+                        .and_then(Value::as_u64),
+                    Some(2)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/cameras/0/id")
+                        .and_then(Value::as_str),
+                    Some("camera-front")
+                );
+            }
+            _ => panic!("expected node.invoke handled"),
+        }
+
+        let invoke_device_status = RpcRequestFrame {
+            id: "req-local-node-runtime-device-status".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-runtime-1",
+                "command": "device.status",
+                "params": {},
+                "idempotencyKey": "local-node-device-status"
+            }),
+        };
+        match dispatcher.handle_request(&invoke_device_status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/online")
+                        .and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/batteryPercent")
+                        .and_then(Value::as_u64),
+                    Some(100)
+                );
+            }
+            _ => panic!("expected node.invoke handled"),
+        }
+
+        let invoke_photos_latest = RpcRequestFrame {
+            id: "req-local-node-runtime-photos-latest".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-runtime-1",
+                "command": "photos.latest",
+                "params": {
+                    "limit": 2
+                },
+                "idempotencyKey": "local-node-photos-latest"
+            }),
+        };
+        match dispatcher.handle_request(&invoke_photos_latest).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/count")
+                        .and_then(Value::as_u64),
+                    Some(2)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/photos/1/id")
+                        .and_then(Value::as_str),
+                    Some("photo-1")
                 );
             }
             _ => panic!("expected node.invoke handled"),

@@ -177,6 +177,27 @@ struct ToolRuntimeMessageEvent {
     created_at_ms: u64,
 }
 
+const TOOL_RUNTIME_NODE_COMMANDS: &[&str] = &[
+    "camera.list",
+    "camera.snap",
+    "camera.clip",
+    "screen.record",
+    "location.get",
+    "device.info",
+    "device.status",
+    "contacts.search",
+    "calendar.events",
+    "reminders.list",
+    "photos.latest",
+    "motion.activity",
+    "motion.pedometer",
+    "system.run",
+    "system.which",
+    "system.notify",
+    "browser.proxy",
+    "canvas.present",
+];
+
 pub struct ToolRuntimeHost {
     workspace_root: PathBuf,
     sandbox_root: PathBuf,
@@ -2177,17 +2198,7 @@ impl ToolRuntimeHost {
                 "status": "completed",
                 "connected": true,
                 "nodeCount": 1,
-                "commands": [
-                    "camera.snap",
-                    "camera.clip",
-                    "screen.record",
-                    "location.get",
-                    "system.run",
-                    "system.which",
-                    "system.notify",
-                    "browser.proxy",
-                    "canvas.present"
-                ]
+                "commands": TOOL_RUNTIME_NODE_COMMANDS
             })),
             "list" => {
                 let include_caps = request
@@ -2196,17 +2207,7 @@ impl ToolRuntimeHost {
                     .and_then(Value::as_bool)
                     .unwrap_or(true);
                 let caps = if include_caps {
-                    json!([
-                        "camera.snap",
-                        "camera.clip",
-                        "screen.record",
-                        "location.get",
-                        "system.run",
-                        "system.which",
-                        "system.notify",
-                        "browser.proxy",
-                        "canvas.present"
-                    ])
+                    json!(TOOL_RUNTIME_NODE_COMMANDS)
                 } else {
                     Value::Null
                 };
@@ -2229,6 +2230,23 @@ impl ToolRuntimeHost {
                 let invoke_id = format!("tool-node-invoke-{}-{}", now_ms(), request.request_id);
                 let params = node_params_from_args(&request.args);
                 let result = match normalized_command.as_str() {
+                    "camera.list" => json!({
+                        "cameras": [
+                            {
+                                "id": "camera-front",
+                                "name": "Front Camera",
+                                "facing": "front",
+                                "formats": ["jpeg", "png"]
+                            },
+                            {
+                                "id": "camera-rear",
+                                "name": "Rear Camera",
+                                "facing": "rear",
+                                "formats": ["jpeg", "png", "heic"]
+                            }
+                        ],
+                        "count": 2
+                    }),
                     "camera.snap" => json!({
                         "mimeType": "image/png",
                         "bytes": 0,
@@ -2283,6 +2301,87 @@ impl ToolRuntimeHost {
                         "latitude": 0.0,
                         "longitude": 0.0,
                         "accuracyMeters": 100.0
+                    }),
+                    "device.info" => json!({
+                        "id": node_id,
+                        "name": "Local Node",
+                        "platform": std::env::consts::OS,
+                        "os": std::env::consts::OS,
+                        "arch": std::env::consts::ARCH,
+                        "source": "tool-runtime"
+                    }),
+                    "device.status" => json!({
+                        "online": true,
+                        "batteryPercent": 100,
+                        "charging": true,
+                        "network": "wifi",
+                        "ts": now_ms()
+                    }),
+                    "contacts.search" => {
+                        let query = params
+                            .get("query")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or("contact");
+                        json!({
+                            "query": query,
+                            "results": [{
+                                "id": "contact-1",
+                                "name": format!("{query} result"),
+                                "phone": "+15550001111"
+                            }],
+                            "count": 1
+                        })
+                    }
+                    "calendar.events" => json!({
+                        "events": [{
+                            "id": "evt-1",
+                            "title": "Parity Checkpoint",
+                            "startTime": "2026-02-21T20:00:00Z",
+                            "endTime": "2026-02-21T20:30:00Z"
+                        }],
+                        "count": 1
+                    }),
+                    "reminders.list" => json!({
+                        "reminders": [{
+                            "id": "rem-1",
+                            "title": "Review parity artifacts",
+                            "completed": false
+                        }],
+                        "count": 1
+                    }),
+                    "photos.latest" => {
+                        let limit = params
+                            .get("limit")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(1)
+                            .clamp(1, 10) as usize;
+                        let photos = (0..limit)
+                            .map(|idx| {
+                                json!({
+                                    "id": format!("photo-{idx}"),
+                                    "mimeType": "image/jpeg",
+                                    "path": format!("memory://nodes/{node_id}/photos/{idx}.jpg")
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        json!({
+                            "photos": photos,
+                            "count": limit
+                        })
+                    }
+                    "motion.activity" => json!({
+                        "activity": "stationary",
+                        "confidence": 0.95,
+                        "ts": now_ms()
+                    }),
+                    "motion.pedometer" => json!({
+                        "steps": 0,
+                        "distanceMeters": 0.0,
+                        "floorsAscended": 0,
+                        "floorsDescended": 0,
+                        "ts": now_ms()
                     }),
                     "browser.proxy" => {
                         let method = params
@@ -4511,6 +4610,62 @@ mod tests {
                 .pointer("/result/latitude")
                 .and_then(serde_json::Value::as_f64),
             Some(0.0)
+        );
+
+        let nodes_list = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-list-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "list",
+                    "includeCapabilities": true
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("nodes list");
+        assert_eq!(
+            nodes_list
+                .result
+                .pointer("/nodes/0/capabilities/0")
+                .and_then(serde_json::Value::as_str),
+            Some("camera.list")
+        );
+        assert!(nodes_list.result.to_string().contains("device.status"));
+
+        let device_status = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-device-status-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "invoke",
+                    "nodeId": "node-a",
+                    "command": "device.status",
+                    "params": {}
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("device.status invoke");
+        assert_eq!(
+            device_status
+                .result
+                .pointer("/result/online")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            device_status
+                .result
+                .pointer("/result/batteryPercent")
+                .and_then(serde_json::Value::as_u64),
+            Some(100)
         );
 
         let camera_clip = host
