@@ -1013,19 +1013,25 @@ impl ToolRuntimeHost {
     }
 
     async fn execute_message_send(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
-        let message = first_string_arg(&request.args, &["message", "content", "text", "prompt"])
-            .ok_or_else(|| {
-                ToolRuntimeError::new(
-                    ToolRuntimeErrorCode::InvalidArgs,
-                    "missing required parameter `message`",
-                )
-            })?;
+        let message = first_string_arg(&request.args, &["message", "content", "text", "prompt"]);
+        let media = collect_message_media_args(&request.args);
+        if message.is_none() && media.is_empty() {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "missing required parameter `message` or `media`",
+            ));
+        }
+        let channel = self.enforce_message_channel_action_support(request, "send")?;
+        let target = first_string_arg(&request.args, &["target", "to"]);
+        let reply_to = first_string_arg(&request.args, &["replyTo", "reply_to"]);
+        let dry_run = first_bool_arg(&request.args, &["dryRun", "dry_run"]).unwrap_or(false);
         let session_id = resolve_message_session_id(request);
         let thread_id = first_string_arg(&request.args, &["threadId", "thread_id", "thread"]);
         let role =
             normalize_message_role(first_string_arg(&request.args, &["role", "author"]).as_deref());
+        let entry_message = summarize_message_for_timeline(message.as_deref(), &media);
         let (entry, count) = self
-            .append_session_entry(session_id.clone(), role, message, thread_id.clone())
+            .append_session_entry(session_id.clone(), role, entry_message, thread_id.clone())
             .await;
         let message_id = entry
             .get("id")
@@ -1039,7 +1045,14 @@ impl ToolRuntimeHost {
             "messageId": message_id,
             "threadId": thread_id,
             "entry": entry,
-            "count": count
+            "count": count,
+            "channel": channel,
+            "target": target,
+            "replyTo": reply_to,
+            "dryRun": dry_run,
+            "message": message,
+            "media": media,
+            "mediaCount": media.len()
         }))
     }
 
@@ -1047,13 +1060,14 @@ impl ToolRuntimeHost {
         &self,
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
-        let message = first_string_arg(&request.args, &["message", "content", "text", "prompt"])
-            .ok_or_else(|| {
-                ToolRuntimeError::new(
-                    ToolRuntimeErrorCode::InvalidArgs,
-                    "missing required parameter `message`",
-                )
-            })?;
+        let message = first_string_arg(&request.args, &["message", "content", "text", "prompt"]);
+        let media = collect_message_media_args(&request.args);
+        if message.is_none() && media.is_empty() {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "broadcast requires `message` or `media`",
+            ));
+        }
         let mut targets =
             first_string_list_arg(&request.args, &["targets", "targetList", "target_list"], 32, 256);
         if targets.is_empty() {
@@ -1096,21 +1110,24 @@ impl ToolRuntimeHost {
         let thread_id = first_string_arg(&request.args, &["threadId", "thread_id", "thread"]);
         let role =
             normalize_message_role(first_string_arg(&request.args, &["role", "author"]).as_deref());
+        let dry_run = first_bool_arg(&request.args, &["dryRun", "dry_run"]).unwrap_or(false);
+        let entry_message = summarize_message_for_timeline(message.as_deref(), &media);
         let (entry, count) = self
-            .append_session_entry(session_id.clone(), role, message, thread_id.clone())
+            .append_session_entry(session_id.clone(), role, entry_message, thread_id.clone())
             .await;
         let message_id = entry
             .get("id")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
+        let delivery_status = if dry_run { "dry_run" } else { "sent" };
         let mut deliveries = Vec::new();
         for channel in &channels {
             for target in &targets {
                 deliveries.push(json!({
                     "channel": channel,
                     "target": target,
-                    "status": "sent",
+                    "status": delivery_status,
                     "ok": true
                 }));
             }
@@ -1127,7 +1144,11 @@ impl ToolRuntimeHost {
             "targets": targets,
             "channels": channels,
             "deliveries": deliveries,
-            "deliveryCount": deliveries.len()
+            "deliveryCount": deliveries.len(),
+            "dryRun": dry_run,
+            "message": message,
+            "media": media,
+            "mediaCount": media.len()
         }))
     }
 
@@ -3555,6 +3576,47 @@ fn normalize_message_role(value: Option<&str>) -> String {
     }
 }
 
+fn summarize_message_for_timeline(message: Option<&str>, media: &[String]) -> String {
+    if let Some(message) = message {
+        return message.to_owned();
+    }
+    if media.is_empty() {
+        return String::new();
+    }
+    let first = media[0].clone();
+    if media.len() == 1 {
+        format!("[media] {first}")
+    } else {
+        format!("[media] {first} (+{} more)", media.len() - 1)
+    }
+}
+
+fn collect_message_media_args(args: &Value) -> Vec<String> {
+    let mut media = first_string_list_arg(
+        args,
+        &[
+            "media",
+            "mediaList",
+            "media_list",
+            "mediaUrls",
+            "media_urls",
+            "attachments",
+            "files",
+        ],
+        16,
+        2048,
+    );
+    if let Some(single) = first_string_arg(
+        args,
+        &["mediaUrl", "media_url", "attachment", "file", "mediaPath"],
+    ) {
+        if !media.iter().any(|item| item == &single) {
+            media.push(single);
+        }
+    }
+    media
+}
+
 fn resolve_message_session_id(request: &ToolRuntimeRequest) -> String {
     first_string_arg(&request.args, &["sessionId", "session_id"])
         .unwrap_or_else(|| request.session_id.clone())
@@ -5349,6 +5411,127 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_runtime_message_send_supports_media_payload_and_channel_validation() {
+        let host = build_host(default_policy()).await;
+
+        let media_only_send = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-media-send-1".to_owned(),
+                session_id: "message-media".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "send",
+                    "channel": "discord",
+                    "target": "channel:123",
+                    "media": ["/tmp/parity-a.png", "/tmp/parity-b.png"],
+                    "replyTo": "msg-1",
+                    "dryRun": true
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("media-only send");
+        assert_eq!(
+            media_only_send
+                .result
+                .get("action")
+                .and_then(serde_json::Value::as_str),
+            Some("send")
+        );
+        assert_eq!(
+            media_only_send
+                .result
+                .get("channel")
+                .and_then(serde_json::Value::as_str),
+            Some("discord")
+        );
+        assert_eq!(
+            media_only_send
+                .result
+                .get("target")
+                .and_then(serde_json::Value::as_str),
+            Some("channel:123")
+        );
+        assert_eq!(
+            media_only_send
+                .result
+                .get("replyTo")
+                .and_then(serde_json::Value::as_str),
+            Some("msg-1")
+        );
+        assert_eq!(
+            media_only_send
+                .result
+                .get("dryRun")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            media_only_send
+                .result
+                .get("message")
+                .and_then(serde_json::Value::as_str),
+            None
+        );
+        assert_eq!(
+            media_only_send
+                .result
+                .get("mediaCount")
+                .and_then(serde_json::Value::as_u64),
+            Some(2)
+        );
+        assert!(media_only_send
+            .result
+            .to_string()
+            .contains("[media] /tmp/parity-a.png (+1 more)"));
+
+        let send_missing_payload = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-media-send-missing-payload-1".to_owned(),
+                session_id: "message-media".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "send",
+                    "channel": "discord",
+                    "target": "channel:123"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect_err("send requires message or media");
+        assert_eq!(send_missing_payload.code.as_str(), "invalid_args");
+        assert!(send_missing_payload
+            .message
+            .contains("missing required parameter `message` or `media`"));
+
+        let send_unknown_channel = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-media-send-unknown-channel-1".to_owned(),
+                session_id: "message-media".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "send",
+                    "channel": "custom-bridge",
+                    "target": "channel:123",
+                    "message": "hello"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect_err("unknown send channel rejected");
+        assert_eq!(send_unknown_channel.code.as_str(), "invalid_args");
+        assert!(send_unknown_channel
+            .message
+            .contains("unsupported channel: custom-bridge"));
+    }
+
+    #[tokio::test]
     async fn tool_runtime_message_tool_enforces_channel_capabilities() {
         let host = build_host(default_policy()).await;
 
@@ -5692,6 +5875,46 @@ mod tests {
                 .pointer("/channels/0")
                 .and_then(serde_json::Value::as_str),
             Some("discord")
+        );
+
+        let broadcast_media_only = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-broadcast-media-only-1".to_owned(),
+                session_id: "agent:main:discord:group:ops".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "broadcast",
+                    "channel": "discord",
+                    "target": "channel:ops",
+                    "media": "/tmp/notice.png",
+                    "dryRun": true
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("media-only broadcast on discord");
+        assert_eq!(
+            broadcast_media_only
+                .result
+                .get("dryRun")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            broadcast_media_only
+                .result
+                .get("mediaCount")
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            broadcast_media_only
+                .result
+                .pointer("/deliveries/0/status")
+                .and_then(serde_json::Value::as_str),
+            Some("dry_run")
         );
 
         let broadcast_all_channels = host

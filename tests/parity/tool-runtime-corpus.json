@@ -222,6 +222,67 @@
       }
     },
     {
+      "name": "message-send-media-only",
+      "request": {
+        "request_id": "cp3-message-send-media-1",
+        "session_id": "cp3-message-media",
+        "tool_name": "message",
+        "args": {
+          "action": "send",
+          "channel": "discord",
+          "target": "channel:123",
+          "media": [
+            "/tmp/parity-a.png",
+            "/tmp/parity-b.png"
+          ],
+          "dryRun": true
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"mediaCount\":2"
+      }
+    },
+    {
+      "name": "message-send-missing-payload",
+      "request": {
+        "request_id": "cp3-message-send-missing-payload-1",
+        "session_id": "cp3-message-media",
+        "tool_name": "message",
+        "args": {
+          "action": "send",
+          "channel": "discord",
+          "target": "channel:123"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "invalid_args"
+      }
+    },
+    {
+      "name": "message-send-unsupported-channel",
+      "request": {
+        "request_id": "cp3-message-send-unsupported-channel-1",
+        "session_id": "cp3-message-media",
+        "tool_name": "message",
+        "args": {
+          "action": "send",
+          "channel": "custom-bridge",
+          "target": "channel:123",
+          "message": "hello"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "invalid_args"
+      }
+    },
+    {
       "name": "message-react",
       "request": {
         "request_id": "cp3-message-react-1",
@@ -872,6 +933,45 @@
           "action": "broadcast",
           "channel": "discord",
           "message": "maintenance notice"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "invalid_args"
+      }
+    },
+    {
+      "name": "message-broadcast-media-only",
+      "request": {
+        "request_id": "cp3-message-broadcast-media-only-1",
+        "session_id": "cp3-search-discord",
+        "tool_name": "message",
+        "args": {
+          "action": "broadcast",
+          "channel": "discord",
+          "target": "channel:ops",
+          "media": "/tmp/notice.png",
+          "dryRun": true
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"dryRun\":true"
+      }
+    },
+    {
+      "name": "message-broadcast-missing-payload",
+      "request": {
+        "request_id": "cp3-message-broadcast-missing-payload-1",
+        "session_id": "cp3-search-discord",
+        "tool_name": "message",
+        "args": {
+          "action": "broadcast",
+          "channel": "discord",
+          "target": "channel:ops"
         },
         "sandboxed": false
       },
