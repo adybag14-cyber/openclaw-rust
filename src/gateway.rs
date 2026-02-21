@@ -26249,7 +26249,11 @@ mod tests {
                                 "connected": true,
                                 "mode": "webhook",
                                 "reconnectAttempts": 2,
-                                "lastOutboundAt": 1234
+                                "lastOutboundAt": 1234,
+                                "lastReactionAt": 2345,
+                                "lastEditAt": 3456,
+                                "lastDeleteAt": 4567,
+                                "lastThreadAt": 5678
                             }
                         }
                     }
@@ -26295,6 +26299,30 @@ mod tests {
                         .pointer("/channelAccounts/discord/0/lastOutboundAt")
                         .and_then(serde_json::Value::as_u64),
                     Some(1234)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/lastReactionAt")
+                        .and_then(serde_json::Value::as_u64),
+                    Some(2345)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/lastEditAt")
+                        .and_then(serde_json::Value::as_u64),
+                    Some(3456)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/lastDeleteAt")
+                        .and_then(serde_json::Value::as_u64),
+                    Some(4567)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/channelAccounts/discord/0/lastThreadAt")
+                        .and_then(serde_json::Value::as_u64),
+                    Some(5678)
                 );
             }
             _ => panic!("expected channels.status handled"),
