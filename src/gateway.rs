@@ -2621,6 +2621,18 @@ impl RpcDispatcher {
                 if let Some(last_outbound_at) = snapshot.last_outbound_at {
                     account["lastOutboundAt"] = json!(last_outbound_at);
                 }
+                if let Some(last_reaction_at) = snapshot.last_reaction_at {
+                    account["lastReactionAt"] = json!(last_reaction_at);
+                }
+                if let Some(last_edit_at) = snapshot.last_edit_at {
+                    account["lastEditAt"] = json!(last_edit_at);
+                }
+                if let Some(last_delete_at) = snapshot.last_delete_at {
+                    account["lastDeleteAt"] = json!(last_delete_at);
+                }
+                if let Some(last_thread_at) = snapshot.last_thread_at {
+                    account["lastThreadAt"] = json!(last_thread_at);
+                }
                 if probe {
                     account["lastProbeAt"] = json!(now_ms());
                 } else if let Some(last_probe_at) = snapshot.last_probe_at {
@@ -12555,6 +12567,10 @@ struct ChannelAccountRuntime {
     last_stop_at: Option<u64>,
     last_inbound_at: Option<u64>,
     last_outbound_at: Option<u64>,
+    last_reaction_at: Option<u64>,
+    last_edit_at: Option<u64>,
+    last_delete_at: Option<u64>,
+    last_thread_at: Option<u64>,
     last_probe_at: Option<u64>,
     mode: Option<String>,
     dm_policy: Option<String>,
@@ -12744,6 +12760,18 @@ impl ChannelRuntimeRegistry {
                     }
                     ChannelActivityEvent::Outbound => {
                         account.last_outbound_at = Some(ts);
+                    }
+                    ChannelActivityEvent::Reaction => {
+                        account.last_reaction_at = Some(ts);
+                    }
+                    ChannelActivityEvent::Edit => {
+                        account.last_edit_at = Some(ts);
+                    }
+                    ChannelActivityEvent::Delete => {
+                        account.last_delete_at = Some(ts);
+                    }
+                    ChannelActivityEvent::Thread => {
+                        account.last_thread_at = Some(ts);
                     }
                 }
                 account.connected = account.connected.or(Some(true));
@@ -12953,6 +12981,26 @@ fn ingest_runtime_entry(
         .or_else(|| runtime_map.get("last_outbound_at"))
         .and_then(value_as_u64)
         .or(account.last_outbound_at);
+    account.last_reaction_at = runtime_map
+        .get("lastReactionAt")
+        .or_else(|| runtime_map.get("last_reaction_at"))
+        .and_then(value_as_u64)
+        .or(account.last_reaction_at);
+    account.last_edit_at = runtime_map
+        .get("lastEditAt")
+        .or_else(|| runtime_map.get("last_edit_at"))
+        .and_then(value_as_u64)
+        .or(account.last_edit_at);
+    account.last_delete_at = runtime_map
+        .get("lastDeleteAt")
+        .or_else(|| runtime_map.get("last_delete_at"))
+        .and_then(value_as_u64)
+        .or(account.last_delete_at);
+    account.last_thread_at = runtime_map
+        .get("lastThreadAt")
+        .or_else(|| runtime_map.get("last_thread_at"))
+        .and_then(value_as_u64)
+        .or(account.last_thread_at);
     account.last_probe_at = runtime_map
         .get("lastProbeAt")
         .or_else(|| runtime_map.get("last_probe_at"))
@@ -13064,6 +13112,14 @@ fn runtime_map_has_inline_runtime_fields(
         || runtime_map.contains_key("last_inbound_at")
         || runtime_map.contains_key("lastOutboundAt")
         || runtime_map.contains_key("last_outbound_at")
+        || runtime_map.contains_key("lastReactionAt")
+        || runtime_map.contains_key("last_reaction_at")
+        || runtime_map.contains_key("lastEditAt")
+        || runtime_map.contains_key("last_edit_at")
+        || runtime_map.contains_key("lastDeleteAt")
+        || runtime_map.contains_key("last_delete_at")
+        || runtime_map.contains_key("lastThreadAt")
+        || runtime_map.contains_key("last_thread_at")
         || runtime_map.contains_key("lastProbeAt")
         || runtime_map.contains_key("last_probe_at")
         || runtime_map.contains_key("lastError")
@@ -13135,6 +13191,10 @@ enum ChannelLifecycleEvent {
 enum ChannelActivityEvent {
     Inbound,
     Outbound,
+    Reaction,
+    Edit,
+    Delete,
+    Thread,
 }
 
 fn classify_channel_lifecycle_event(event: &str) -> Option<ChannelLifecycleEvent> {
@@ -13163,6 +13223,21 @@ fn classify_channel_activity_event(event: &str) -> Option<ChannelActivityEvent> 
         "outbound" | "sent" | "delivered" | "delivery" | "ack" | "acknowledged" | "messagesent" => {
             Some(ChannelActivityEvent::Outbound)
         }
+        "reaction" | "react" | "reacted" | "reactionadded" | "reactionremoved" => {
+            Some(ChannelActivityEvent::Reaction)
+        }
+        "edit" | "edited" | "messageedit" | "messageedited" | "updated" | "messageupdated" => {
+            Some(ChannelActivityEvent::Edit)
+        }
+        "delete" | "deleted" | "messagedelete" | "messagedeleted" | "removed" | "messageremoved" => {
+            Some(ChannelActivityEvent::Delete)
+        }
+        "thread"
+        | "threadcreate"
+        | "threadcreated"
+        | "threadreply"
+        | "threadreplied"
+        | "threadlist" => Some(ChannelActivityEvent::Thread),
         _ => None,
     }
 }
@@ -27240,6 +27315,74 @@ mod tests {
                         .pointer("/channelAccounts/telegram/0/running")
                         .and_then(serde_json::Value::as_bool),
                     Some(true)
+                );
+            }
+            _ => panic!("expected channels.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_channels_status_tracks_mutation_activity_event_suffixes() {
+        let dispatcher = RpcDispatcher::new();
+        for event in [
+            "telegram.message.reaction-added",
+            "telegram.message.edited",
+            "telegram.message.deleted",
+            "telegram.thread-reply",
+        ] {
+            dispatcher
+                .ingest_event_frame(&serde_json::json!({
+                    "type": "event",
+                    "event": event,
+                    "payload": {
+                        "accountId": "ops"
+                    }
+                }))
+                .await;
+        }
+
+        let status = RpcRequestFrame {
+            id: "req-channels-mutation-activity-status".to_owned(),
+            method: "channels.status".to_owned(),
+            params: serde_json::json!({
+                "probe": false
+            }),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/channelDefaultAccountId/telegram")
+                        .and_then(serde_json::Value::as_str),
+                    Some("ops")
+                );
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/lastReactionAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/lastEditAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/lastDeleteAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                );
+                assert!(
+                    payload
+                        .pointer("/channelAccounts/telegram/0/lastThreadAt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
                 );
             }
             _ => panic!("expected channels.status handled"),
