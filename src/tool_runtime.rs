@@ -2205,7 +2205,20 @@ impl ToolRuntimeHost {
                 "status": "completed",
                 "connected": true,
                 "nodeCount": 1,
-                "commands": TOOL_RUNTIME_NODE_COMMANDS
+                "commands": TOOL_RUNTIME_NODE_COMMANDS,
+                "capabilities": {
+                    "actions": [
+                        "status",
+                        "list",
+                        "describe",
+                        "pending",
+                        "approve",
+                        "reject",
+                        "notify",
+                        "run",
+                        "invoke"
+                    ]
+                }
             })),
             "list" => {
                 let include_caps = request
@@ -2228,6 +2241,126 @@ impl ToolRuntimeHost {
                         "capabilities": caps
                     }],
                     "count": 1
+                }))
+            }
+            "describe" => {
+                let node_id =
+                    required_string_arg(&request.args, &["nodeId", "node_id", "node"], "node")?;
+                Ok(json!({
+                    "status": "completed",
+                    "node": {
+                        "id": node_id,
+                        "name": "Local Node",
+                        "connected": true,
+                        "local": true,
+                        "commands": TOOL_RUNTIME_NODE_COMMANDS
+                    }
+                }))
+            }
+            "pending" => Ok(json!({
+                "status": "completed",
+                "pending": [],
+                "count": 0
+            })),
+            "approve" | "reject" => {
+                let request_id = required_string_arg(
+                    &request.args,
+                    &["requestId", "request_id"],
+                    "requestId",
+                )?;
+                let approved = action == "approve";
+                Ok(json!({
+                    "status": "completed",
+                    "action": action,
+                    "requestId": request_id,
+                    "approved": approved,
+                    "rejected": !approved
+                }))
+            }
+            "notify" => {
+                let node_id =
+                    required_string_arg(&request.args, &["nodeId", "node_id", "node"], "node")?;
+                let title = first_string_arg(&request.args, &["title", "subject", "summary"]);
+                let body = first_string_arg(&request.args, &["body", "message", "text"]);
+                let has_title = title
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_some();
+                let has_body = body
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_some();
+                if !has_title && !has_body {
+                    return Err(ToolRuntimeError::new(
+                        ToolRuntimeErrorCode::InvalidArgs,
+                        "nodes.notify requires `title` or `body`",
+                    ));
+                }
+                let mut params = serde_json::Map::new();
+                if let Some(value) = title {
+                    params.insert("title".to_owned(), Value::String(value));
+                }
+                if let Some(value) = body {
+                    params.insert("body".to_owned(), Value::String(value));
+                }
+                if let Some(value) = first_string_arg(&request.args, &["sound"]) {
+                    params.insert("sound".to_owned(), Value::String(value));
+                }
+                if let Some(value) = first_string_arg(&request.args, &["level"]) {
+                    params.insert("level".to_owned(), Value::String(value));
+                }
+                if let Some(value) = first_string_arg(&request.args, &["priority"]) {
+                    params.insert("priority".to_owned(), Value::String(value));
+                }
+                if let Some(value) = first_string_arg(&request.args, &["delivery"]) {
+                    params.insert("delivery".to_owned(), Value::String(value));
+                }
+                let result = self.execute_nodes_system_notify(&Value::Object(params));
+                Ok(json!({
+                    "status": "completed",
+                    "nodeId": node_id,
+                    "command": "system.notify",
+                    "result": result
+                }))
+            }
+            "run" => {
+                let node_id =
+                    required_string_arg(&request.args, &["nodeId", "node_id", "node"], "node")?;
+                if request.args.get("command").is_none() {
+                    return Err(ToolRuntimeError::new(
+                        ToolRuntimeErrorCode::InvalidArgs,
+                        "nodes.run requires params.command",
+                    ));
+                }
+                let mut params = serde_json::Map::new();
+                if let Some(value) = request.args.get("command") {
+                    params.insert("command".to_owned(), value.clone());
+                }
+                for key in [
+                    "rawCommand",
+                    "raw_command",
+                    "cwd",
+                    "workdir",
+                    "timeoutMs",
+                    "timeout_ms",
+                    "env",
+                    "needsScreenRecording",
+                    "needs_screen_recording",
+                ] {
+                    if let Some(value) = request.args.get(key) {
+                        params.insert(key.to_owned(), value.clone());
+                    }
+                }
+                let result = self
+                    .execute_nodes_system_run(request, &Value::Object(params))
+                    .await?;
+                Ok(json!({
+                    "status": "completed",
+                    "nodeId": node_id,
+                    "command": "system.run",
+                    "result": result
                 }))
             }
             "invoke" => {
@@ -2509,14 +2642,41 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
         params: &Value,
     ) -> ToolRuntimeResult<Value> {
-        let command = first_string_arg(params, &["command"])
-            .or_else(|| first_string_arg(&request.args, &["commandText", "shell"]))
-            .ok_or_else(|| {
-                ToolRuntimeError::new(
-                    ToolRuntimeErrorCode::InvalidArgs,
-                    "system.run requires params.command",
-                )
-            })?;
+        let raw_command = first_string_arg(params, &["rawCommand", "raw_command"])
+            .or_else(|| first_string_arg(&request.args, &["rawCommand", "raw_command"]));
+        let argv = match params.get("command") {
+            Some(Value::Array(items)) => Some(parse_tool_runtime_system_run_argv(items)?),
+            _ => None,
+        };
+        let command = if let Some(argv_values) = argv.as_ref() {
+            let inferred = infer_tool_runtime_system_run_text_from_argv(argv_values);
+            if let Some(raw) = raw_command.as_ref() {
+                if raw.trim() != inferred {
+                    return Err(ToolRuntimeError::new(
+                        ToolRuntimeErrorCode::InvalidArgs,
+                        "system.run rawCommand does not match command",
+                    ));
+                }
+            }
+            raw_command.clone().unwrap_or(inferred)
+        } else {
+            first_string_arg(params, &["command"])
+                .or_else(|| first_string_arg(&request.args, &["commandText", "shell"]))
+                .or(raw_command.clone())
+                .ok_or_else(|| {
+                    ToolRuntimeError::new(
+                        ToolRuntimeErrorCode::InvalidArgs,
+                        "system.run requires params.command",
+                    )
+                })?
+        };
+
+        if command.trim().is_empty() {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "system.run requires params.command",
+            ));
+        }
         if command
             .chars()
             .any(|ch| matches!(ch, ';' | '|' | '&' | '>' | '<' | '`' | '\n' | '\r'))
@@ -2548,7 +2708,7 @@ impl ToolRuntimeHost {
             Some(raw) => resolve_path_inside_root(root, &raw)?,
             None => root.to_path_buf(),
         };
-        let outcome = run_shell_command(command, cwd).await?;
+        let outcome = run_shell_command(command.clone(), cwd).await?;
         let mut aggregated = outcome.aggregated;
         const MAX_CHARS: usize = 8_192;
         if aggregated.chars().count() > MAX_CHARS {
@@ -2556,6 +2716,9 @@ impl ToolRuntimeHost {
         }
         Ok(json!({
             "status": outcome.status,
+            "command": command,
+            "rawCommand": raw_command,
+            "argv": argv,
             "exitCode": outcome.exit_code,
             "durationMs": outcome.duration_ms,
             "aggregated": aggregated
@@ -3177,6 +3340,72 @@ async fn run_shell_command(
         aggregated,
         duration_ms,
     })
+}
+
+fn parse_tool_runtime_system_run_argv(items: &[Value]) -> ToolRuntimeResult<Vec<String>> {
+    const MAX_ARGV_ITEMS: usize = 64;
+    const MAX_ARG_LEN: usize = 512;
+    let mut argv = Vec::new();
+    for item in items {
+        let Some(raw) = item.as_str() else {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "system.run command array must contain only strings",
+            ));
+        };
+        let Some(normalized) = normalize_text(Some(raw.to_owned()), MAX_ARG_LEN) else {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "system.run command array entries must be non-empty strings",
+            ));
+        };
+        argv.push(normalized);
+        if argv.len() >= MAX_ARGV_ITEMS {
+            break;
+        }
+    }
+    if argv.is_empty() {
+        return Err(ToolRuntimeError::new(
+            ToolRuntimeErrorCode::InvalidArgs,
+            "system.run command array must not be empty",
+        ));
+    }
+    Ok(argv)
+}
+
+fn extract_tool_runtime_shell_command_from_argv(argv: &[String]) -> Option<String> {
+    let token0 = argv.first()?.trim().to_ascii_lowercase();
+    if matches!(
+        token0.as_str(),
+        "sh" | "bash" | "zsh" | "cmd" | "cmd.exe" | "powershell" | "pwsh"
+    ) && matches!(
+        argv.get(1).map(String::as_str),
+        Some("-c") | Some("-lc") | Some("/C") | Some("/c") | Some("-Command")
+    ) {
+        return argv
+            .get(2)
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+    }
+    None
+}
+
+fn quote_tool_runtime_argv_token(token: &str) -> String {
+    if token.contains(' ') || token.contains('\t') || token.contains('"') || token.contains('\'') {
+        format!("{token:?}")
+    } else {
+        token.to_owned()
+    }
+}
+
+fn infer_tool_runtime_system_run_text_from_argv(argv: &[String]) -> String {
+    if let Some(shell_command) = extract_tool_runtime_shell_command_from_argv(argv) {
+        return shell_command;
+    }
+    argv.iter()
+        .map(|token| quote_tool_runtime_argv_token(token))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn process_poll_payload(session: &ToolRuntimeProcessSession) -> Value {
@@ -4916,5 +5145,203 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("overlay")
         );
+    }
+
+    #[tokio::test]
+    async fn tool_runtime_nodes_tool_supports_describe_pairing_notify_and_run_actions() {
+        let host = build_host(default_policy()).await;
+
+        let describe = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-describe-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "describe",
+                    "node": "local-node"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("nodes describe");
+        assert_eq!(
+            describe
+                .result
+                .pointer("/node/id")
+                .and_then(serde_json::Value::as_str),
+            Some("local-node")
+        );
+        assert_eq!(
+            describe
+                .result
+                .pointer("/node/commands/0")
+                .and_then(serde_json::Value::as_str),
+            Some("camera.list")
+        );
+
+        let pending = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-pending-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "pending"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("nodes pending");
+        assert_eq!(
+            pending
+                .result
+                .get("count")
+                .and_then(serde_json::Value::as_u64),
+            Some(0)
+        );
+
+        let approve = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-approve-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "approve",
+                    "requestId": "pending-1"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("nodes approve");
+        assert_eq!(
+            approve
+                .result
+                .get("approved")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let reject = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-reject-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "reject",
+                    "requestId": "pending-2"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("nodes reject");
+        assert_eq!(
+            reject
+                .result
+                .get("rejected")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let notify = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-notify-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "notify",
+                    "node": "local-node",
+                    "title": "Parity",
+                    "body": "nodes notify path"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("nodes notify");
+        assert_eq!(
+            notify
+                .result
+                .get("command")
+                .and_then(serde_json::Value::as_str),
+            Some("system.notify")
+        );
+        assert!(notify
+            .result
+            .pointer("/result/notificationId")
+            .and_then(serde_json::Value::as_str)
+            .is_some());
+
+        let run = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-run-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: if cfg!(windows) {
+                    serde_json::json!({
+                        "action": "run",
+                        "node": "local-node",
+                        "command": ["cmd", "/C", "echo nodes-run"],
+                        "rawCommand": "echo nodes-run"
+                    })
+                } else {
+                    serde_json::json!({
+                        "action": "run",
+                        "node": "local-node",
+                        "command": ["sh", "-lc", "echo nodes-run"],
+                        "rawCommand": "echo nodes-run"
+                    })
+                },
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("nodes run");
+        assert_eq!(
+            run.result
+                .pointer("/result/status")
+                .and_then(serde_json::Value::as_str),
+            Some("completed")
+        );
+        assert_eq!(
+            run.result
+                .pointer("/result/rawCommand")
+                .and_then(serde_json::Value::as_str),
+            Some("echo nodes-run")
+        );
+        let run_aggregated = run
+            .result
+            .pointer("/result/aggregated")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        assert!(run_aggregated.contains("nodes-run"));
+
+        let mismatch = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-run-mismatch-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "run",
+                    "node": "local-node",
+                    "command": ["echo", "one"],
+                    "rawCommand": "echo two"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect_err("run should reject mismatched rawCommand");
+        assert_eq!(mismatch.code.as_str(), "invalid_args");
+        assert!(mismatch.message.contains("rawCommand does not match command"));
     }
 }

@@ -803,6 +803,67 @@
         "status": "completed",
         "contains": "\"mimeType\":\"image/png\""
       }
+    },
+    {
+      "name": "nodes-describe",
+      "request": {
+        "request_id": "cp3-nodes-describe-1",
+        "session_id": "cp3-node",
+        "tool_name": "nodes",
+        "args": {
+          "action": "describe",
+          "node": "local-node"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"commands\""
+      }
+    },
+    {
+      "name": "nodes-notify",
+      "request": {
+        "request_id": "cp3-nodes-notify-1",
+        "session_id": "cp3-node",
+        "tool_name": "nodes",
+        "args": {
+          "action": "notify",
+          "node": "local-node",
+          "title": "Parity",
+          "body": "tool runtime notify"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"notificationId\""
+      }
+    },
+    {
+      "name": "nodes-run-array",
+      "request": {
+        "request_id": "cp3-nodes-run-array-1",
+        "session_id": "cp3-node",
+        "tool_name": "nodes",
+        "args": {
+          "action": "run",
+          "node": "local-node",
+          "command": [
+            "echo",
+            "cp3-nodes-run"
+          ],
+          "rawCommand": "echo cp3-nodes-run"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "cp3-nodes-run"
+      }
     }
   ]
 }
