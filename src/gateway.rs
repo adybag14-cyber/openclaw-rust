@@ -9685,6 +9685,27 @@ impl NodePairRegistry {
         let Some(node_id) = normalize_optional_text(Some(params.node_id), 128) else {
             return Err("invalid node.pair.request params: nodeId required".to_owned());
         };
+        let display_name = normalize_optional_text(params.display_name, 128);
+        let platform = normalize_optional_text(params.platform, 128);
+        let version = normalize_optional_text(params.version, 128);
+        let core_version = normalize_optional_text(params.core_version, 128);
+        let ui_version = normalize_optional_text(params.ui_version, 128);
+        let device_family = normalize_optional_text(params.device_family, 128);
+        let model_identifier = normalize_optional_text(params.model_identifier, 128);
+        let caps_values = normalize_string_list(params.caps, 128, 128);
+        let caps = (!caps_values.is_empty()).then_some(caps_values);
+        let command_values = normalize_string_list(params.commands, 256, 160);
+        let commands = if command_values.is_empty() {
+            let inferred = infer_node_pair_default_commands(
+                platform.as_deref(),
+                device_family.as_deref(),
+                caps.as_deref(),
+            );
+            (!inferred.is_empty()).then_some(inferred)
+        } else {
+            Some(command_values)
+        };
+        let remote_ip = normalize_optional_text(params.remote_ip, 128);
         let now = now_ms();
         let mut guard = self.state.lock().await;
         if let Some(existing) = guard
@@ -9702,22 +9723,16 @@ impl NodePairRegistry {
         let request = NodePairPendingRequest {
             request_id: next_node_pair_request_id(),
             node_id: node_id.clone(),
-            display_name: normalize_optional_text(params.display_name, 128),
-            platform: normalize_optional_text(params.platform, 128),
-            version: normalize_optional_text(params.version, 128),
-            core_version: normalize_optional_text(params.core_version, 128),
-            ui_version: normalize_optional_text(params.ui_version, 128),
-            device_family: normalize_optional_text(params.device_family, 128),
-            model_identifier: normalize_optional_text(params.model_identifier, 128),
-            caps: {
-                let values = normalize_string_list(params.caps, 128, 128);
-                (!values.is_empty()).then_some(values)
-            },
-            commands: {
-                let values = normalize_string_list(params.commands, 256, 160);
-                (!values.is_empty()).then_some(values)
-            },
-            remote_ip: normalize_optional_text(params.remote_ip, 128),
+            display_name,
+            platform,
+            version,
+            core_version,
+            ui_version,
+            device_family,
+            model_identifier,
+            caps,
+            commands,
+            remote_ip,
             silent: params.silent,
             is_repair: Some(guard.paired_by_node_id.contains_key(&node_id)),
             ts: now,
@@ -10177,6 +10192,71 @@ fn resolve_node_command_allowlist(
         }
     }
     allowlist
+}
+
+fn node_capability_command_allowlist(caps: &[String]) -> HashSet<String> {
+    let mut allowlist = HashSet::new();
+    for cap in caps {
+        match normalize(cap).as_str() {
+            "browser" => node_allowlist_insert_many(&mut allowlist, &["browser.proxy"]),
+            "canvas" | "a2ui" => node_allowlist_insert_many(&mut allowlist, NODE_CANVAS_COMMANDS),
+            "camera" => node_allowlist_insert_many(&mut allowlist, NODE_CAMERA_COMMANDS),
+            "location" | "gps" => {
+                node_allowlist_insert_many(&mut allowlist, NODE_LOCATION_COMMANDS)
+            }
+            "device" => node_allowlist_insert_many(&mut allowlist, NODE_DEVICE_COMMANDS),
+            "contacts" => node_allowlist_insert_many(&mut allowlist, NODE_CONTACTS_COMMANDS),
+            "calendar" => node_allowlist_insert_many(&mut allowlist, NODE_CALENDAR_COMMANDS),
+            "reminders" => node_allowlist_insert_many(&mut allowlist, NODE_REMINDERS_COMMANDS),
+            "photos" | "photo" => node_allowlist_insert_many(&mut allowlist, NODE_PHOTOS_COMMANDS),
+            "motion" | "fitness" | "activity" => {
+                node_allowlist_insert_many(&mut allowlist, NODE_MOTION_COMMANDS)
+            }
+            "system" | "exec" => node_allowlist_insert_many(&mut allowlist, NODE_SYSTEM_COMMANDS),
+            _ => {}
+        }
+    }
+    allowlist
+}
+
+fn infer_node_pair_default_commands(
+    platform: Option<&str>,
+    device_family: Option<&str>,
+    caps: Option<&[String]>,
+) -> Vec<String> {
+    let base = resolve_node_command_allowlist(
+        &NodeCommandPolicyConfig::default(),
+        platform,
+        device_family,
+    );
+    let mut inferred = if let Some(caps) = caps {
+        if caps.is_empty() {
+            base
+        } else {
+            let cap_allowlist = node_capability_command_allowlist(caps);
+            if cap_allowlist.is_empty() {
+                base
+            } else {
+                base.intersection(&cap_allowlist)
+                    .cloned()
+                    .collect::<HashSet<_>>()
+            }
+        }
+    } else {
+        base
+    };
+
+    // Keep dangerous commands opt-in only even when a broad capability is declared.
+    for command in NODE_DEFAULT_DANGEROUS_COMMANDS {
+        let normalized = normalize(command);
+        if !normalized.is_empty() {
+            inferred.remove(&normalized);
+        }
+    }
+
+    let mut commands = inferred.into_iter().collect::<Vec<_>>();
+    commands.sort();
+    commands
 }
 
 fn node_command_declared(declared_commands: &[String], command: &str) -> bool {
@@ -32650,6 +32730,181 @@ mod tests {
                 );
             }
             _ => panic!("expected node.invoke rejection"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_node_pair_request_infers_safe_default_commands_when_missing() {
+        let dispatcher = RpcDispatcher::new();
+
+        let pair = RpcRequestFrame {
+            id: "req-node-default-commands-pair".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "node-default-commands-1",
+                "platform": "linux"
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&pair).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("pair request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+        let approve = RpcRequestFrame {
+            id: "req-node-default-commands-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        assert!(matches!(
+            dispatcher.handle_request(&approve).await,
+            RpcDispatchOutcome::Handled(_)
+        ));
+
+        let describe = RpcRequestFrame {
+            id: "req-node-default-commands-describe".to_owned(),
+            method: "node.describe".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "node-default-commands-1"
+            }),
+        };
+        match dispatcher.handle_request(&describe).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                let commands = payload
+                    .pointer("/commands")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                assert!(commands
+                    .iter()
+                    .any(|value| value.as_str() == Some("system.which")));
+                assert!(commands
+                    .iter()
+                    .any(|value| value.as_str() == Some("browser.proxy")));
+                assert!(!commands
+                    .iter()
+                    .any(|value| value.as_str() == Some("camera.snap")));
+            }
+            _ => panic!("expected node.describe handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_node_pair_capability_inference_scopes_declared_commands() {
+        let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "nodeHost": {
+                    "localNodeIds": ["node-capability-commands-1"]
+                }
+            }),
+        )
+        .await;
+
+        let pair = RpcRequestFrame {
+            id: "req-node-capability-commands-pair".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "node-capability-commands-1",
+                "platform": "macos",
+                "caps": ["location"]
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&pair).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("pair request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+        let approve = RpcRequestFrame {
+            id: "req-node-capability-commands-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        assert!(matches!(
+            dispatcher.handle_request(&approve).await,
+            RpcDispatchOutcome::Handled(_)
+        ));
+
+        let describe = RpcRequestFrame {
+            id: "req-node-capability-commands-describe".to_owned(),
+            method: "node.describe".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "node-capability-commands-1"
+            }),
+        };
+        match dispatcher.handle_request(&describe).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                let commands = payload
+                    .pointer("/commands")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                assert!(commands
+                    .iter()
+                    .any(|value| value.as_str() == Some("location.get")));
+                assert!(!commands
+                    .iter()
+                    .any(|value| value.as_str() == Some("system.run")));
+                assert!(!commands
+                    .iter()
+                    .any(|value| value.as_str() == Some("browser.proxy")));
+            }
+            _ => panic!("expected node.describe handled"),
+        }
+
+        let invoke_location = RpcRequestFrame {
+            id: "req-node-capability-commands-invoke-location".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "node-capability-commands-1",
+                "command": "location.get",
+                "idempotencyKey": "node-capability-location"
+            }),
+        };
+        match dispatcher.handle_request(&invoke_location).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(payload.pointer("/ok").and_then(Value::as_bool), Some(true));
+            }
+            _ => panic!("expected location.get invoke handled"),
+        }
+
+        let invoke_system = RpcRequestFrame {
+            id: "req-node-capability-commands-invoke-system".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "node-capability-commands-1",
+                "command": "system.run",
+                "params": { "command": "echo should-block" },
+                "idempotencyKey": "node-capability-system"
+            }),
+        };
+        match dispatcher.handle_request(&invoke_system).await {
+            RpcDispatchOutcome::Error {
+                code,
+                message,
+                details,
+            } => {
+                assert_eq!(code, 400);
+                assert_eq!(message, "node command not allowed");
+                assert_eq!(
+                    details
+                        .as_ref()
+                        .and_then(|value| value.pointer("/reason"))
+                        .and_then(Value::as_str),
+                    Some("command not declared by node")
+                );
+            }
+            _ => panic!("expected system.run invoke rejection"),
         }
     }
 

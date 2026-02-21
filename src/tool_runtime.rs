@@ -128,6 +128,8 @@ struct ToolRuntimeSessionEntry {
     role: String,
     message: String,
     thread_id: Option<String>,
+    channel_id: Option<String>,
+    target_id: Option<String>,
     created_at_ms: u64,
     edited_at_ms: Option<u64>,
     deleted_at_ms: Option<u64>,
@@ -818,7 +820,7 @@ impl ToolRuntimeHost {
                     first_string_arg(&request.args, &["role", "author", "sender"]).as_deref(),
                 );
                 let (entry, count) = self
-                    .append_session_entry(session_id.clone(), role, message, None)
+                    .append_session_entry(session_id.clone(), role, message, None, None, None)
                     .await;
                 let message_id = entry
                     .get("id")
@@ -1047,7 +1049,14 @@ impl ToolRuntimeHost {
             normalize_message_role(first_string_arg(&request.args, &["role", "author"]).as_deref());
         let entry_message = summarize_message_for_timeline(message.as_deref(), &media);
         let (entry, count) = self
-            .append_session_entry(session_id.clone(), role, entry_message, thread_id.clone())
+            .append_session_entry(
+                session_id.clone(),
+                role,
+                entry_message,
+                thread_id.clone(),
+                channel.clone(),
+                target.clone(),
+            )
             .await;
         let message_id = entry
             .get("id")
@@ -1133,7 +1142,14 @@ impl ToolRuntimeHost {
         let dry_run = first_bool_arg(&request.args, &["dryRun", "dry_run"]).unwrap_or(false);
         let entry_message = summarize_message_for_timeline(message.as_deref(), &media);
         let (entry, count) = self
-            .append_session_entry(session_id.clone(), role, entry_message, thread_id.clone())
+            .append_session_entry(
+                session_id.clone(),
+                role,
+                entry_message,
+                thread_id.clone(),
+                (channels.len() == 1).then(|| channels[0].clone()),
+                (targets.len() == 1).then(|| targets[0].clone()),
+            )
             .await;
         let message_id = entry
             .get("id")
@@ -1217,13 +1233,16 @@ impl ToolRuntimeHost {
             .map(|value| value.clamp(5, 86_400));
         let session_id = resolve_message_session_id(request);
         let thread_id = first_string_arg(&request.args, &["threadId", "thread_id", "thread"]);
-        let _channel = self.enforce_message_channel_action_support(request, "poll")?;
+        let channel = self.enforce_message_channel_action_support(request, "poll")?;
+        let target = first_string_arg(&request.args, &["target", "to"]);
         let (entry, count) = self
             .append_session_entry(
                 session_id.clone(),
                 "user".to_owned(),
                 format!("[poll] {question}"),
                 thread_id.clone(),
+                channel,
+                target,
             )
             .await;
         let message_id = entry
@@ -1265,6 +1284,31 @@ impl ToolRuntimeHost {
         let after_id = first_string_arg(&request.args, &["after", "afterId", "after_id"]);
         let thread_id_filter =
             first_string_arg(&request.args, &["threadId", "thread_id", "thread"]);
+        let mut channel_ids =
+            first_string_list_arg(&request.args, &["channelIds", "channel_ids"], 32, 128);
+        if let Some(channel_id) = first_string_arg(
+            &request.args,
+            &["channelId", "channel_id", "channel", "transport"],
+        ) {
+            if !channel_ids.iter().any(|value| value == &channel_id) {
+                channel_ids.push(channel_id);
+            }
+        }
+        channel_ids = normalized_channel_filter_values(channel_ids);
+        let mut target_ids = first_string_list_arg(
+            &request.args,
+            &["targets", "targetIds", "target_ids"],
+            32,
+            256,
+        );
+        if let Some(target_id) = first_string_arg(&request.args, &["target", "to"]) {
+            if !target_ids
+                .iter()
+                .any(|value| value.eq_ignore_ascii_case(&target_id))
+            {
+                target_ids.push(target_id);
+            }
+        }
 
         let timelines = self.session_timelines.lock().await;
         let Some(timeline) = timelines.get(&session_id) else {
@@ -1303,6 +1347,18 @@ impl ToolRuntimeHost {
                         Some(filter) => entry.thread_id.as_deref() == Some(filter),
                         None => true,
                     }
+                    && (channel_ids.is_empty()
+                        || entry.channel_id.as_deref().is_some_and(|entry_channel| {
+                            channel_ids
+                                .iter()
+                                .any(|channel_id| channel_id.eq_ignore_ascii_case(entry_channel))
+                        }))
+                    && (target_ids.is_empty()
+                        || entry.target_id.as_deref().is_some_and(|entry_target| {
+                            target_ids
+                                .iter()
+                                .any(|target_id| target_id.eq_ignore_ascii_case(entry_target))
+                        }))
             })
             .collect::<Vec<_>>();
         let has_more = selected.len() > limit;
@@ -1321,7 +1377,9 @@ impl ToolRuntimeHost {
             "count": messages.len(),
             "hasMore": has_more,
             "limit": limit,
-            "threadId": thread_id_filter
+            "threadId": thread_id_filter,
+            "channelIds": channel_ids,
+            "targets": target_ids
         }))
     }
 
@@ -1780,9 +1838,27 @@ impl ToolRuntimeHost {
             first_bool_arg(&request.args, &["includeDeleted", "include_deleted"]).unwrap_or(false);
         let mut channel_ids =
             first_string_list_arg(&request.args, &["channelIds", "channel_ids"], 32, 128);
-        if let Some(channel_id) = first_string_arg(&request.args, &["channelId", "channel_id"]) {
+        if let Some(channel_id) = first_string_arg(
+            &request.args,
+            &["channelId", "channel_id", "channel", "transport"],
+        ) {
             if !channel_ids.iter().any(|value| value == &channel_id) {
                 channel_ids.push(channel_id);
+            }
+        }
+        channel_ids = normalized_channel_filter_values(channel_ids);
+        let mut target_ids = first_string_list_arg(
+            &request.args,
+            &["targets", "targetIds", "target_ids"],
+            32,
+            256,
+        );
+        if let Some(target_id) = first_string_arg(&request.args, &["target", "to"]) {
+            if !target_ids
+                .iter()
+                .any(|value| value.eq_ignore_ascii_case(&target_id))
+            {
+                target_ids.push(target_id);
             }
         }
         let mut author_ids =
@@ -1810,10 +1886,19 @@ impl ToolRuntimeHost {
                     continue;
                 }
                 if !channel_ids.is_empty()
-                    && !entry.thread_id.as_deref().is_some_and(|entry_thread_id| {
+                    && !entry.channel_id.as_deref().is_some_and(|entry_channel| {
                         channel_ids
                             .iter()
-                            .any(|channel_id| channel_id.eq_ignore_ascii_case(entry_thread_id))
+                            .any(|channel_id| channel_id.eq_ignore_ascii_case(entry_channel))
+                    })
+                {
+                    continue;
+                }
+                if !target_ids.is_empty()
+                    && !entry.target_id.as_deref().is_some_and(|entry_target| {
+                        target_ids
+                            .iter()
+                            .any(|target_id| target_id.eq_ignore_ascii_case(entry_target))
                     })
                 {
                     continue;
@@ -1847,6 +1932,7 @@ impl ToolRuntimeHost {
             "query": query,
             "threadId": thread_id_filter,
             "channelIds": channel_ids,
+            "targets": target_ids,
             "authorIds": author_ids,
             "results": results,
             "count": results.len(),
@@ -1957,7 +2043,8 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
-        let _channel = self.enforce_message_channel_action_support(request, "thread-reply")?;
+        let channel = self.enforce_message_channel_action_support(request, "thread-reply")?;
+        let target = first_string_arg(&request.args, &["target", "to"]);
         let explicit_thread_id =
             first_string_arg(&request.args, &["threadId", "thread_id", "thread"]);
         let thread_id = {
@@ -2005,7 +2092,14 @@ impl ToolRuntimeHost {
         let role =
             normalize_message_role(first_string_arg(&request.args, &["role", "author"]).as_deref());
         let (entry, count) = self
-            .append_session_entry(session_id.clone(), role, message, Some(thread_id.clone()))
+            .append_session_entry(
+                session_id.clone(),
+                role,
+                message,
+                Some(thread_id.clone()),
+                channel,
+                target,
+            )
             .await;
         let message_id = entry
             .get("id")
@@ -2378,7 +2472,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
-        let _channel = self.enforce_message_channel_action_support(request, "sticker-send")?;
+        let channel = self.enforce_message_channel_action_support(request, "sticker-send")?;
         let target = required_string_arg(
             &request.args,
             &["target", "channelId", "channel_id"],
@@ -2409,6 +2503,8 @@ impl ToolRuntimeHost {
                 "assistant".to_owned(),
                 entry_text,
                 first_string_arg(&request.args, &["threadId", "thread_id", "thread"]),
+                channel,
+                Some(target.clone()),
             )
             .await;
         let message_id = entry
@@ -3630,12 +3726,16 @@ impl ToolRuntimeHost {
         role: String,
         message: String,
         thread_id: Option<String>,
+        channel_id: Option<String>,
+        target_id: Option<String>,
     ) -> (Value, usize) {
         let entry = ToolRuntimeSessionEntry {
             id: self.next_session_entry_id().await,
             role,
             message,
             thread_id,
+            channel_id,
+            target_id,
             created_at_ms: now_ms(),
             edited_at_ms: None,
             deleted_at_ms: None,
@@ -3938,6 +4038,8 @@ fn serialize_session_entry(entry: &ToolRuntimeSessionEntry) -> Value {
         "role": entry.role,
         "message": entry.message,
         "threadId": entry.thread_id,
+        "channelId": entry.channel_id,
+        "target": entry.target_id,
         "ts": entry.created_at_ms,
         "editedAt": entry.edited_at_ms,
         "deleted": entry.deleted_at_ms.is_some(),
@@ -3954,6 +4056,24 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn normalized_channel_filter_values(raw_values: Vec<String>) -> Vec<String> {
+    let mut values: Vec<String> = Vec::new();
+    for raw in raw_values {
+        let normalized = normalize_channel_id(Some(raw.as_str()))
+            .unwrap_or_else(|| raw.trim().to_ascii_lowercase());
+        if normalized.is_empty() {
+            continue;
+        }
+        if !values
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&normalized))
+        {
+            values.push(normalized);
+        }
+    }
+    values
 }
 
 fn first_string_arg(root: &Value, keys: &[&str]) -> Option<String> {
@@ -5786,7 +5906,7 @@ mod tests {
                 args: serde_json::json!({
                     "action": "send",
                     "channel": "discord",
-                    "target": "channel:ops",
+                    "target": "channel:eng",
                     "threadId": "thread-beta",
                     "role": "assistant",
                     "message": "deploy beta ready"
@@ -5808,7 +5928,8 @@ mod tests {
                     "channel": "discord",
                     "guildId": "guild-ops",
                     "query": "deploy",
-                    "channelIds": ["thread-alpha"],
+                    "channelIds": ["discord"],
+                    "targets": ["channel:ops"],
                     "authorIds": ["user"]
                 }),
                 sandboxed: false,
@@ -5826,6 +5947,53 @@ mod tests {
         );
         assert!(filtered.result.to_string().contains("deploy alpha ready"));
         assert!(!filtered.result.to_string().contains("deploy beta ready"));
+        assert_eq!(
+            filtered
+                .result
+                .pointer("/results/0/channelId")
+                .and_then(serde_json::Value::as_str),
+            Some("discord")
+        );
+        assert_eq!(
+            filtered
+                .result
+                .pointer("/results/0/target")
+                .and_then(serde_json::Value::as_str),
+            Some("channel:ops")
+        );
+
+        let read_filtered = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-search-filter-read-1".to_owned(),
+                session_id: "message-search-filter".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "read",
+                    "channel": "discord",
+                    "target": "channel:ops",
+                    "limit": 10
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("read with channel and target filters");
+        assert_eq!(
+            read_filtered
+                .result
+                .get("count")
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert!(read_filtered
+            .result
+            .to_string()
+            .contains("deploy alpha ready"));
+        assert!(!read_filtered
+            .result
+            .to_string()
+            .contains("deploy beta ready"));
     }
 
     #[tokio::test]
