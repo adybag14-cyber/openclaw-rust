@@ -13,9 +13,11 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
+use crate::channels::{normalize_channel_id, ChannelCapabilities, DriverRegistry};
 use crate::config::ToolRuntimePolicyConfig;
 use crate::security::tool_loop::{ToolLoopGuard, ToolLoopLevel};
 use crate::security::tool_policy::ToolPolicyMatcher;
+use crate::session_key::parse_session_key;
 use crate::types::ActionRequest;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +195,7 @@ pub struct ToolRuntimeHost {
     session_threads: Mutex<HashMap<String, ToolRuntimeThreadRegistry>>,
     message_events: Mutex<HashMap<String, VecDeque<ToolRuntimeMessageEvent>>>,
     member_roles: Mutex<HashMap<String, Vec<String>>>,
+    message_channel_capabilities: HashMap<String, ChannelCapabilities>,
 }
 
 impl ToolRuntimeHost {
@@ -225,6 +228,11 @@ impl ToolRuntimeHost {
 
         let policy_matcher = ToolPolicyMatcher::new(policy.clone());
         let loop_guard = ToolLoopGuard::new(policy.loop_detection);
+        let message_channel_capabilities = DriverRegistry::default_registry()
+            .capabilities()
+            .into_iter()
+            .map(|capability| (capability.name.to_owned(), capability))
+            .collect::<HashMap<_, _>>();
 
         Ok(Arc::new(Self {
             workspace_root,
@@ -244,6 +252,7 @@ impl ToolRuntimeHost {
             session_threads: Mutex::new(HashMap::new()),
             message_events: Mutex::new(HashMap::new()),
             member_roles: Mutex::new(HashMap::new()),
+            message_channel_capabilities,
         }))
     }
 
@@ -866,6 +875,52 @@ impl ToolRuntimeHost {
         }
     }
 
+    fn resolve_message_channel_for_capability(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> Option<(String, bool)> {
+        if let Some(raw_channel) = first_string_arg(&request.args, &["channel"]) {
+            let normalized = normalize_channel_id(Some(raw_channel.as_str()))
+                .unwrap_or_else(|| raw_channel.trim().to_ascii_lowercase());
+            return Some((normalized, true));
+        }
+
+        let session_id = resolve_message_session_id(request);
+        let parsed = parse_session_key(&session_id);
+        parsed.channel.map(|channel| {
+            let normalized = normalize_channel_id(Some(channel.as_str()))
+                .unwrap_or_else(|| channel.trim().to_ascii_lowercase());
+            (normalized, false)
+        })
+    }
+
+    fn enforce_message_channel_capability(
+        &self,
+        request: &ToolRuntimeRequest,
+        action: &str,
+        supports_action: fn(&ChannelCapabilities) -> bool,
+    ) -> ToolRuntimeResult<Option<String>> {
+        let Some((channel, explicit)) = self.resolve_message_channel_for_capability(request) else {
+            return Ok(None);
+        };
+        let Some(capability) = self.message_channel_capabilities.get(channel.as_str()) else {
+            if explicit {
+                return Err(ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    format!("unsupported channel: {channel}"),
+                ));
+            }
+            return Ok(None);
+        };
+        if !supports_action(capability) {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                format!("unsupported {action} channel: {}", capability.name),
+            ));
+        }
+        Ok(Some(capability.name.to_owned()))
+    }
+
     async fn execute_message_send(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
         let message = first_string_arg(&request.args, &["message", "content", "text", "prompt"])
             .ok_or_else(|| {
@@ -942,6 +997,9 @@ impl ToolRuntimeHost {
             .map(|value| value.clamp(5, 86_400));
         let session_id = resolve_message_session_id(request);
         let thread_id = first_string_arg(&request.args, &["threadId", "thread_id", "thread"]);
+        let _channel = self.enforce_message_channel_capability(request, "poll", |capability| {
+            capability.supports_polls
+        })?;
         let (entry, count) = self
             .append_session_entry(
                 session_id.clone(),
@@ -1050,6 +1108,9 @@ impl ToolRuntimeHost {
 
     async fn execute_message_edit(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_capability(request, "edit", |capability| {
+            capability.supports_edit
+        })?;
         let message = first_string_arg(&request.args, &["message", "content", "text", "prompt"])
             .ok_or_else(|| {
                 ToolRuntimeError::new(
@@ -1109,6 +1170,10 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel =
+            self.enforce_message_channel_capability(request, "delete", |capability| {
+                capability.supports_delete
+            })?;
         let explicit_message_id =
             first_string_arg(&request.args, &["messageId", "message_id", "id"]);
 
@@ -1351,6 +1416,10 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel =
+            self.enforce_message_channel_capability(request, "thread", |capability| {
+                capability.supports_threads
+            })?;
         let name = first_string_arg(
             &request.args,
             &["threadName", "thread_name", "name", "title"],
@@ -1399,6 +1468,10 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel =
+            self.enforce_message_channel_capability(request, "thread", |capability| {
+                capability.supports_threads
+            })?;
         let include_archived =
             first_bool_arg(&request.args, &["includeArchived", "include_archived"])
                 .unwrap_or(false);
@@ -1447,6 +1520,10 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel =
+            self.enforce_message_channel_capability(request, "thread", |capability| {
+                capability.supports_threads
+            })?;
         let explicit_thread_id =
             first_string_arg(&request.args, &["threadId", "thread_id", "thread"]);
         let thread_id = {
@@ -1813,6 +1890,10 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel =
+            self.enforce_message_channel_capability(request, "reactions", |capability| {
+                capability.supports_reactions
+            })?;
         let explicit_message_id =
             first_string_arg(&request.args, &["messageId", "message_id", "id"]);
         let remove = first_bool_arg(&request.args, &["remove", "delete"]).unwrap_or(false);
@@ -1915,6 +1996,10 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel =
+            self.enforce_message_channel_capability(request, "reactions", |capability| {
+                capability.supports_reactions
+            })?;
         let explicit_message_id =
             first_string_arg(&request.args, &["messageId", "message_id", "id"]);
         let timelines = self.session_timelines.lock().await;
@@ -4249,6 +4334,99 @@ mod tests {
             .result
             .to_string()
             .contains("[poll] Lunch?"));
+    }
+
+    #[tokio::test]
+    async fn tool_runtime_message_tool_enforces_channel_capabilities() {
+        let host = build_host(default_policy()).await;
+
+        let poll_ok = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-poll-ok-1".to_owned(),
+                session_id: "agent:main:telegram:dm:+15550001111".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "poll",
+                    "channel": "tg",
+                    "question": "Deploy now?",
+                    "options": ["Yes", "No"]
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message poll on telegram");
+        assert_eq!(
+            poll_ok
+                .result
+                .pointer("/poll/question")
+                .and_then(serde_json::Value::as_str),
+            Some("Deploy now?")
+        );
+
+        let poll_unsupported = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-poll-unsupported-1".to_owned(),
+                session_id: "agent:main:slack:dm:operator".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "poll",
+                    "question": "Deploy now?",
+                    "options": ["Yes", "No"]
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect_err("poll unsupported for slack");
+        assert_eq!(poll_unsupported.code.as_str(), "invalid_args");
+        assert!(poll_unsupported
+            .message
+            .contains("unsupported poll channel: slack"));
+
+        let thread_unsupported = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-thread-unsupported-1".to_owned(),
+                session_id: "agent:main:telegram:dm:+15550001111".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "thread-create",
+                    "threadName": "ops-thread"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect_err("thread unsupported for telegram");
+        assert_eq!(thread_unsupported.code.as_str(), "invalid_args");
+        assert!(thread_unsupported
+            .message
+            .contains("unsupported thread channel: telegram"));
+
+        let unknown_channel = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-unknown-1".to_owned(),
+                session_id: "message-parity-channel-cap".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "poll",
+                    "channel": "custom-bridge",
+                    "question": "Deploy now?",
+                    "options": ["Yes", "No"]
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect_err("unknown message channel rejected");
+        assert_eq!(unknown_channel.code.as_str(), "invalid_args");
+        assert!(unknown_channel
+            .message
+            .contains("unsupported channel: custom-bridge"));
     }
 
     #[tokio::test]

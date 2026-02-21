@@ -645,6 +645,69 @@
       }
     },
     {
+      "name": "message-poll-telegram-alias",
+      "request": {
+        "request_id": "cp3-message-poll-telegram-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "poll",
+          "channel": "tg",
+          "question": "Ship today?",
+          "options": [
+            "Yes",
+            "No"
+          ]
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"Ship today?\""
+      }
+    },
+    {
+      "name": "message-poll-unsupported-channel",
+      "request": {
+        "request_id": "cp3-message-poll-unsupported-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "poll",
+          "channel": "slack",
+          "question": "Ship today?",
+          "options": [
+            "Yes",
+            "No"
+          ]
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "invalid_args"
+      }
+    },
+    {
+      "name": "message-thread-unsupported-channel",
+      "request": {
+        "request_id": "cp3-message-thread-unsupported-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "thread-create",
+          "channel": "telegram",
+          "threadName": "ops-thread-unsupported"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "invalid_args"
+      }
+    },
+    {
       "name": "browser-open",
       "request": {
         "request_id": "cp3-browser-open-1",
