@@ -62,3 +62,4 @@ services:
       PARITY_SCENARIO_DELAY_MS: "125"
       PARITY_WAIT_FOR_CLIENTS: "openclaw-agent-rs,parity-assertor"
       PARITY_PRODUCER_WAIT_SECS: "60"
+      PARITY_PRODUCER_TAIL_SECS: "70"

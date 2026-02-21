@@ -10,6 +10,7 @@ GATEWAY_URL = os.getenv("PARITY_GATEWAY_URL", "ws://gateway:8765/ws")
 GATEWAY_TOKEN = os.getenv("PARITY_GATEWAY_TOKEN", "")
 ACTION_ID = os.getenv("PARITY_ACTION_ID", "parity-action-1")
 WAIT_SECS = float(os.getenv("PARITY_PRODUCER_WAIT_SECS", "45"))
+TAIL_SECS = float(os.getenv("PARITY_PRODUCER_TAIL_SECS", "0"))
 SCENARIO_JSON = os.getenv("PARITY_SCENARIO_JSON", "").strip()
 SCENARIO_DELAY_MS = int(os.getenv("PARITY_SCENARIO_DELAY_MS", "150"))
 WAIT_FOR_CLIENTS = [
@@ -161,7 +162,10 @@ async def main() -> None:
             await asyncio.sleep(max(SCENARIO_DELAY_MS, 0) / 1_000.0)
 
         print(f"producer: dispatched actions {', '.join(emitted)}")
-        await asyncio.sleep(0.25)
+        if TAIL_SECS > 0:
+            await asyncio.sleep(TAIL_SECS)
+        else:
+            await asyncio.sleep(0.25)
 
 
 if __name__ == "__main__":
