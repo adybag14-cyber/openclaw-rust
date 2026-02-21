@@ -13216,7 +13216,65 @@ fn classify_channel_activity_event(event: &str) -> Option<ChannelActivityEvent> 
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric())
         .collect::<String>();
-    match normalized_suffix.as_str() {
+    if let Some(classified) = classify_channel_activity_token(normalized_suffix.as_str()) {
+        return Some(classified);
+    }
+
+    let compact = normalized
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>();
+    if compact.is_empty() {
+        return None;
+    }
+
+    if compact.contains("messagereceived")
+        || compact.contains("incoming")
+        || compact.contains("inbound")
+        || compact.contains("received")
+    {
+        return Some(ChannelActivityEvent::Inbound);
+    }
+    if compact.contains("messagesent")
+        || compact.contains("outbound")
+        || compact.contains("delivered")
+        || compact.contains("delivery")
+        || compact.contains("acknowledged")
+        || compact.contains("ack")
+    {
+        return Some(ChannelActivityEvent::Outbound);
+    }
+    if compact.contains("reaction") || compact.contains("reacted") {
+        return Some(ChannelActivityEvent::Reaction);
+    }
+    if compact.contains("messageedit")
+        || compact.contains("messageedited")
+        || compact.contains("messageupdated")
+        || compact.contains("edited")
+    {
+        return Some(ChannelActivityEvent::Edit);
+    }
+    if compact.contains("messagedelete")
+        || compact.contains("messagedeleted")
+        || compact.contains("messageremoved")
+        || compact.contains("deleted")
+    {
+        return Some(ChannelActivityEvent::Delete);
+    }
+    if compact.contains("threadreply")
+        || compact.contains("threadcreate")
+        || compact.contains("threadcreated")
+        || compact.contains("threadlist")
+        || compact == "thread"
+    {
+        return Some(ChannelActivityEvent::Thread);
+    }
+
+    None
+}
+
+fn classify_channel_activity_token(token: &str) -> Option<ChannelActivityEvent> {
+    match token {
         "message" | "inbound" | "incoming" | "received" | "recv" | "messagereceived" => {
             Some(ChannelActivityEvent::Inbound)
         }
@@ -27326,9 +27384,11 @@ mod tests {
         let dispatcher = RpcDispatcher::new();
         for event in [
             "telegram.message.reaction-added",
+            "telegram.message.reaction.added",
             "telegram.message.edited",
             "telegram.message.deleted",
             "telegram.thread-reply",
+            "telegram.message.thread.reply",
         ] {
             dispatcher
                 .ingest_event_frame(&serde_json::json!({
