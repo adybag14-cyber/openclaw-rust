@@ -722,7 +722,7 @@
       "expect": {
         "ok": true,
         "status": "completed",
-        "contains": "\"poll\":false"
+        "contains": "\"threadCreate\":false"
       }
     },
     {
@@ -741,6 +741,82 @@
         "ok": true,
         "status": "completed",
         "contains": "\"threadCreate\":false"
+      }
+    },
+    {
+      "name": "message-role-add-unsupported-channel",
+      "request": {
+        "request_id": "cp3-message-role-add-unsupported-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "role-add",
+          "channel": "telegram",
+          "guildId": "guild-a",
+          "userId": "user-a",
+          "roleId": "role-admin"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "invalid_args"
+      }
+    },
+    {
+      "name": "message-search-seed-discord-channel",
+      "request": {
+        "request_id": "cp3-message-search-seed-discord-1",
+        "session_id": "cp3-search-discord",
+        "tool_name": "message",
+        "args": {
+          "action": "send",
+          "channel": "discord",
+          "message": "deploy checklist ready"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "deploy checklist ready"
+      }
+    },
+    {
+      "name": "message-search-discord-channel",
+      "request": {
+        "request_id": "cp3-message-search-discord-1",
+        "session_id": "cp3-search-discord",
+        "tool_name": "message",
+        "args": {
+          "action": "search",
+          "channel": "discord",
+          "query": "deploy"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"action\":\"search\""
+      }
+    },
+    {
+      "name": "message-search-unsupported-channel",
+      "request": {
+        "request_id": "cp3-message-search-unsupported-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "search",
+          "channel": "slack",
+          "query": "deploy"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "invalid_args"
       }
     },
     {

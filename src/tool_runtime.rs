@@ -868,6 +868,7 @@ impl ToolRuntimeHost {
             "unpin" => self.execute_message_unpin(request).await,
             "pins" | "list-pins" | "list_pins" => self.execute_message_list_pins(request).await,
             "permissions" => self.execute_message_permissions(request).await,
+            "search" => self.execute_message_search(request).await,
             "thread-create" | "thread_create" => self.execute_message_thread_create(request).await,
             "thread-list" | "thread_list" => self.execute_message_thread_list(request).await,
             "thread-reply" | "thread_reply" => self.execute_message_thread_reply(request).await,
@@ -922,11 +923,36 @@ impl ToolRuntimeHost {
         })
     }
 
-    fn enforce_message_channel_capability(
+    fn message_channel_supports_action(capability: &ChannelCapabilities, action: &str) -> bool {
+        match action {
+            "poll" => matches!(
+                capability.name,
+                "whatsapp" | "telegram" | "discord" | "matrix" | "msteams"
+            ),
+            "react" => matches!(
+                capability.name,
+                "discord" | "googlechat" | "slack" | "telegram" | "whatsapp" | "signal"
+            ),
+            "reactions" => matches!(capability.name, "discord" | "googlechat" | "slack"),
+            "read" => matches!(capability.name, "discord" | "slack"),
+            "edit" => matches!(capability.name, "discord" | "slack"),
+            "delete" => matches!(capability.name, "discord" | "slack" | "telegram"),
+            "pin" | "unpin" | "pins" => matches!(capability.name, "discord" | "slack"),
+            "permissions" | "search" => capability.name == "discord",
+            "thread-create" | "thread-list" | "thread-reply" => capability.name == "discord",
+            "member-info" => matches!(capability.name, "discord" | "slack"),
+            "role-info" | "channel-info" | "channel-list" | "voice-status" | "event-list"
+            | "event-create" | "role-add" | "role-remove" | "timeout" | "kick" | "ban" => {
+                capability.name == "discord"
+            }
+            _ => true,
+        }
+    }
+
+    fn enforce_message_channel_action_support(
         &self,
         request: &ToolRuntimeRequest,
         action: &str,
-        supports_action: fn(&ChannelCapabilities) -> bool,
     ) -> ToolRuntimeResult<Option<String>> {
         let Some((channel, explicit)) = self.resolve_message_channel_for_capability(request) else {
             return Ok(None);
@@ -940,7 +966,7 @@ impl ToolRuntimeHost {
             }
             return Ok(None);
         };
-        if !supports_action(capability) {
+        if !Self::message_channel_supports_action(capability, action) {
             return Err(ToolRuntimeError::new(
                 ToolRuntimeErrorCode::InvalidArgs,
                 format!("unsupported {action} channel: {}", capability.name),
@@ -1025,9 +1051,7 @@ impl ToolRuntimeHost {
             .map(|value| value.clamp(5, 86_400));
         let session_id = resolve_message_session_id(request);
         let thread_id = first_string_arg(&request.args, &["threadId", "thread_id", "thread"]);
-        let _channel = self.enforce_message_channel_capability(request, "poll", |capability| {
-            capability.supports_polls
-        })?;
+        let _channel = self.enforce_message_channel_action_support(request, "poll")?;
         let (entry, count) = self
             .append_session_entry(
                 session_id.clone(),
@@ -1062,6 +1086,7 @@ impl ToolRuntimeHost {
 
     async fn execute_message_read(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "read")?;
         let limit = request
             .args
             .get("limit")
@@ -1136,9 +1161,7 @@ impl ToolRuntimeHost {
 
     async fn execute_message_edit(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
-        let _channel = self.enforce_message_channel_capability(request, "edit", |capability| {
-            capability.supports_edit
-        })?;
+        let _channel = self.enforce_message_channel_action_support(request, "edit")?;
         let message = first_string_arg(&request.args, &["message", "content", "text", "prompt"])
             .ok_or_else(|| {
                 ToolRuntimeError::new(
@@ -1198,10 +1221,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
-        let _channel =
-            self.enforce_message_channel_capability(request, "delete", |capability| {
-                capability.supports_delete
-            })?;
+        let _channel = self.enforce_message_channel_action_support(request, "delete")?;
         let explicit_message_id =
             first_string_arg(&request.args, &["messageId", "message_id", "id"]);
 
@@ -1252,6 +1272,7 @@ impl ToolRuntimeHost {
 
     async fn execute_message_pin(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "pin")?;
         let explicit_message_id =
             first_string_arg(&request.args, &["messageId", "message_id", "id"]);
         let mut timelines = self.session_timelines.lock().await;
@@ -1307,6 +1328,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "unpin")?;
         let explicit_message_id =
             first_string_arg(&request.args, &["messageId", "message_id", "id"]);
         let mut timelines = self.session_timelines.lock().await;
@@ -1356,6 +1378,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "pins")?;
         let limit = request
             .args
             .get("limit")
@@ -1419,6 +1442,7 @@ impl ToolRuntimeHost {
             "threadCreate": true,
             "threadList": true,
             "threadReply": true,
+            "search": true,
             "memberInfo": true,
             "roleInfo": true,
             "channelInfo": true,
@@ -1450,14 +1474,85 @@ impl ToolRuntimeHost {
                     "permissions": permissions
                 }));
             };
-            permissions["poll"] = Value::Bool(capability.supports_polls);
-            permissions["edit"] = Value::Bool(capability.supports_edit);
-            permissions["delete"] = Value::Bool(capability.supports_delete);
-            permissions["react"] = Value::Bool(capability.supports_reactions);
-            permissions["reactions"] = Value::Bool(capability.supports_reactions);
-            permissions["threadCreate"] = Value::Bool(capability.supports_threads);
-            permissions["threadList"] = Value::Bool(capability.supports_threads);
-            permissions["threadReply"] = Value::Bool(capability.supports_threads);
+            permissions["poll"] =
+                Value::Bool(Self::message_channel_supports_action(capability, "poll"));
+            permissions["react"] =
+                Value::Bool(Self::message_channel_supports_action(capability, "react"));
+            permissions["reactions"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "reactions",
+            ));
+            permissions["read"] =
+                Value::Bool(Self::message_channel_supports_action(capability, "read"));
+            permissions["edit"] =
+                Value::Bool(Self::message_channel_supports_action(capability, "edit"));
+            permissions["delete"] =
+                Value::Bool(Self::message_channel_supports_action(capability, "delete"));
+            permissions["pin"] =
+                Value::Bool(Self::message_channel_supports_action(capability, "pin"));
+            permissions["unpin"] =
+                Value::Bool(Self::message_channel_supports_action(capability, "unpin"));
+            permissions["pins"] =
+                Value::Bool(Self::message_channel_supports_action(capability, "pins"));
+            permissions["permissions"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "permissions",
+            ));
+            permissions["search"] =
+                Value::Bool(Self::message_channel_supports_action(capability, "search"));
+            permissions["threadCreate"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "thread-create",
+            ));
+            permissions["threadList"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "thread-list",
+            ));
+            permissions["threadReply"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "thread-reply",
+            ));
+            permissions["memberInfo"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "member-info",
+            ));
+            permissions["roleInfo"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "role-info",
+            ));
+            permissions["channelInfo"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "channel-info",
+            ));
+            permissions["channelList"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "channel-list",
+            ));
+            permissions["voiceStatus"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "voice-status",
+            ));
+            permissions["eventList"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "event-list",
+            ));
+            permissions["eventCreate"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "event-create",
+            ));
+            permissions["roleAdd"] = Value::Bool(Self::message_channel_supports_action(
+                capability, "role-add",
+            ));
+            permissions["roleRemove"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "role-remove",
+            ));
+            permissions["timeout"] =
+                Value::Bool(Self::message_channel_supports_action(capability, "timeout"));
+            permissions["kick"] =
+                Value::Bool(Self::message_channel_supports_action(capability, "kick"));
+            permissions["ban"] =
+                Value::Bool(Self::message_channel_supports_action(capability, "ban"));
         }
         Ok(json!({
             "status": "completed",
@@ -1468,15 +1563,72 @@ impl ToolRuntimeHost {
         }))
     }
 
+    async fn execute_message_search(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "search")?;
+        let query = required_string_arg(&request.args, &["query", "q"], "query")?;
+        let limit = request
+            .args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(50)
+            .clamp(1, 200) as usize;
+        let include_deleted =
+            first_bool_arg(&request.args, &["includeDeleted", "include_deleted"]).unwrap_or(false);
+        let thread_id_filter =
+            first_string_arg(&request.args, &["threadId", "thread_id", "thread"]);
+        let guild_id = first_string_arg(&request.args, &["guildId", "guild_id"]);
+        let query_normalized = query.trim().to_ascii_lowercase();
+
+        let timelines = self.session_timelines.lock().await;
+        let mut results = Vec::new();
+        if let Some(timeline) = timelines.get(&session_id) {
+            for entry in timeline.entries.iter().rev() {
+                if !include_deleted && entry.deleted_at_ms.is_some() {
+                    continue;
+                }
+                if thread_id_filter
+                    .as_deref()
+                    .is_some_and(|thread_id| entry.thread_id.as_deref() != Some(thread_id))
+                {
+                    continue;
+                }
+                if !entry
+                    .message
+                    .to_ascii_lowercase()
+                    .contains(&query_normalized)
+                {
+                    continue;
+                }
+                results.push(serialize_session_entry(entry));
+                if results.len() >= limit {
+                    break;
+                }
+            }
+        }
+
+        Ok(json!({
+            "status": "completed",
+            "action": "search",
+            "sessionId": session_id,
+            "guildId": guild_id,
+            "query": query,
+            "threadId": thread_id_filter,
+            "results": results,
+            "count": results.len(),
+            "limit": limit
+        }))
+    }
+
     async fn execute_message_thread_create(
         &self,
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
-        let _channel =
-            self.enforce_message_channel_capability(request, "thread", |capability| {
-                capability.supports_threads
-            })?;
+        let _channel = self.enforce_message_channel_action_support(request, "thread-create")?;
         let name = first_string_arg(
             &request.args,
             &["threadName", "thread_name", "name", "title"],
@@ -1525,10 +1677,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
-        let _channel =
-            self.enforce_message_channel_capability(request, "thread", |capability| {
-                capability.supports_threads
-            })?;
+        let _channel = self.enforce_message_channel_action_support(request, "thread-list")?;
         let include_archived =
             first_bool_arg(&request.args, &["includeArchived", "include_archived"])
                 .unwrap_or(false);
@@ -1577,10 +1726,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
-        let _channel =
-            self.enforce_message_channel_capability(request, "thread", |capability| {
-                capability.supports_threads
-            })?;
+        let _channel = self.enforce_message_channel_action_support(request, "thread-reply")?;
         let explicit_thread_id =
             first_string_arg(&request.args, &["threadId", "thread_id", "thread"]);
         let thread_id = {
@@ -1651,6 +1797,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "member-info")?;
         let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
         let user_id = required_string_arg(&request.args, &["userId", "user_id"], "userId")?;
         let key = message_member_role_key(&guild_id, &user_id);
@@ -1680,6 +1827,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "role-info")?;
         let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
         let role_id = first_string_arg(&request.args, &["roleId", "role_id"]);
         let role_name = role_id
@@ -1703,6 +1851,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "channel-info")?;
         let target = required_string_arg(
             &request.args,
             &["target", "channelId", "channel_id"],
@@ -1726,6 +1875,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "channel-list")?;
         let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
         Ok(json!({
             "status": "completed",
@@ -1753,6 +1903,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "voice-status")?;
         let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
         let user_id = required_string_arg(&request.args, &["userId", "user_id"], "userId")?;
         Ok(json!({
@@ -1775,6 +1926,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "event-list")?;
         let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
         let limit = request
             .args
@@ -1808,6 +1960,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "event-create")?;
         let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
         let event_name =
             required_string_arg(&request.args, &["eventName", "event_name"], "eventName")?;
@@ -1846,6 +1999,7 @@ impl ToolRuntimeHost {
         action: &str,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, action)?;
         let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
         let user_id = required_string_arg(&request.args, &["userId", "user_id"], "userId")?;
         let role_id = required_string_arg(&request.args, &["roleId", "role_id"], "roleId")?;
@@ -1882,6 +2036,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "timeout")?;
         let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
         let user_id = required_string_arg(&request.args, &["userId", "user_id"], "userId")?;
         let duration_min = request
@@ -1905,6 +2060,7 @@ impl ToolRuntimeHost {
 
     async fn execute_message_kick(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "kick")?;
         let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
         let user_id = required_string_arg(&request.args, &["userId", "user_id"], "userId")?;
         let reason = first_string_arg(&request.args, &["reason"]);
@@ -1921,6 +2077,7 @@ impl ToolRuntimeHost {
 
     async fn execute_message_ban(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "ban")?;
         let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
         let user_id = required_string_arg(&request.args, &["userId", "user_id"], "userId")?;
         let reason = first_string_arg(&request.args, &["reason"]);
@@ -1947,10 +2104,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
-        let _channel =
-            self.enforce_message_channel_capability(request, "reactions", |capability| {
-                capability.supports_reactions
-            })?;
+        let _channel = self.enforce_message_channel_action_support(request, "react")?;
         let explicit_message_id =
             first_string_arg(&request.args, &["messageId", "message_id", "id"]);
         let remove = first_bool_arg(&request.args, &["remove", "delete"]).unwrap_or(false);
@@ -2053,10 +2207,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
-        let _channel =
-            self.enforce_message_channel_capability(request, "reactions", |capability| {
-                capability.supports_reactions
-            })?;
+        let _channel = self.enforce_message_channel_action_support(request, "reactions")?;
         let explicit_message_id =
             first_string_arg(&request.args, &["messageId", "message_id", "id"]);
         let timelines = self.session_timelines.lock().await;
@@ -2292,11 +2443,8 @@ impl ToolRuntimeHost {
                 "count": 0
             })),
             "approve" | "reject" => {
-                let request_id = required_string_arg(
-                    &request.args,
-                    &["requestId", "request_id"],
-                    "requestId",
-                )?;
+                let request_id =
+                    required_string_arg(&request.args, &["requestId", "request_id"], "requestId")?;
                 let approved = action == "approve";
                 Ok(json!({
                     "status": "completed",
@@ -4836,7 +4984,7 @@ mod tests {
         assert_eq!(thread_unsupported.code.as_str(), "invalid_args");
         assert!(thread_unsupported
             .message
-            .contains("unsupported thread channel: telegram"));
+            .contains("unsupported thread-create channel: telegram"));
 
         let permissions_slack = host
             .execute(ToolRuntimeRequest {
@@ -4864,7 +5012,35 @@ mod tests {
                 .result
                 .pointer("/permissions/threadCreate")
                 .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            permissions_slack
+                .result
+                .pointer("/permissions/memberInfo")
+                .and_then(serde_json::Value::as_bool),
             Some(true)
+        );
+        assert_eq!(
+            permissions_slack
+                .result
+                .pointer("/permissions/roleAdd")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            permissions_slack
+                .result
+                .pointer("/permissions/search")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            permissions_slack
+                .result
+                .pointer("/permissions/permissions")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
         );
 
         let permissions_telegram = host
@@ -4895,6 +5071,143 @@ mod tests {
                 .and_then(serde_json::Value::as_bool),
             Some(false)
         );
+        assert_eq!(
+            permissions_telegram
+                .result
+                .pointer("/permissions/roleAdd")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+
+        let permissions_discord = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-permissions-discord-1".to_owned(),
+                session_id: "agent:main:discord:group:ops".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "permissions"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("permissions for discord");
+        assert_eq!(
+            permissions_discord
+                .result
+                .pointer("/permissions/threadCreate")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            permissions_discord
+                .result
+                .pointer("/permissions/roleAdd")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            permissions_discord
+                .result
+                .pointer("/permissions/search")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            permissions_discord
+                .result
+                .pointer("/permissions/permissions")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let role_add_unsupported = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-role-add-unsupported-1".to_owned(),
+                session_id: "agent:main:telegram:dm:+15550001111".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "role-add",
+                    "guildId": "guild-a",
+                    "userId": "user-a",
+                    "roleId": "role-admin"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect_err("role-add unsupported for telegram");
+        assert_eq!(role_add_unsupported.code.as_str(), "invalid_args");
+        assert!(role_add_unsupported
+            .message
+            .contains("unsupported role-add channel: telegram"));
+
+        let _ = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-search-seed-1".to_owned(),
+                session_id: "agent:main:discord:group:ops".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "send",
+                    "message": "deploy checklist ready",
+                    "channel": "discord"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("seed discord search message");
+
+        let search_discord = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-search-discord-1".to_owned(),
+                session_id: "agent:main:discord:group:ops".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "search",
+                    "channel": "discord",
+                    "query": "deploy"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("search on discord");
+        assert_eq!(
+            search_discord
+                .result
+                .get("count")
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert!(search_discord
+            .result
+            .to_string()
+            .contains("deploy checklist ready"));
+
+        let search_unsupported = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-search-slack-unsupported-1".to_owned(),
+                session_id: "agent:main:slack:dm:operator".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "search",
+                    "query": "deploy"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect_err("search unsupported for slack");
+        assert_eq!(search_unsupported.code.as_str(), "invalid_args");
+        assert!(search_unsupported
+            .message
+            .contains("unsupported search channel: slack"));
 
         let unknown_channel = host
             .execute(ToolRuntimeRequest {
@@ -5429,6 +5742,8 @@ mod tests {
             .await
             .expect_err("run should reject mismatched rawCommand");
         assert_eq!(mismatch.code.as_str(), "invalid_args");
-        assert!(mismatch.message.contains("rawCommand does not match command"));
+        assert!(mismatch
+            .message
+            .contains("rawCommand does not match command"));
     }
 }
