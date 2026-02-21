@@ -177,6 +177,26 @@ struct ToolRuntimeMessageEvent {
     created_at_ms: u64,
 }
 
+#[derive(Debug, Clone)]
+struct ToolRuntimeMessageEmoji {
+    id: String,
+    guild_id: Option<String>,
+    name: String,
+    media: Option<String>,
+    created_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ToolRuntimeMessageSticker {
+    id: String,
+    guild_id: String,
+    name: String,
+    description: String,
+    tags: String,
+    media: Option<String>,
+    created_at_ms: u64,
+}
+
 const TOOL_RUNTIME_NODE_COMMANDS: &[&str] = &[
     "camera.list",
     "camera.snap",
@@ -218,10 +238,14 @@ pub struct ToolRuntimeHost {
     session_entry_counter: Mutex<u64>,
     thread_counter: Mutex<u64>,
     message_event_counter: Mutex<u64>,
+    emoji_counter: Mutex<u64>,
+    sticker_counter: Mutex<u64>,
     process_sessions: Mutex<HashMap<String, ToolRuntimeProcessSession>>,
     session_timelines: Mutex<HashMap<String, ToolRuntimeSessionTimeline>>,
     session_threads: Mutex<HashMap<String, ToolRuntimeThreadRegistry>>,
     message_events: Mutex<HashMap<String, VecDeque<ToolRuntimeMessageEvent>>>,
+    message_emojis: Mutex<HashMap<String, VecDeque<ToolRuntimeMessageEmoji>>>,
+    message_stickers: Mutex<HashMap<String, VecDeque<ToolRuntimeMessageSticker>>>,
     member_roles: Mutex<HashMap<String, Vec<String>>>,
     message_channel_capabilities: HashMap<String, ChannelCapabilities>,
 }
@@ -275,10 +299,14 @@ impl ToolRuntimeHost {
             session_entry_counter: Mutex::new(0),
             thread_counter: Mutex::new(0),
             message_event_counter: Mutex::new(0),
+            emoji_counter: Mutex::new(0),
+            sticker_counter: Mutex::new(0),
             process_sessions: Mutex::new(HashMap::new()),
             session_timelines: Mutex::new(HashMap::new()),
             session_threads: Mutex::new(HashMap::new()),
             message_events: Mutex::new(HashMap::new()),
+            message_emojis: Mutex::new(HashMap::new()),
+            message_stickers: Mutex::new(HashMap::new()),
             member_roles: Mutex::new(HashMap::new()),
             message_channel_capabilities,
         }))
@@ -879,6 +907,12 @@ impl ToolRuntimeHost {
             "voice-status" | "voice_status" => self.execute_message_voice_status(request).await,
             "event-list" | "event_list" => self.execute_message_event_list(request).await,
             "event-create" | "event_create" => self.execute_message_event_create(request).await,
+            "emoji-list" | "emoji_list" => self.execute_message_emoji_list(request).await,
+            "emoji-upload" | "emoji_upload" => self.execute_message_emoji_upload(request).await,
+            "sticker-send" | "sticker_send" => self.execute_message_sticker_send(request).await,
+            "sticker-upload" | "sticker_upload" => {
+                self.execute_message_sticker_upload(request).await
+            }
             "role-add" | "role_add" => {
                 self.execute_message_role_mutation(request, "role-add")
                     .await
@@ -940,6 +974,8 @@ impl ToolRuntimeHost {
             "pin" | "unpin" | "pins" => matches!(capability.name, "discord" | "slack"),
             "permissions" | "search" => capability.name == "discord",
             "thread-create" | "thread-list" | "thread-reply" => capability.name == "discord",
+            "emoji-list" => matches!(capability.name, "discord" | "slack"),
+            "emoji-upload" | "sticker-send" | "sticker-upload" => capability.name == "discord",
             "member-info" => matches!(capability.name, "discord" | "slack"),
             "role-info" | "channel-info" | "channel-list" | "voice-status" | "event-list"
             | "event-create" | "role-add" | "role-remove" | "timeout" | "kick" | "ban" => {
@@ -1450,6 +1486,10 @@ impl ToolRuntimeHost {
             "voiceStatus": true,
             "eventList": true,
             "eventCreate": true,
+            "emojiList": true,
+            "emojiUpload": true,
+            "stickerSend": true,
+            "stickerUpload": true,
             "roleAdd": true,
             "roleRemove": true,
             "timeout": true,
@@ -1539,6 +1579,22 @@ impl ToolRuntimeHost {
             permissions["eventCreate"] = Value::Bool(Self::message_channel_supports_action(
                 capability,
                 "event-create",
+            ));
+            permissions["emojiList"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "emoji-list",
+            ));
+            permissions["emojiUpload"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "emoji-upload",
+            ));
+            permissions["stickerSend"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "sticker-send",
+            ));
+            permissions["stickerUpload"] = Value::Bool(Self::message_channel_supports_action(
+                capability,
+                "sticker-upload",
             ));
             permissions["roleAdd"] = Value::Bool(Self::message_channel_supports_action(
                 capability, "role-add",
@@ -1990,6 +2046,248 @@ impl ToolRuntimeHost {
             "action": "event-create",
             "sessionId": session_id,
             "event": serialize_message_event(&event)
+        }))
+    }
+
+    async fn execute_message_emoji_list(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let resolved_channel =
+            self.enforce_message_channel_action_support(request, "emoji-list")?;
+        let guild_id = first_string_arg(&request.args, &["guildId", "guild_id"]);
+        let limit = request
+            .args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(100)
+            .clamp(1, 250) as usize;
+
+        let channel = resolved_channel.unwrap_or_else(|| "discord".to_owned());
+        let mut rows = match channel.as_str() {
+            "slack" => vec![
+                json!({
+                    "id": "slack-emoji-check",
+                    "name": "white_check_mark",
+                    "url": "https://emoji.slack-edge.com/T000/white_check_mark/1.png"
+                }),
+                json!({
+                    "id": "slack-emoji-rocket",
+                    "name": "rocket",
+                    "url": "https://emoji.slack-edge.com/T000/rocket/1.png"
+                }),
+            ],
+            _ => vec![
+                json!({
+                    "id": "discord-emoji-check",
+                    "name": "check",
+                    "animated": false
+                }),
+                json!({
+                    "id": "discord-emoji-rocket",
+                    "name": "rocket",
+                    "animated": false
+                }),
+            ],
+        };
+
+        let registry = self.message_emojis.lock().await;
+        let mut dynamic = Vec::new();
+        if channel == "discord" {
+            match guild_id.as_deref() {
+                Some(guild_id) => {
+                    let key = message_asset_registry_key("discord", Some(guild_id));
+                    if let Some(emojis) = registry.get(&key) {
+                        dynamic.extend(emojis.iter().map(serialize_message_emoji));
+                    }
+                }
+                None => {
+                    dynamic.extend(
+                        registry
+                            .iter()
+                            .filter(|(key, _)| key.starts_with("discord::"))
+                            .flat_map(|(_, emojis)| emojis.iter().map(serialize_message_emoji)),
+                    );
+                }
+            }
+        } else {
+            let key = message_asset_registry_key("slack", None);
+            if let Some(emojis) = registry.get(&key) {
+                dynamic.extend(emojis.iter().map(serialize_message_emoji));
+            }
+        }
+        rows.extend(dynamic);
+        rows.sort_by(|left, right| {
+            let left_name = left
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let right_name = right
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            left_name.cmp(&right_name)
+        });
+        if rows.len() > limit {
+            rows.truncate(limit);
+        }
+
+        Ok(json!({
+            "status": "completed",
+            "action": "emoji-list",
+            "sessionId": session_id,
+            "channel": channel,
+            "guildId": guild_id,
+            "emojis": rows,
+            "count": rows.len(),
+            "limit": limit
+        }))
+    }
+
+    async fn execute_message_emoji_upload(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "emoji-upload")?;
+        let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
+        let emoji_name = required_string_arg(
+            &request.args,
+            &["emojiName", "emoji_name", "name"],
+            "emojiName",
+        )?;
+        let media = required_string_arg(&request.args, &["media", "file", "path"], "media")?;
+
+        let emoji = ToolRuntimeMessageEmoji {
+            id: self.next_emoji_id().await,
+            guild_id: Some(guild_id.clone()),
+            name: emoji_name,
+            media: Some(media),
+            created_at_ms: now_ms(),
+        };
+        let mut registry = self.message_emojis.lock().await;
+        let key = message_asset_registry_key("discord", Some(guild_id.as_str()));
+        let bucket = registry.entry(key).or_default();
+        bucket.push_back(emoji.clone());
+        while bucket.len() > self.session_history_limit {
+            bucket.pop_front();
+        }
+
+        Ok(json!({
+            "status": "completed",
+            "action": "emoji-upload",
+            "sessionId": session_id,
+            "guildId": guild_id,
+            "emoji": serialize_message_emoji(&emoji)
+        }))
+    }
+
+    async fn execute_message_sticker_send(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "sticker-send")?;
+        let target = required_string_arg(
+            &request.args,
+            &["target", "channelId", "channel_id"],
+            "target",
+        )?;
+        let mut sticker_ids =
+            first_string_list_arg(&request.args, &["stickerIds", "sticker_ids"], 8, 128);
+        if sticker_ids.is_empty() {
+            if let Some(single) = first_string_arg(&request.args, &["stickerId", "sticker_id"]) {
+                sticker_ids.push(single);
+            }
+        }
+        if sticker_ids.is_empty() {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                "missing required parameter `stickerId`",
+            ));
+        }
+
+        let message = first_string_arg(&request.args, &["message", "content", "text"]);
+        let entry_text = match message.as_deref() {
+            Some(text) => format!("[sticker:{}] {text}", sticker_ids.join(",")),
+            None => format!("[sticker:{}]", sticker_ids.join(",")),
+        };
+        let (entry, count) = self
+            .append_session_entry(
+                session_id.clone(),
+                "assistant".to_owned(),
+                entry_text,
+                first_string_arg(&request.args, &["threadId", "thread_id", "thread"]),
+            )
+            .await;
+        let message_id = entry
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+
+        Ok(json!({
+            "status": "completed",
+            "action": "sticker-send",
+            "sessionId": session_id,
+            "target": target,
+            "stickerIds": sticker_ids,
+            "messageId": message_id,
+            "entry": entry,
+            "count": count
+        }))
+    }
+
+    async fn execute_message_sticker_upload(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let _channel = self.enforce_message_channel_action_support(request, "sticker-upload")?;
+        let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
+        let sticker_name = required_string_arg(
+            &request.args,
+            &["stickerName", "sticker_name", "name"],
+            "stickerName",
+        )?;
+        let sticker_desc = required_string_arg(
+            &request.args,
+            &["stickerDesc", "sticker_desc", "description", "desc"],
+            "stickerDesc",
+        )?;
+        let sticker_tags = required_string_arg(
+            &request.args,
+            &["stickerTags", "sticker_tags", "tags"],
+            "stickerTags",
+        )?;
+        let media = required_string_arg(&request.args, &["media", "file", "path"], "media")?;
+
+        let sticker = ToolRuntimeMessageSticker {
+            id: self.next_sticker_id().await,
+            guild_id: guild_id.clone(),
+            name: sticker_name,
+            description: sticker_desc,
+            tags: sticker_tags,
+            media: Some(media),
+            created_at_ms: now_ms(),
+        };
+        let mut registry = self.message_stickers.lock().await;
+        let key = message_asset_registry_key("discord", Some(guild_id.as_str()));
+        let bucket = registry.entry(key).or_default();
+        bucket.push_back(sticker.clone());
+        while bucket.len() > self.session_history_limit {
+            bucket.pop_front();
+        }
+
+        Ok(json!({
+            "status": "completed",
+            "action": "sticker-upload",
+            "sessionId": session_id,
+            "guildId": guild_id,
+            "sticker": serialize_message_sticker(&sticker)
         }))
     }
 
@@ -2979,6 +3277,18 @@ impl ToolRuntimeHost {
         format!("event-{:06}", *counter)
     }
 
+    async fn next_emoji_id(&self) -> String {
+        let mut counter = self.emoji_counter.lock().await;
+        *counter += 1;
+        format!("emoji-{:06}", *counter)
+    }
+
+    async fn next_sticker_id(&self) -> String {
+        let mut counter = self.sticker_counter.lock().await;
+        *counter += 1;
+        format!("sticker-{:06}", *counter)
+    }
+
     async fn append_session_entry(
         &self,
         session_id: String,
@@ -3208,6 +3518,36 @@ fn serialize_message_event(event: &ToolRuntimeMessageEvent) -> Value {
         "eventType": event.event_type,
         "ts": event.created_at_ms
     })
+}
+
+fn serialize_message_emoji(emoji: &ToolRuntimeMessageEmoji) -> Value {
+    json!({
+        "id": emoji.id,
+        "guildId": emoji.guild_id,
+        "name": emoji.name,
+        "media": emoji.media,
+        "animated": false,
+        "ts": emoji.created_at_ms
+    })
+}
+
+fn serialize_message_sticker(sticker: &ToolRuntimeMessageSticker) -> Value {
+    json!({
+        "id": sticker.id,
+        "guildId": sticker.guild_id,
+        "name": sticker.name,
+        "description": sticker.description,
+        "tags": sticker.tags,
+        "media": sticker.media,
+        "ts": sticker.created_at_ms
+    })
+}
+
+fn message_asset_registry_key(channel: &str, guild_id: Option<&str>) -> String {
+    match guild_id {
+        Some(guild_id) => format!("{channel}::{guild_id}"),
+        None => format!("{channel}::global"),
+    }
 }
 
 fn message_member_role_key(guild_id: &str, user_id: &str) -> String {
@@ -5042,6 +5382,20 @@ mod tests {
                 .and_then(serde_json::Value::as_bool),
             Some(false)
         );
+        assert_eq!(
+            permissions_slack
+                .result
+                .pointer("/permissions/emojiList")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            permissions_slack
+                .result
+                .pointer("/permissions/emojiUpload")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
 
         let permissions_telegram = host
             .execute(ToolRuntimeRequest {
@@ -5118,6 +5472,13 @@ mod tests {
             permissions_discord
                 .result
                 .pointer("/permissions/permissions")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            permissions_discord
+                .result
+                .pointer("/permissions/stickerUpload")
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );
@@ -5208,6 +5569,170 @@ mod tests {
         assert!(search_unsupported
             .message
             .contains("unsupported search channel: slack"));
+
+        let emoji_list_slack = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-emoji-list-slack-1".to_owned(),
+                session_id: "agent:main:slack:dm:operator".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "emoji-list",
+                    "channel": "slack"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("emoji list on slack");
+        assert_eq!(
+            emoji_list_slack
+                .result
+                .get("count")
+                .and_then(serde_json::Value::as_u64),
+            Some(2)
+        );
+
+        let emoji_upload_slack = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-emoji-upload-slack-1".to_owned(),
+                session_id: "agent:main:slack:dm:operator".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "emoji-upload",
+                    "channel": "slack",
+                    "guildId": "workspace",
+                    "emojiName": "ops",
+                    "media": "/tmp/ops.png"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect_err("emoji upload unsupported for slack");
+        assert_eq!(emoji_upload_slack.code.as_str(), "invalid_args");
+        assert!(emoji_upload_slack
+            .message
+            .contains("unsupported emoji-upload channel: slack"));
+
+        let emoji_upload_discord = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-emoji-upload-discord-1".to_owned(),
+                session_id: "agent:main:discord:group:ops".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "emoji-upload",
+                    "channel": "discord",
+                    "guildId": "guild-ops",
+                    "emojiName": "opsok",
+                    "media": "/tmp/opsok.png"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("emoji upload on discord");
+        assert_eq!(
+            emoji_upload_discord
+                .result
+                .pointer("/emoji/name")
+                .and_then(serde_json::Value::as_str),
+            Some("opsok")
+        );
+
+        let emoji_list_discord = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-emoji-list-discord-1".to_owned(),
+                session_id: "agent:main:discord:group:ops".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "emoji-list",
+                    "channel": "discord",
+                    "guildId": "guild-ops"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("emoji list on discord");
+        assert!(emoji_list_discord.result.to_string().contains("opsok"));
+
+        let sticker_upload_discord = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-sticker-upload-discord-1".to_owned(),
+                session_id: "agent:main:discord:group:ops".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "sticker-upload",
+                    "channel": "discord",
+                    "guildId": "guild-ops",
+                    "stickerName": "ops-sticker",
+                    "stickerDesc": "Ops sticker",
+                    "stickerTags": "ops",
+                    "media": "/tmp/ops-sticker.png"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("sticker upload on discord");
+        let sticker_id = sticker_upload_discord
+            .result
+            .pointer("/sticker/id")
+            .and_then(serde_json::Value::as_str)
+            .expect("sticker id")
+            .to_owned();
+
+        let sticker_send_discord = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-sticker-send-discord-1".to_owned(),
+                session_id: "agent:main:discord:group:ops".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "sticker-send",
+                    "channel": "discord",
+                    "target": "channel:123",
+                    "stickerId": sticker_id
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("sticker send on discord");
+        assert_eq!(
+            sticker_send_discord
+                .result
+                .get("action")
+                .and_then(serde_json::Value::as_str),
+            Some("sticker-send")
+        );
+
+        let sticker_send_slack = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-channel-cap-sticker-send-slack-1".to_owned(),
+                session_id: "agent:main:slack:dm:operator".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "sticker-send",
+                    "channel": "slack",
+                    "target": "channel:C123",
+                    "stickerId": "sticker-1"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect_err("sticker send unsupported for slack");
+        assert_eq!(sticker_send_slack.code.as_str(), "invalid_args");
+        assert!(sticker_send_slack
+            .message
+            .contains("unsupported sticker-send channel: slack"));
 
         let unknown_channel = host
             .execute(ToolRuntimeRequest {

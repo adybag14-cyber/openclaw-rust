@@ -8,7 +8,7 @@ test security::tool_policy::tests::profile_coding_expands_group_runtime_and_fs .
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 288 filtered out; finished in 0.00s
 
 [parity] running CP3 fixture: security::tool_policy::tests::deny_takes_precedence_over_allow
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -17,7 +17,7 @@ test security::tool_policy::tests::deny_takes_precedence_over_allow ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 288 filtered out; finished in 0.00s
 
 [parity] running CP3 fixture: security::tool_policy::tests::provider_specific_rule_is_applied_after_global_policy
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -26,7 +26,7 @@ test security::tool_policy::tests::provider_specific_rule_is_applied_after_globa
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 288 filtered out; finished in 0.00s
 
 [parity] running CP3 fixture: security::tool_policy::tests::provider_model_specific_rule_beats_provider_fallback
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -35,7 +35,7 @@ test security::tool_policy::tests::provider_model_specific_rule_beats_provider_f
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 288 filtered out; finished in 0.00s
 
 [parity] running CP3 fixture: security::tool_policy::tests::allowlisted_exec_implies_apply_patch
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.40s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -53,7 +53,7 @@ test security::tool_loop::tests::emits_warning_and_critical_on_repeated_identica
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 288 filtered out; finished in 0.00s
 
 [parity] running CP3 fixture: security::tests::tool_runtime_policy_profile_blocks_non_profile_tools
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.37s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -71,7 +71,7 @@ test security::tests::tool_loop_detection_escalates_warning_then_critical ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 288 filtered out; finished in 0.02s
 
 [parity] running CP3 fixture: tool_runtime::tests::tool_runtime_corpus_matches_expected_outcomes
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -89,7 +89,7 @@ test tool_runtime::tests::tool_runtime_policy_and_loop_guard_enforced_on_tool_ho
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 288 filtered out; finished in 0.04s
 
 [parity] running CP3 fixture: tool_runtime::tests::tool_runtime_background_exec_process_poll_roundtrip
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.38s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -98,7 +98,7 @@ test tool_runtime::tests::tool_runtime_background_exec_process_poll_roundtrip ..
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 288 filtered out; finished in 0.04s
 
 [parity] running CP3 fixture: tool_runtime::tests::tool_runtime_gateway_and_sessions_tools_cover_history_list_and_reset
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.37s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.38s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
@@ -116,7 +116,7 @@ test tool_runtime::tests::tool_runtime_message_tool_supports_poll_read_edit_dele
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 288 filtered out; finished in 0.01s
 
 [parity] running CP3 fixture: tool_runtime::tests::tool_runtime_browser_canvas_and_nodes_tools_cover_runtime_families
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.32s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
      Running unittests src/main.rs (target\debug\deps\openclaw_agent_rs-4268d36619bf13d5.exe)
 
 running 1 test
