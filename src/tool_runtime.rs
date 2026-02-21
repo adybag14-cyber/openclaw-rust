@@ -195,6 +195,13 @@ const TOOL_RUNTIME_NODE_COMMANDS: &[&str] = &[
     "system.which",
     "system.notify",
     "browser.proxy",
+    "canvas.hide",
+    "canvas.navigate",
+    "canvas.eval",
+    "canvas.snapshot",
+    "canvas.a2ui.push",
+    "canvas.a2ui.pushJSONL",
+    "canvas.a2ui.reset",
     "canvas.present",
 ];
 
@@ -2401,6 +2408,74 @@ impl ToolRuntimeHost {
                             "path": path
                         })
                     }
+                    "canvas.hide" => json!({
+                        "hidden": true,
+                        "ts": now_ms()
+                    }),
+                    "canvas.navigate" => {
+                        let url = params
+                            .get("url")
+                            .and_then(Value::as_str)
+                            .unwrap_or("/")
+                            .to_owned();
+                        json!({
+                            "navigated": true,
+                            "url": url,
+                            "ts": now_ms()
+                        })
+                    }
+                    "canvas.eval" => {
+                        let script = params
+                            .get("script")
+                            .or_else(|| params.get("code"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned();
+                        json!({
+                            "ok": true,
+                            "script": script,
+                            "result": Value::Null
+                        })
+                    }
+                    "canvas.snapshot" => json!({
+                        "mimeType": "image/png",
+                        "bytes": 0,
+                        "imageBase64": ""
+                    }),
+                    "canvas.a2ui.push" => {
+                        let pushed = params
+                            .get("items")
+                            .and_then(Value::as_array)
+                            .map(|items| items.len())
+                            .unwrap_or(0);
+                        json!({
+                            "accepted": true,
+                            "pushed": pushed,
+                            "ts": now_ms()
+                        })
+                    }
+                    "canvas.a2ui.pushjsonl" => {
+                        let pushed = params
+                            .get("jsonl")
+                            .and_then(Value::as_str)
+                            .map(|raw| {
+                                raw.lines()
+                                    .map(str::trim)
+                                    .filter(|line| !line.is_empty())
+                                    .count()
+                            })
+                            .unwrap_or(0);
+                        json!({
+                            "accepted": true,
+                            "pushed": pushed,
+                            "format": "jsonl",
+                            "ts": now_ms()
+                        })
+                    }
+                    "canvas.a2ui.reset" => json!({
+                        "reset": true,
+                        "ts": now_ms()
+                    }),
                     "canvas.present" => json!({
                         "acknowledged": true
                     }),
@@ -4666,6 +4741,31 @@ mod tests {
                 .pointer("/result/batteryPercent")
                 .and_then(serde_json::Value::as_u64),
             Some(100)
+        );
+
+        let canvas_snapshot = host
+            .execute(ToolRuntimeRequest {
+                request_id: "nodes-canvas-snapshot-1".to_owned(),
+                session_id: "runtime-node".to_owned(),
+                tool_name: "nodes".to_owned(),
+                args: serde_json::json!({
+                    "action": "invoke",
+                    "nodeId": "node-a",
+                    "command": "canvas.snapshot",
+                    "params": {}
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("canvas.snapshot invoke");
+        assert_eq!(
+            canvas_snapshot
+                .result
+                .pointer("/result/mimeType")
+                .and_then(serde_json::Value::as_str),
+            Some("image/png")
         );
 
         let camera_clip = host

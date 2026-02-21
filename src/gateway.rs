@@ -4443,6 +4443,101 @@ impl RpcDispatcher {
                     }
                 }))
             }
+            "canvas.hide" => local_node_command_ok(json!({
+                "ok": true,
+                "nodeId": node_id,
+                "hidden": true,
+                "ts": now_ms(),
+                "source": "local-host-runtime"
+            })),
+            "canvas.navigate" => {
+                let url = params
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|obj| obj.get("url"))
+                    .and_then(Value::as_str)
+                    .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 2_048))
+                    .unwrap_or_else(|| "/".to_owned());
+                local_node_command_ok(json!({
+                    "ok": true,
+                    "nodeId": node_id,
+                    "navigated": true,
+                    "url": url,
+                    "ts": now_ms(),
+                    "source": "local-host-runtime"
+                }))
+            }
+            "canvas.eval" => {
+                let script = params
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|obj| obj.get("script").or_else(|| obj.get("code")))
+                    .and_then(Value::as_str)
+                    .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 8_192))
+                    .unwrap_or_default();
+                local_node_command_ok(json!({
+                    "ok": true,
+                    "nodeId": node_id,
+                    "script": script,
+                    "result": Value::Null,
+                    "source": "local-host-runtime"
+                }))
+            }
+            "canvas.snapshot" => local_node_command_ok(json!({
+                "ok": true,
+                "nodeId": node_id,
+                "mimeType": "image/png",
+                "bytes": 0,
+                "imageBase64": "",
+                "source": "local-host-runtime"
+            })),
+            "canvas.a2ui.push" => {
+                let pushed = params
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|obj| obj.get("items"))
+                    .and_then(Value::as_array)
+                    .map(|items| items.len())
+                    .unwrap_or(0);
+                local_node_command_ok(json!({
+                    "ok": true,
+                    "nodeId": node_id,
+                    "accepted": true,
+                    "pushed": pushed,
+                    "ts": now_ms(),
+                    "source": "local-host-runtime"
+                }))
+            }
+            "canvas.a2ui.pushjsonl" => {
+                let pushed = params
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|obj| obj.get("jsonl"))
+                    .and_then(Value::as_str)
+                    .map(|raw| {
+                        raw.lines()
+                            .map(str::trim)
+                            .filter(|line| !line.is_empty())
+                            .count()
+                    })
+                    .unwrap_or(0);
+                local_node_command_ok(json!({
+                    "ok": true,
+                    "nodeId": node_id,
+                    "accepted": true,
+                    "pushed": pushed,
+                    "format": "jsonl",
+                    "ts": now_ms(),
+                    "source": "local-host-runtime"
+                }))
+            }
+            "canvas.a2ui.reset" => local_node_command_ok(json!({
+                "ok": true,
+                "nodeId": node_id,
+                "reset": true,
+                "ts": now_ms(),
+                "source": "local-host-runtime"
+            })),
             "canvas.present" => {
                 let url = params
                     .as_ref()
@@ -31489,6 +31584,13 @@ mod tests {
                     "photos.latest",
                     "motion.activity",
                     "motion.pedometer",
+                    "canvas.hide",
+                    "canvas.navigate",
+                    "canvas.eval",
+                    "canvas.snapshot",
+                    "canvas.a2ui.push",
+                    "canvas.a2ui.pushJSONL",
+                    "canvas.a2ui.reset",
                     "system.run",
                     "system.which",
                     "system.notify"
@@ -31530,6 +31632,22 @@ mod tests {
             ("photos.latest", serde_json::json!({ "limit": 2 })),
             ("motion.activity", serde_json::json!({})),
             ("motion.pedometer", serde_json::json!({})),
+            ("canvas.hide", serde_json::json!({})),
+            (
+                "canvas.navigate",
+                serde_json::json!({ "url": "https://example.com/node" }),
+            ),
+            ("canvas.eval", serde_json::json!({ "script": "return 1" })),
+            ("canvas.snapshot", serde_json::json!({})),
+            (
+                "canvas.a2ui.push",
+                serde_json::json!({ "items": [{ "id": "card-1" }] }),
+            ),
+            (
+                "canvas.a2ui.pushJSONL",
+                serde_json::json!({ "jsonl": "{\"id\":\"card-1\"}\n{\"id\":\"card-2\"}\n" }),
+            ),
+            ("canvas.a2ui.reset", serde_json::json!({})),
             (
                 "system.run",
                 serde_json::json!({
@@ -31619,6 +31737,13 @@ mod tests {
                     "photos.latest",
                     "motion.activity",
                     "motion.pedometer",
+                    "canvas.hide",
+                    "canvas.navigate",
+                    "canvas.eval",
+                    "canvas.snapshot",
+                    "canvas.a2ui.push",
+                    "canvas.a2ui.pushJSONL",
+                    "canvas.a2ui.reset",
                     "system.run",
                     "system.which",
                     "system.notify"
@@ -31823,6 +31948,34 @@ mod tests {
                         .pointer("/payload/result/photos/1/id")
                         .and_then(Value::as_str),
                     Some("photo-1")
+                );
+            }
+            _ => panic!("expected node.invoke handled"),
+        }
+
+        let invoke_canvas_snapshot = RpcRequestFrame {
+            id: "req-local-node-runtime-canvas-snapshot".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-runtime-1",
+                "command": "canvas.snapshot",
+                "params": {},
+                "idempotencyKey": "local-node-canvas-snapshot"
+            }),
+        };
+        match dispatcher.handle_request(&invoke_canvas_snapshot).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/mimeType")
+                        .and_then(Value::as_str),
+                    Some("image/png")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/bytes")
+                        .and_then(Value::as_u64),
+                    Some(0)
                 );
             }
             _ => panic!("expected node.invoke handled"),

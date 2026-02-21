@@ -783,6 +783,26 @@
         "status": "completed",
         "contains": "\"batteryPercent\":100"
       }
+    },
+    {
+      "name": "nodes-canvas-snapshot-invoke",
+      "request": {
+        "request_id": "cp3-nodes-canvas-snapshot-1",
+        "session_id": "cp3-node",
+        "tool_name": "nodes",
+        "args": {
+          "action": "invoke",
+          "nodeId": "cp3-node-a",
+          "command": "canvas.snapshot",
+          "params": {}
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"mimeType\":\"image/png\""
+      }
     }
   ]
 }
