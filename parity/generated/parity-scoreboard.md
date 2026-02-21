@@ -6,8 +6,8 @@ Generated (UTC): deterministic
 
 | Metric | Value |
 | --- | ---: |
-| Audit Implemented | 17 |
-| Audit Partial | 5 |
+| Audit Implemented | 18 |
+| Audit Partial | 4 |
 | Audit Deferred | 0 |
 | Audit Not Started | 0 |
 | Rust RPC Methods | 103 |
@@ -20,8 +20,8 @@ Generated (UTC): deterministic
 
 | Metric | Delta |
 | --- | ---: |
-| Implemented | +8 |
-| Partial | -4 |
+| Implemented | +9 |
+| Partial | -5 |
 | Deferred | -3 |
 | Not Started | 0 |
 | Rust RPC Methods | +2 |
@@ -40,5 +40,6 @@ Generated (UTC): deterministic
 - Idempotency dedupe: Partial -> Implemented
 - Model/provider layer: Deferred -> Implemented
 - Nodes + device features: Deferred -> Partial
+- Session model: Partial -> Implemented
 - Tool execution layer: Deferred -> Implemented
 

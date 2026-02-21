@@ -1,0 +1,12 @@
+{
+  "gate": "cp9",
+  "status": "fail",
+  "checksRun": 1,
+  "checksPassed": 0,
+  "checksFailed": 1,
+  "totalDurationMs": 32497,
+  "avgCheckDurationMs": 32497,
+  "dockerServerVersion": "unavailable",
+  "dockerComposeVersion": "unavailable",
+  "resultsTsv": "cp9-check-results.tsv"
+}

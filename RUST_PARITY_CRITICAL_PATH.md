@@ -1,12 +1,12 @@
 # Rust End-to-End Parity Critical Path
 
-Date: February 20, 2026
+Date: February 21, 2026
 Repo: `adybag14-cyber/openclaw-rust`
 
 ## Current Baseline (Evidence-Based)
 
-- Overall completion estimate toward true end-to-end Rust replacement: **~72%**
-- Remaining gap: **~28%**
+- Overall completion estimate toward true end-to-end Rust replacement: **~74%**
+- Remaining gap: **~26%**
 - Rust feature-audit status counts:
   - `Implemented`: 12
   - `Partial`: 10
@@ -15,8 +15,8 @@ Repo: `adybag14-cyber/openclaw-rust`
 - Rust gateway method surface: **103** supported RPC methods
   - Source: `src/gateway.rs` (`SUPPORTED_RPC_METHODS`)
 - Current validation depth:
-  - 249 tests pass (default)
-  - 252 tests pass with `sqlite-state`
+  - 285 tests pass (default)
+  - 288 tests pass with `sqlite-state`
   - Full matrix passing (`fmt`, `test`, `clippy`, `release`, `sqlite-state` variants)
 
 ## Definition of Done (100%)
@@ -231,6 +231,6 @@ Use this checklist for active tracking:
 
 ## Immediate Next Actions (Start Here)
 
-1. Close the remaining `Partial` subsystem depth in `OPENCLAW_FEATURE_AUDIT.md` (durable gateway replacement semantics, tool runtime breadth, node/device host runtime coverage, and voice I/O runtime depth).
-2. Expand differential replay coverage so each remaining partial subsystem has corpus-backed side-effect assertions (not only payload-shape parity).
-3. Extend dockerized validation from current parity-smoke + multi-event decision matrix into failure-injection scenarios (disconnect/retry/reconnect chaos) with artifact trend tracking.
+1. Close the remaining `Partial` subsystem depth in `OPENCLAW_FEATURE_AUDIT.md` (adapter-native channel transport/runtime parity, node/device platform transport coverage, and live voice I/O runtime depth).
+2. Continue expanding differential replay coverage beyond payload shape into side-effect assertions for the remaining partial subsystems (especially node/device transport and voice runtime flows).
+3. Extend dockerized validation from parity-smoke + multi-event decision matrix + restart chaos into additional failure-injection scenarios (disconnect/retry/reconnect and network fault simulation) with artifact trend tracking.

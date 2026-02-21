@@ -268,7 +268,7 @@ CP8 reliability/security/performance gate (replay + soak + defender regression +
 .\scripts\parity\run-cp8-gate.ps1
 ```
 
-Current payload corpus coverage: `chat.*`, `tts.*`, `voicewake.*`, `web.login.*`, `update.run`, `sessions.*` envelope/alias flows, `browser.request`, `config.*`, `logs.tail`, `cron.*`, `exec.approvals.*`, `exec.approval.*`, and `wizard.*`.
+Current payload corpus coverage: `chat.*`, `tts.*`, `voicewake.*`, `web.login.*`, `update.run`, `send`, `poll`, `sessions.*` envelope/alias flows (including outbound transcript side-effect checks for `send`/`poll`), `browser.request`, `config.*`, `logs.tail`, `cron.*`, `exec.approvals.*`, `exec.approval.*`, and `wizard.*`.
 
 Generated artifacts:
 

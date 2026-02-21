@@ -23,8 +23,8 @@
     "audit": {
       "counts": {
         "total": 22,
-        "implemented": 17,
-        "partial": 5,
+        "implemented": 18,
+        "partial": 4,
         "deferred": 0,
         "notStarted": 0,
         "unknown": 0
@@ -33,7 +33,7 @@
         "Runtime portability": "Implemented",
         "Gateway protocol connectivity": "Implemented",
         "Full Gateway replacement": "Implemented",
-        "Session model": "Partial",
+        "Session model": "Implemented",
         "Channel integrations": "Partial",
         "Tool execution layer": "Implemented",
         "Nodes + device features": "Partial",
@@ -58,8 +58,8 @@
   "baselinePresent": true,
   "delta": {
     "audit": {
-      "implemented": 8,
-      "partial": -4,
+      "implemented": 9,
+      "partial": -5,
       "deferred": -3,
       "notStarted": 0
     },
@@ -110,6 +110,11 @@
         "subsystem": "Nodes + device features",
         "baseline": "Deferred",
         "current": "Partial"
+      },
+      {
+        "subsystem": "Session model",
+        "baseline": "Partial",
+        "current": "Implemented"
       },
       {
         "subsystem": "Tool execution layer",

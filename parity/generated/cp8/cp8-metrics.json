@@ -2,24 +2,24 @@
   "gate": "cp8",
   "passed": 13,
   "totalFixtures": 13,
-  "totalDurationMs": 11903,
-  "avgFixtureDurationMs": 916,
+  "totalDurationMs": 12505,
+  "avgFixtureDurationMs": 962,
   "reliabilityFixtureCount": 8,
   "securityFixtureCount": 4,
   "benchmarkFixtureCount": 1,
   "benchmarkMetrics": {
-    "elapsedMs": 23,
+    "elapsedMs": 26,
     "fixture": "gateway::tests::dispatcher_status_benchmark_emits_latency_profile",
     "iterations": 512,
     "latencyUs": {
-      "max": 388,
-      "min": 27,
-      "p50": 30,
-      "p95": 59,
-      "p99": 102
+      "max": 367,
+      "min": 31,
+      "p50": 33,
+      "p95": 70,
+      "p99": 99
     },
     "rssKiB": null,
-    "throughputOpsPerSec": 22041.129091276962
+    "throughputOpsPerSec": 19527.525420108774
   },
   "cutoverRunbookPath": "parity/CP8_CUTOVER_RUNBOOK.md",
   "cutoverRunbookValidated": true,

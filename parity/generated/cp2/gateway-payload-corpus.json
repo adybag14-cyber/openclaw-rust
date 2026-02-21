@@ -1287,6 +1287,178 @@
       }
     },
     {
+      "name": "send mirrors outbound history with delivery context",
+      "prelude": [
+        {
+          "id": "prelude-send-history-parity",
+          "method": "send",
+          "params": {
+            "to": "channel:C100",
+            "message": "hello outbound parity",
+            "channel": "slack",
+            "accountId": "work",
+            "threadId": "1710000.1",
+            "idempotencyKey": "send-corpus-history"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-send-history-parity",
+        "method": "sessions.history",
+        "params": {
+          "sessionKey": "agent:main:slack:out:channel:c100",
+          "limit": 1
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/count",
+            "equals": 1
+          },
+          {
+            "path": "/history/0/source",
+            "equals": "send"
+          },
+          {
+            "path": "/history/0/requestId",
+            "equals": "send-corpus-history"
+          },
+          {
+            "path": "/history/0/text",
+            "equals": "hello outbound parity"
+          },
+          {
+            "path": "/history/0/channel",
+            "equals": "slack"
+          },
+          {
+            "path": "/history/0/to",
+            "equals": "channel:C100"
+          },
+          {
+            "path": "/history/0/accountId",
+            "equals": "work"
+          },
+          {
+            "path": "/history/0/threadId",
+            "equals": "1710000.1"
+          }
+        ]
+      }
+    },
+    {
+      "name": "send rejects internal webchat channel with guidance",
+      "request": {
+        "id": "req-send-webchat-parity",
+        "method": "send",
+        "params": {
+          "to": "channel:C100",
+          "message": "hello webchat",
+          "channel": "webchat",
+          "idempotencyKey": "send-corpus-webchat"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "Use `chat.send`"
+        }
+      }
+    },
+    {
+      "name": "poll mirrors outbound history with thread context",
+      "prelude": [
+        {
+          "id": "prelude-poll-history-parity",
+          "method": "poll",
+          "params": {
+            "to": "group-42",
+            "question": "Lunch?",
+            "options": [
+              "Pizza",
+              "Sushi"
+            ],
+            "channel": "telegram",
+            "threadId": "42",
+            "accountId": "team",
+            "idempotencyKey": "poll-corpus-history"
+          }
+        }
+      ],
+      "request": {
+        "id": "req-poll-history-parity",
+        "method": "sessions.history",
+        "params": {
+          "sessionKey": "agent:main:telegram:out:group-42",
+          "limit": 1
+        }
+      },
+      "expect": {
+        "outcome": "handled",
+        "checks": [
+          {
+            "path": "/count",
+            "equals": 1
+          },
+          {
+            "path": "/history/0/source",
+            "equals": "poll"
+          },
+          {
+            "path": "/history/0/requestId",
+            "equals": "poll-corpus-history"
+          },
+          {
+            "path": "/history/0/text",
+            "equals": "[poll] Lunch?"
+          },
+          {
+            "path": "/history/0/channel",
+            "equals": "telegram"
+          },
+          {
+            "path": "/history/0/to",
+            "equals": "group-42"
+          },
+          {
+            "path": "/history/0/accountId",
+            "equals": "team"
+          },
+          {
+            "path": "/history/0/threadId",
+            "equals": "42"
+          }
+        ]
+      }
+    },
+    {
+      "name": "poll rejects unsupported poll channel",
+      "request": {
+        "id": "req-poll-unsupported-channel-parity",
+        "method": "poll",
+        "params": {
+          "to": "channel:C1",
+          "question": "Lunch?",
+          "options": [
+            "Pizza",
+            "Sushi"
+          ],
+          "channel": "slack",
+          "idempotencyKey": "poll-corpus-unsupported"
+        }
+      },
+      "expect": {
+        "outcome": "error",
+        "error": {
+          "code": 400,
+          "messageContains": "unsupported poll channel"
+        }
+      }
+    },
+    {
       "name": "browser.request returns unavailable contract with details payload",
       "request": {
         "id": "req-browser-request-parity",
