@@ -1739,6 +1739,7 @@ impl ToolRuntimeHost {
         let session_id = resolve_message_session_id(request);
         let _channel = self.enforce_message_channel_action_support(request, "search")?;
         let query = required_string_arg(&request.args, &["query", "q"], "query")?;
+        let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
         let limit = request
             .args
             .get("limit")
@@ -1747,9 +1748,30 @@ impl ToolRuntimeHost {
             .clamp(1, 200) as usize;
         let include_deleted =
             first_bool_arg(&request.args, &["includeDeleted", "include_deleted"]).unwrap_or(false);
+        let mut channel_ids = first_string_list_arg(
+            &request.args,
+            &["channelIds", "channel_ids"],
+            32,
+            128,
+        );
+        if let Some(channel_id) = first_string_arg(&request.args, &["channelId", "channel_id"]) {
+            if !channel_ids.iter().any(|value| value == &channel_id) {
+                channel_ids.push(channel_id);
+            }
+        }
+        let mut author_ids = first_string_list_arg(
+            &request.args,
+            &["authorIds", "author_ids"],
+            32,
+            128,
+        );
+        if let Some(author_id) = first_string_arg(&request.args, &["authorId", "author_id"]) {
+            if !author_ids.iter().any(|value| value == &author_id) {
+                author_ids.push(author_id);
+            }
+        }
         let thread_id_filter =
             first_string_arg(&request.args, &["threadId", "thread_id", "thread"]);
-        let guild_id = first_string_arg(&request.args, &["guildId", "guild_id"]);
         let query_normalized = query.trim().to_ascii_lowercase();
 
         let timelines = self.session_timelines.lock().await;
@@ -1762,6 +1784,22 @@ impl ToolRuntimeHost {
                 if thread_id_filter
                     .as_deref()
                     .is_some_and(|thread_id| entry.thread_id.as_deref() != Some(thread_id))
+                {
+                    continue;
+                }
+                if !channel_ids.is_empty()
+                    && !entry.thread_id.as_deref().is_some_and(|entry_thread_id| {
+                        channel_ids
+                            .iter()
+                            .any(|channel_id| channel_id.eq_ignore_ascii_case(entry_thread_id))
+                    })
+                {
+                    continue;
+                }
+                if !author_ids.is_empty()
+                    && !author_ids
+                        .iter()
+                        .any(|author_id| author_id.eq_ignore_ascii_case(entry.role.as_str()))
                 {
                     continue;
                 }
@@ -1786,6 +1824,8 @@ impl ToolRuntimeHost {
             "guildId": guild_id,
             "query": query,
             "threadId": thread_id_filter,
+            "channelIds": channel_ids,
+            "authorIds": author_ids,
             "results": results,
             "count": results.len(),
             "limit": limit
@@ -5532,6 +5572,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_runtime_message_search_supports_channel_and_author_filters() {
+        let host = build_host(default_policy()).await;
+
+        let _ = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-search-filter-seed-1".to_owned(),
+                session_id: "message-search-filter".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "send",
+                    "channel": "discord",
+                    "threadId": "thread-alpha",
+                    "role": "user",
+                    "message": "deploy alpha ready"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("seed message search thread alpha");
+
+        let _ = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-search-filter-seed-2".to_owned(),
+                session_id: "message-search-filter".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "send",
+                    "channel": "discord",
+                    "threadId": "thread-beta",
+                    "role": "assistant",
+                    "message": "deploy beta ready"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("seed message search thread beta");
+
+        let filtered = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-search-filter-query-1".to_owned(),
+                session_id: "message-search-filter".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "search",
+                    "channel": "discord",
+                    "guildId": "guild-ops",
+                    "query": "deploy",
+                    "channelIds": ["thread-alpha"],
+                    "authorIds": ["user"]
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("search with channel and author filters");
+        assert_eq!(
+            filtered
+                .result
+                .get("count")
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert!(filtered.result.to_string().contains("deploy alpha ready"));
+        assert!(!filtered.result.to_string().contains("deploy beta ready"));
+    }
+
+    #[tokio::test]
     async fn tool_runtime_message_tool_enforces_channel_capabilities() {
         let host = build_host(default_policy()).await;
 
@@ -5805,6 +5917,7 @@ mod tests {
                 args: serde_json::json!({
                     "action": "search",
                     "channel": "discord",
+                    "guildId": "guild-ops",
                     "query": "deploy"
                 }),
                 sandboxed: false,

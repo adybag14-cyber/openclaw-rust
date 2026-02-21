@@ -852,6 +852,7 @@
         "args": {
           "action": "search",
           "channel": "discord",
+          "guildId": "guild-ops",
           "query": "deploy"
         },
         "sandboxed": false
@@ -860,6 +861,74 @@
         "ok": true,
         "status": "completed",
         "contains": "\"action\":\"search\""
+      }
+    },
+    {
+      "name": "message-search-filter-seed-thread-alpha",
+      "request": {
+        "request_id": "cp3-message-search-filter-seed-alpha-1",
+        "session_id": "cp3-search-filter",
+        "tool_name": "message",
+        "args": {
+          "action": "send",
+          "channel": "discord",
+          "threadId": "thread-alpha",
+          "role": "user",
+          "message": "deploy alpha ready"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "deploy alpha ready"
+      }
+    },
+    {
+      "name": "message-search-filter-seed-thread-beta",
+      "request": {
+        "request_id": "cp3-message-search-filter-seed-beta-1",
+        "session_id": "cp3-search-filter",
+        "tool_name": "message",
+        "args": {
+          "action": "send",
+          "channel": "discord",
+          "threadId": "thread-beta",
+          "role": "assistant",
+          "message": "deploy beta ready"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "deploy beta ready"
+      }
+    },
+    {
+      "name": "message-search-filtered-discord-channel",
+      "request": {
+        "request_id": "cp3-message-search-filtered-discord-1",
+        "session_id": "cp3-search-filter",
+        "tool_name": "message",
+        "args": {
+          "action": "search",
+          "channel": "discord",
+          "guildId": "guild-ops",
+          "query": "deploy",
+          "channelIds": [
+            "thread-alpha"
+          ],
+          "authorIds": [
+            "user"
+          ]
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "deploy alpha ready"
       }
     },
     {
