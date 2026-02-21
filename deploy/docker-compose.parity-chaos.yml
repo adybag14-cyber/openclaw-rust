@@ -16,9 +16,7 @@ services:
       start_period: 2s
 
   rust-agent:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile.parity-runtime
+    image: openclaw-rs-parity-runtime:latest
     depends_on:
       gateway:
         condition: service_healthy
