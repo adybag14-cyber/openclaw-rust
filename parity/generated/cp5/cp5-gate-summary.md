@@ -1,7 +1,7 @@
-## CP5 Nodes + Browser + Canvas + Device Gate
+﻿## CP5 Nodes + Browser + Canvas + Device Gate
 
-- Fixtures passed: 12/12
-- Total duration: 8213 ms
-- Avg fixture duration: 684 ms
+- Fixtures passed: 14/14
+- Total duration: 11661 ms
+- Avg fixture duration: 833 ms
 - Artifact log: cp5-gate.log
 - Artifact metrics: cp5-metrics.json

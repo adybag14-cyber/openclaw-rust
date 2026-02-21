@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::types::ActionRequest;
 
@@ -388,6 +388,199 @@ pub struct ChannelCapabilities {
     pub supports_polls: bool,
     pub supports_media: bool,
     pub default_dm_pairing: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelMessageAction {
+    Send,
+    Broadcast,
+    Poll,
+    Read,
+    Edit,
+    Delete,
+    React,
+    Reactions,
+    Pin,
+    Unpin,
+    Pins,
+    Search,
+    Permissions,
+    ThreadCreate,
+    ThreadList,
+    ThreadReply,
+    MemberInfo,
+    RoleInfo,
+    ChannelInfo,
+    ChannelList,
+    VoiceStatus,
+    EventList,
+    EventCreate,
+    EmojiList,
+    EmojiUpload,
+    StickerSend,
+    StickerUpload,
+    RoleAdd,
+    RoleRemove,
+    Timeout,
+    Kick,
+    Ban,
+}
+
+impl ChannelMessageAction {
+    pub fn from_alias(raw: &str) -> Option<Self> {
+        let normalized = raw.trim().to_ascii_lowercase().replace('_', "-");
+        match normalized.as_str() {
+            "send" | "append" => Some(Self::Send),
+            "broadcast" => Some(Self::Broadcast),
+            "poll" => Some(Self::Poll),
+            "read" => Some(Self::Read),
+            "edit" => Some(Self::Edit),
+            "delete" | "remove" => Some(Self::Delete),
+            "react" | "reaction" => Some(Self::React),
+            "reactions" => Some(Self::Reactions),
+            "pin" => Some(Self::Pin),
+            "unpin" => Some(Self::Unpin),
+            "pins" | "list-pins" => Some(Self::Pins),
+            "search" => Some(Self::Search),
+            "permissions" => Some(Self::Permissions),
+            "thread-create" => Some(Self::ThreadCreate),
+            "thread-list" => Some(Self::ThreadList),
+            "thread-reply" => Some(Self::ThreadReply),
+            "member-info" => Some(Self::MemberInfo),
+            "role-info" => Some(Self::RoleInfo),
+            "channel-info" => Some(Self::ChannelInfo),
+            "channel-list" => Some(Self::ChannelList),
+            "voice-status" => Some(Self::VoiceStatus),
+            "event-list" => Some(Self::EventList),
+            "event-create" => Some(Self::EventCreate),
+            "emoji-list" => Some(Self::EmojiList),
+            "emoji-upload" => Some(Self::EmojiUpload),
+            "sticker-send" => Some(Self::StickerSend),
+            "sticker-upload" => Some(Self::StickerUpload),
+            "role-add" => Some(Self::RoleAdd),
+            "role-remove" => Some(Self::RoleRemove),
+            "timeout" => Some(Self::Timeout),
+            "kick" => Some(Self::Kick),
+            "ban" => Some(Self::Ban),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Send => "send",
+            Self::Broadcast => "broadcast",
+            Self::Poll => "poll",
+            Self::Read => "read",
+            Self::Edit => "edit",
+            Self::Delete => "delete",
+            Self::React => "react",
+            Self::Reactions => "reactions",
+            Self::Pin => "pin",
+            Self::Unpin => "unpin",
+            Self::Pins => "pins",
+            Self::Search => "search",
+            Self::Permissions => "permissions",
+            Self::ThreadCreate => "thread-create",
+            Self::ThreadList => "thread-list",
+            Self::ThreadReply => "thread-reply",
+            Self::MemberInfo => "member-info",
+            Self::RoleInfo => "role-info",
+            Self::ChannelInfo => "channel-info",
+            Self::ChannelList => "channel-list",
+            Self::VoiceStatus => "voice-status",
+            Self::EventList => "event-list",
+            Self::EventCreate => "event-create",
+            Self::EmojiList => "emoji-list",
+            Self::EmojiUpload => "emoji-upload",
+            Self::StickerSend => "sticker-send",
+            Self::StickerUpload => "sticker-upload",
+            Self::RoleAdd => "role-add",
+            Self::RoleRemove => "role-remove",
+            Self::Timeout => "timeout",
+            Self::Kick => "kick",
+            Self::Ban => "ban",
+        }
+    }
+}
+
+pub fn channel_supports_message_action(
+    capability: &ChannelCapabilities,
+    action: ChannelMessageAction,
+) -> bool {
+    match action {
+        ChannelMessageAction::Send | ChannelMessageAction::Broadcast => true,
+        ChannelMessageAction::Permissions => capability.name.eq_ignore_ascii_case("discord"),
+        ChannelMessageAction::Poll => capability.supports_polls,
+        ChannelMessageAction::Read => matches!(capability.name, "discord" | "slack"),
+        ChannelMessageAction::Edit => capability.supports_edit,
+        ChannelMessageAction::Delete => {
+            capability.supports_delete || capability.name.eq_ignore_ascii_case("telegram")
+        }
+        ChannelMessageAction::React => capability.supports_reactions,
+        ChannelMessageAction::Reactions => {
+            matches!(capability.name, "discord" | "googlechat" | "slack")
+        }
+        ChannelMessageAction::Pin | ChannelMessageAction::Unpin | ChannelMessageAction::Pins => {
+            matches!(capability.name, "discord" | "slack")
+        }
+        ChannelMessageAction::Search => capability.name.eq_ignore_ascii_case("discord"),
+        ChannelMessageAction::ThreadCreate
+        | ChannelMessageAction::ThreadList
+        | ChannelMessageAction::ThreadReply => capability.name.eq_ignore_ascii_case("discord"),
+        ChannelMessageAction::EmojiList => matches!(capability.name, "discord" | "slack"),
+        ChannelMessageAction::EmojiUpload
+        | ChannelMessageAction::StickerSend
+        | ChannelMessageAction::StickerUpload => capability.name.eq_ignore_ascii_case("discord"),
+        ChannelMessageAction::MemberInfo => matches!(capability.name, "discord" | "slack"),
+        ChannelMessageAction::RoleInfo
+        | ChannelMessageAction::ChannelInfo
+        | ChannelMessageAction::ChannelList
+        | ChannelMessageAction::VoiceStatus
+        | ChannelMessageAction::EventList
+        | ChannelMessageAction::EventCreate
+        | ChannelMessageAction::RoleAdd
+        | ChannelMessageAction::RoleRemove
+        | ChannelMessageAction::Timeout
+        | ChannelMessageAction::Kick
+        | ChannelMessageAction::Ban => capability.name.eq_ignore_ascii_case("discord"),
+    }
+}
+
+pub fn build_channel_transport_receipt(
+    capability: &ChannelCapabilities,
+    action: ChannelMessageAction,
+    message_id: &str,
+    target: Option<&str>,
+    thread_id: Option<&str>,
+    reply_to: Option<&str>,
+    dry_run: bool,
+) -> Value {
+    let adapter_route = if let Some(target) = target {
+        format!("{}:{target}", capability.name)
+    } else {
+        format!("{}:broadcast", capability.name)
+    };
+    let action_supported = channel_supports_message_action(capability, action);
+    json!({
+        "adapter": capability.name,
+        "action": action.as_str(),
+        "supported": action_supported,
+        "route": adapter_route,
+        "messageId": message_id,
+        "target": target,
+        "threadId": thread_id,
+        "replyTo": reply_to,
+        "dryRun": dry_run,
+        "capabilities": {
+            "edit": capability.supports_edit,
+            "delete": capability.supports_delete,
+            "reactions": capability.supports_reactions,
+            "threads": capability.supports_threads,
+            "polls": capability.supports_polls,
+            "media": capability.supports_media
+        }
+    })
 }
 
 pub trait ChannelDriver: Send + Sync {
@@ -1007,11 +1200,13 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        chunk_text_with_mode, compute_retry_backoff_delay, compute_retry_backoff_delay_ms,
-        default_chunk_mode, default_text_chunk_limit, normalize_channel_id, normalize_chat_type,
-        resolve_mention_gating, resolve_mention_gating_with_bypass, ChatType, ChunkMode,
-        DriverRegistry, MentionGateParams, MentionGateWithBypassParams, RetryBackoffPolicy,
-        WAVE1_CHANNEL_ORDER, WAVE2_CHANNEL_ORDER, WAVE3_CHANNEL_ORDER, WAVE4_CHANNEL_ORDER,
+        build_channel_transport_receipt, channel_supports_message_action, chunk_text_with_mode,
+        compute_retry_backoff_delay, compute_retry_backoff_delay_ms, default_chunk_mode,
+        default_text_chunk_limit, normalize_channel_id, normalize_chat_type,
+        resolve_mention_gating, resolve_mention_gating_with_bypass, ChannelMessageAction, ChatType,
+        ChunkMode, DriverRegistry, MentionGateParams, MentionGateWithBypassParams,
+        RetryBackoffPolicy, WAVE1_CHANNEL_ORDER, WAVE2_CHANNEL_ORDER, WAVE3_CHANNEL_ORDER,
+        WAVE4_CHANNEL_ORDER,
     };
 
     #[test]
@@ -1220,6 +1415,114 @@ mod tests {
         assert!(caps
             .iter()
             .any(|c| c.name == "tlon" && c.supports_threads && !c.supports_media));
+    }
+
+    #[test]
+    fn channel_message_action_aliases_parse() {
+        assert_eq!(
+            ChannelMessageAction::from_alias("thread_reply"),
+            Some(ChannelMessageAction::ThreadReply)
+        );
+        assert_eq!(
+            ChannelMessageAction::from_alias("reaction"),
+            Some(ChannelMessageAction::React)
+        );
+        assert_eq!(
+            ChannelMessageAction::from_alias("list-pins"),
+            Some(ChannelMessageAction::Pins)
+        );
+        assert_eq!(ChannelMessageAction::from_alias("unknown"), None);
+    }
+
+    #[test]
+    fn channel_action_support_uses_channel_capabilities() {
+        let registry = DriverRegistry::default_registry();
+        let caps = registry.capabilities();
+        let discord = caps
+            .iter()
+            .find(|capability| capability.name == "discord")
+            .expect("discord capability");
+        let telegram = caps
+            .iter()
+            .find(|capability| capability.name == "telegram")
+            .expect("telegram capability");
+        let slack = caps
+            .iter()
+            .find(|capability| capability.name == "slack")
+            .expect("slack capability");
+
+        assert!(channel_supports_message_action(
+            discord,
+            ChannelMessageAction::ThreadReply
+        ));
+        assert!(!channel_supports_message_action(
+            telegram,
+            ChannelMessageAction::ThreadReply
+        ));
+        assert!(channel_supports_message_action(
+            slack,
+            ChannelMessageAction::Edit
+        ));
+        assert!(!channel_supports_message_action(
+            slack,
+            ChannelMessageAction::Poll
+        ));
+    }
+
+    #[test]
+    fn build_channel_transport_receipt_contains_adapter_and_route_metadata() {
+        let registry = DriverRegistry::default_registry();
+        let caps = registry.capabilities();
+        let discord = caps
+            .iter()
+            .find(|capability| capability.name == "discord")
+            .expect("discord capability");
+        let receipt = build_channel_transport_receipt(
+            discord,
+            ChannelMessageAction::Send,
+            "msg-1",
+            Some("channel:ops"),
+            Some("thread-1"),
+            Some("reply-1"),
+            true,
+        );
+
+        assert_eq!(
+            receipt
+                .pointer("/adapter")
+                .and_then(serde_json::Value::as_str),
+            Some("discord")
+        );
+        assert_eq!(
+            receipt
+                .pointer("/action")
+                .and_then(serde_json::Value::as_str),
+            Some("send")
+        );
+        assert_eq!(
+            receipt
+                .pointer("/route")
+                .and_then(serde_json::Value::as_str),
+            Some("discord:channel:ops")
+        );
+        assert_eq!(
+            receipt
+                .pointer("/threadId")
+                .and_then(serde_json::Value::as_str),
+            Some("thread-1")
+        );
+        assert_eq!(
+            receipt
+                .pointer("/replyTo")
+                .and_then(serde_json::Value::as_str),
+            Some("reply-1")
+        );
+        assert_eq!(
+            receipt
+                .pointer("/dryRun")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
     }
 
     #[test]

@@ -13,12 +13,14 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
 use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::task::JoinHandle;
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
 use crate::channels::{
-    chunk_text_with_mode, default_chunk_mode, default_text_chunk_limit, normalize_channel_id,
-    ChannelCapabilities, DriverRegistry,
+    build_channel_transport_receipt, channel_supports_message_action, chunk_text_with_mode,
+    default_chunk_mode, default_text_chunk_limit, normalize_channel_id, ChannelCapabilities,
+    ChannelMessageAction, DriverRegistry,
 };
 use crate::config::{GroupActivationMode, SessionQueueMode};
 use crate::protocol::{MethodFamily, RpcRequestFrame};
@@ -4177,8 +4179,18 @@ impl RpcDispatcher {
             return None;
         }
         Some(
-            self.execute_local_node_command(&node.node_id, command, params, &runtime, invoke_id)
-                .await,
+            self.execute_local_node_command(
+                LocalNodeCommandContext {
+                    node_id: &node.node_id,
+                    platform: node.platform.as_deref(),
+                    device_family: node.device_family.as_deref(),
+                    invoke_id,
+                },
+                command,
+                params,
+                &runtime,
+            )
+            .await,
         )
     }
 
@@ -4194,24 +4206,47 @@ impl RpcDispatcher {
             return None;
         }
         Some(
-            self.execute_local_node_command(&node.node_id, command, params, &runtime, invoke_id)
-                .await,
+            self.execute_local_node_command(
+                LocalNodeCommandContext {
+                    node_id: &node.node_id,
+                    platform: node.platform.as_deref(),
+                    device_family: node.device_family.as_deref(),
+                    invoke_id,
+                },
+                command,
+                params,
+                &runtime,
+            )
+            .await,
         )
     }
 
     async fn execute_local_node_command(
         &self,
-        node_id: &str,
+        context: LocalNodeCommandContext<'_>,
         command: &str,
         params: Option<Value>,
         runtime: &NodeHostRuntimeConfig,
-        invoke_id: &str,
     ) -> LocalNodeCommandExecution {
+        let node_id = context.node_id;
+        let platform = context.platform;
+        let device_family = context.device_family;
+        let invoke_id = context.invoke_id;
         let command_key = normalize(command);
-        if runtime.external_command.is_some() || !runtime.external_commands.is_empty() {
+        if runtime.external_command.is_some()
+            || !runtime.external_commands.is_empty()
+            || !runtime.external_platforms.is_empty()
+        {
             let external = self
                 .node_host_runtime
-                .execute_external_command(node_id, command, params.as_ref(), runtime)
+                .execute_external_command(
+                    node_id,
+                    command,
+                    params.as_ref(),
+                    runtime,
+                    platform,
+                    device_family,
+                )
                 .await;
             if external.ok {
                 self.system
@@ -5135,6 +5170,7 @@ impl RpcDispatcher {
         let Some(to) = normalize_optional_text(Some(params.to), 512) else {
             return RpcDispatchOutcome::bad_request("invalid send params: to is required");
         };
+        let to_for_transport = to.clone();
         let message = normalize_optional_text(params.message, 12_000);
         let media_url = normalize_optional_text(params.media_url, 2_048);
         let mut media_urls = params
@@ -5172,9 +5208,13 @@ impl RpcDispatcher {
             return RpcDispatchOutcome::bad_request(format!("unsupported channel: {unsupported}"));
         };
         let channel = capability.name.to_owned();
+        if !channel_supports_message_action(capability, ChannelMessageAction::Send) {
+            return RpcDispatchOutcome::bad_request(format!("unsupported send channel: {channel}"));
+        }
 
         let account_id = normalize_optional_text(params.account_id, 128);
         let thread_id = normalize_optional_text(params.thread_id, 128);
+        let reply_to = normalize_optional_text(params.reply_to, 256);
         let session_key = normalize_optional_text(params.session_key, 256)
             .and_then(|value| {
                 let canonical = canonicalize_session_key(&value);
@@ -5213,6 +5253,15 @@ impl RpcDispatcher {
             "messageId": message_id,
             "channel": channel
         });
+        payload["transport"] = build_channel_transport_receipt(
+            capability,
+            ChannelMessageAction::Send,
+            message_id.as_str(),
+            Some(to_for_transport.as_str()),
+            thread_id.as_deref(),
+            reply_to.as_deref(),
+            false,
+        );
         if let Some(text) = message.as_deref() {
             let limit = default_text_chunk_limit(Some(channel.as_str()));
             let mode = default_chunk_mode(Some(channel.as_str()));
@@ -5224,6 +5273,9 @@ impl RpcDispatcher {
         }
         if let Some(thread_id) = thread_id {
             payload["threadId"] = json!(thread_id);
+        }
+        if let Some(reply_to) = reply_to {
+            payload["replyTo"] = json!(reply_to);
         }
         let cache_key = payload
             .pointer("/runId")
@@ -5279,6 +5331,7 @@ impl RpcDispatcher {
         let Some(to) = normalize_optional_text(Some(params.to), 512) else {
             return RpcDispatchOutcome::bad_request("invalid poll params: to is required");
         };
+        let to_for_transport = to.clone();
         let Some(question) = normalize_optional_text(Some(params.question), 2_048) else {
             return RpcDispatchOutcome::bad_request("invalid poll params: question is required");
         };
@@ -5329,7 +5382,7 @@ impl RpcDispatcher {
             ));
         };
         let channel = capability.name.to_owned();
-        if !capability.supports_polls {
+        if !channel_supports_message_action(capability, ChannelMessageAction::Poll) {
             return RpcDispatchOutcome::bad_request(format!("unsupported poll channel: {channel}"));
         }
         if params.duration_seconds.is_some() && !channel.eq_ignore_ascii_case("telegram") {
@@ -5384,6 +5437,15 @@ impl RpcDispatcher {
             "channel": channel,
             "pollId": poll_id
         });
+        payload["transport"] = build_channel_transport_receipt(
+            capability,
+            ChannelMessageAction::Poll,
+            message_id.as_str(),
+            Some(to_for_transport.as_str()),
+            thread_id.as_deref(),
+            None,
+            false,
+        );
         if let Some(account_id) = account_id {
             payload["accountId"] = json!(account_id);
         }
@@ -7341,7 +7403,9 @@ impl VoiceWakeRegistry {
 }
 
 struct VoiceIoRegistry {
-    state: Mutex<VoiceIoState>,
+    state: Arc<Mutex<VoiceIoState>>,
+    capture_worker: Mutex<Option<JoinHandle<()>>>,
+    playback_worker: Mutex<Option<JoinHandle<()>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -7378,7 +7442,7 @@ struct VoicePlaybackQueuedEntry {
 impl VoiceIoRegistry {
     fn new() -> Self {
         Self {
-            state: Mutex::new(VoiceIoState {
+            state: Arc::new(Mutex::new(VoiceIoState {
                 input_device: VOICE_INPUT_DEVICE_DEFAULT.to_owned(),
                 output_device: VOICE_OUTPUT_DEVICE_DEFAULT.to_owned(),
                 capture_active: false,
@@ -7397,7 +7461,9 @@ impl VoiceIoRegistry {
                 playback_active_until_ms: None,
                 playback_queue: VecDeque::new(),
                 updated_at_ms: now_ms(),
-            }),
+            })),
+            capture_worker: Mutex::new(None),
+            playback_worker: Mutex::new(None),
         }
     }
 
@@ -7441,7 +7507,15 @@ impl VoiceIoRegistry {
             guard.capture_active = false;
         }
         guard.updated_at_ms = now;
-        guard.clone()
+        let should_start_worker = enabled;
+        let snapshot = guard.clone();
+        drop(guard);
+        if should_start_worker {
+            self.ensure_capture_worker().await;
+        } else {
+            self.stop_capture_worker().await;
+        }
+        snapshot
     }
 
     async fn touch_capture_frame(&self) -> VoiceIoState {
@@ -7478,7 +7552,10 @@ impl VoiceIoRegistry {
         });
         Self::refresh_playback_state(&mut guard, now);
         guard.updated_at_ms = now;
-        guard.clone()
+        let snapshot = guard.clone();
+        drop(guard);
+        self.ensure_playback_worker().await;
+        snapshot
     }
 
     fn refresh_playback_state(state: &mut VoiceIoState, now: u64) {
@@ -7521,6 +7598,76 @@ impl VoiceIoRegistry {
         if updated {
             state.updated_at_ms = now;
         }
+    }
+
+    async fn ensure_capture_worker(&self) {
+        let mut worker_guard = self.capture_worker.lock().await;
+        if worker_guard
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
+        {
+            return;
+        }
+        if let Some(handle) = worker_guard.take() {
+            handle.abort();
+        }
+        let state = Arc::clone(&self.state);
+        *worker_guard = Some(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+                let mut guard = state.lock().await;
+                if !guard.capture_active {
+                    break;
+                }
+                let now = now_ms();
+                guard.capture_last_frame_at_ms = Some(now);
+                guard.capture_frames = guard.capture_frames.saturating_add(1);
+                guard.updated_at_ms = now;
+            }
+        }));
+    }
+
+    async fn stop_capture_worker(&self) {
+        let mut worker_guard = self.capture_worker.lock().await;
+        if let Some(handle) = worker_guard.take() {
+            handle.abort();
+        }
+    }
+
+    async fn ensure_playback_worker(&self) {
+        let mut worker_guard = self.playback_worker.lock().await;
+        if worker_guard
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
+        {
+            return;
+        }
+        if let Some(handle) = worker_guard.take() {
+            handle.abort();
+        }
+        let state = Arc::clone(&self.state);
+        *worker_guard = Some(tokio::spawn(async move {
+            loop {
+                let sleep_duration = {
+                    let mut guard = state.lock().await;
+                    let now = now_ms();
+                    VoiceIoRegistry::refresh_playback_state(&mut guard, now);
+                    if !guard.playback_active && guard.playback_queue.is_empty() {
+                        None
+                    } else {
+                        let until = guard
+                            .playback_active_until_ms
+                            .unwrap_or_else(|| now.saturating_add(50));
+                        let remaining = until.saturating_sub(now);
+                        Some(Duration::from_millis(remaining.clamp(20, 200)))
+                    }
+                };
+                let Some(duration) = sleep_duration else {
+                    break;
+                };
+                tokio::time::sleep(duration).await;
+            }
+        }));
     }
 }
 
@@ -8541,6 +8688,7 @@ struct NodeHostRuntimeConfig {
     external_command: Option<String>,
     external_args: Vec<String>,
     external_commands: HashMap<String, NodeHostExternalCommand>,
+    external_platforms: HashMap<String, NodeHostPlatformRuntimeConfig>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -8553,6 +8701,13 @@ struct NodeCommandPolicyConfig {
 struct NodeHostExternalCommand {
     command: String,
     args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct NodeHostPlatformRuntimeConfig {
+    external_command: Option<String>,
+    external_args: Vec<String>,
+    external_commands: HashMap<String, NodeHostExternalCommand>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -10417,10 +10572,26 @@ fn parse_local_node_host_external_response(parsed_stdout: Value) -> LocalNodeCom
 fn resolve_node_host_external_runtime_command(
     runtime: &NodeHostRuntimeConfig,
     command: &str,
+    platform: Option<&str>,
+    device_family: Option<&str>,
 ) -> Option<NodeHostExternalCommand> {
     let normalized = normalize(command);
+    let platform_key = normalize_node_platform_id(platform, device_family).to_owned();
+    if let Some(platform_override) = runtime.external_platforms.get(&platform_key) {
+        if let Some(mapped) = platform_override.external_commands.get(&normalized) {
+            return Some(mapped.clone());
+        }
+    }
     if let Some(mapped) = runtime.external_commands.get(&normalized) {
         return Some(mapped.clone());
+    }
+    if let Some(platform_override) = runtime.external_platforms.get(&platform_key) {
+        if let Some(command) = platform_override.external_command.as_deref() {
+            return Some(NodeHostExternalCommand {
+                command: command.to_owned(),
+                args: platform_override.external_args.clone(),
+            });
+        }
     }
     runtime
         .external_command
@@ -10437,8 +10608,11 @@ async fn local_node_host_execute_external_command(
     command: &str,
     params: Option<&Value>,
     runtime: &NodeHostRuntimeConfig,
+    platform: Option<&str>,
+    device_family: Option<&str>,
 ) -> LocalNodeCommandExecution {
-    let Some(external_runtime) = resolve_node_host_external_runtime_command(runtime, command)
+    let Some(external_runtime) =
+        resolve_node_host_external_runtime_command(runtime, command, platform, device_family)
     else {
         return local_node_command_error(
             "LOCAL_EXTERNAL_HOST_UNAVAILABLE",
@@ -11375,8 +11549,11 @@ impl NodeHostRuntimeRegistry {
         command: &str,
         params: Option<&Value>,
         runtime: &NodeHostRuntimeConfig,
+        platform: Option<&str>,
+        device_family: Option<&str>,
     ) -> LocalNodeCommandExecution {
-        let Some(external_runtime) = resolve_node_host_external_runtime_command(runtime, command)
+        let Some(external_runtime) =
+            resolve_node_host_external_runtime_command(runtime, command, platform, device_family)
         else {
             return local_node_command_error(
                 "LOCAL_EXTERNAL_HOST_UNAVAILABLE",
@@ -11384,8 +11561,15 @@ impl NodeHostRuntimeRegistry {
             );
         };
         if !runtime.external_persistent {
-            return local_node_host_execute_external_command(node_id, command, params, runtime)
-                .await;
+            return local_node_host_execute_external_command(
+                node_id,
+                command,
+                params,
+                runtime,
+                platform,
+                device_family,
+            )
+            .await;
         }
         let request_payload = json!({
             "nodeId": node_id,
@@ -16776,6 +16960,45 @@ fn node_host_runtime_config_from_config(config: &Value) -> NodeHostRuntimeConfig
         );
     }
 
+    let mut external_platforms: HashMap<String, NodeHostPlatformRuntimeConfig> = HashMap::new();
+    if let Some(map) = runtime.and_then(|obj| {
+        read_config_object(
+            obj,
+            &[
+                "nodeHostExternalPlatforms",
+                "node_host_external_platforms",
+                "externalNodeHostPlatforms",
+            ],
+        )
+    }) {
+        collect_node_host_external_platform_overrides(
+            &mut external_platforms,
+            map,
+            external_command.as_deref(),
+            &external_args,
+            false,
+        );
+    }
+    if let Some(map) = node_host.and_then(|obj| {
+        read_config_object(
+            obj,
+            &[
+                "externalPlatforms",
+                "external_platforms",
+                "hostPlatforms",
+                "host_platforms",
+            ],
+        )
+    }) {
+        collect_node_host_external_platform_overrides(
+            &mut external_platforms,
+            map,
+            external_command.as_deref(),
+            &external_args,
+            true,
+        );
+    }
+
     NodeHostRuntimeConfig {
         local_node_ids,
         allow_system_run,
@@ -16786,6 +17009,7 @@ fn node_host_runtime_config_from_config(config: &Value) -> NodeHostRuntimeConfig
         external_command,
         external_args,
         external_commands,
+        external_platforms,
     }
 }
 
@@ -16984,6 +17208,97 @@ fn collect_node_host_external_command_overrides(
             continue;
         };
         target.insert(command_key, parsed);
+    }
+}
+
+fn normalize_node_host_platform_key(value: &str) -> Option<String> {
+    let trimmed = normalize_optional_text(Some(value.to_owned()), 64)?;
+    let normalized = normalize_node_platform_id(Some(trimmed.as_str()), None).to_owned();
+    if normalized == "unknown" {
+        Some(normalize(&trimmed))
+    } else {
+        Some(normalized)
+    }
+}
+
+fn collect_node_host_external_platform_overrides(
+    target: &mut HashMap<String, NodeHostPlatformRuntimeConfig>,
+    source: &serde_json::Map<String, Value>,
+    fallback_command: Option<&str>,
+    fallback_args: &[String],
+    overwrite: bool,
+) {
+    for (platform_key_raw, entry) in source {
+        let Some(platform_key) = normalize_node_host_platform_key(platform_key_raw) else {
+            continue;
+        };
+        let Value::Object(platform_config) = entry else {
+            continue;
+        };
+        if !overwrite && target.contains_key(&platform_key) {
+            continue;
+        }
+
+        let external_command = read_config_string(
+            platform_config,
+            &[
+                "command",
+                "externalCommand",
+                "external_command",
+                "hostCommand",
+                "host_command",
+            ],
+            1_024,
+        )
+        .or_else(|| {
+            fallback_command
+                .and_then(|value| normalize_optional_text(Some(value.to_owned()), 1_024))
+        });
+        let external_args = read_config_string_list(
+            platform_config,
+            &[
+                "args",
+                "externalArgs",
+                "external_args",
+                "hostArgs",
+                "host_args",
+            ],
+            32,
+            512,
+        )
+        .unwrap_or_else(|| fallback_args.to_vec());
+
+        let mut external_commands = HashMap::new();
+        if let Some(map) = read_config_object(
+            platform_config,
+            &[
+                "externalCommands",
+                "external_commands",
+                "hostCommands",
+                "host_commands",
+                "commands",
+            ],
+        ) {
+            collect_node_host_external_command_overrides(
+                &mut external_commands,
+                map,
+                external_command.as_deref(),
+                &external_args,
+                true,
+            );
+        }
+
+        if external_command.is_none() && external_commands.is_empty() {
+            continue;
+        }
+        target.insert(
+            platform_key,
+            NodeHostPlatformRuntimeConfig {
+                external_command,
+                external_args,
+                external_commands,
+            },
+        );
     }
 }
 
@@ -19716,6 +20031,14 @@ struct LocalNodeCommandExecution {
     error: Option<NodeInvokeResultError>,
 }
 
+#[derive(Clone, Copy)]
+struct LocalNodeCommandContext<'a> {
+    node_id: &'a str,
+    platform: Option<&'a str>,
+    device_family: Option<&'a str>,
+    invoke_id: &'a str,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NodeEventParams {
@@ -20064,6 +20387,8 @@ struct GatewaySendParams {
     account_id: Option<String>,
     #[serde(rename = "threadId", alias = "thread_id")]
     thread_id: Option<String>,
+    #[serde(rename = "replyTo", alias = "reply_to")]
+    reply_to: Option<String>,
     #[serde(rename = "sessionKey", alias = "session_key")]
     session_key: Option<String>,
     #[serde(rename = "idempotencyKey", alias = "idempotency_key")]
@@ -22607,6 +22932,7 @@ mod tests {
                 "channel": "slack",
                 "accountId": "work",
                 "threadId": "1710000.1",
+                "replyTo": "1710000.0",
                 "sessionKey": "main",
                 "idempotencyKey": "send-2"
             }),
@@ -22624,6 +22950,30 @@ mod tests {
                         .pointer("/threadId")
                         .and_then(serde_json::Value::as_str),
                     Some("1710000.1")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/replyTo")
+                        .and_then(serde_json::Value::as_str),
+                    Some("1710000.0")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/transport/adapter")
+                        .and_then(serde_json::Value::as_str),
+                    Some("slack")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/transport/action")
+                        .and_then(serde_json::Value::as_str),
+                    Some("send")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/transport/replyTo")
+                        .and_then(serde_json::Value::as_str),
+                    Some("1710000.0")
                 );
             }
             _ => panic!("expected send with context handled"),
@@ -23467,6 +23817,24 @@ mod tests {
                             .and_then(serde_json::Value::as_str),
                         Some("team")
                     );
+                    assert_eq!(
+                        payload
+                            .pointer("/transport/adapter")
+                            .and_then(serde_json::Value::as_str),
+                        Some("telegram")
+                    );
+                    assert_eq!(
+                        payload
+                            .pointer("/transport/action")
+                            .and_then(serde_json::Value::as_str),
+                        Some("poll")
+                    );
+                    assert_eq!(
+                        payload
+                            .pointer("/transport/threadId")
+                            .and_then(serde_json::Value::as_str),
+                        Some("42")
+                    );
                     let message_id = payload
                         .pointer("/messageId")
                         .and_then(serde_json::Value::as_str)
@@ -23515,6 +23883,12 @@ mod tests {
                 assert_eq!(
                     payload
                         .pointer("/channel")
+                        .and_then(serde_json::Value::as_str),
+                    Some("whatsapp")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/transport/adapter")
                         .and_then(serde_json::Value::as_str),
                     Some("whatsapp")
                 );
@@ -26550,6 +26924,110 @@ mod tests {
             }
             _ => panic!("expected tts.status handled after queue drain"),
         }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_voice_runtime_live_capture_stream_advances_frames_without_manual_touch() {
+        let dispatcher = RpcDispatcher::new();
+
+        let enable = RpcRequestFrame {
+            id: "req-voice-live-capture-enable".to_owned(),
+            method: "talk.mode".to_owned(),
+            params: serde_json::json!({
+                "enabled": true,
+                "phase": "listen",
+                "inputDevice": "mic-live"
+            }),
+        };
+        assert!(matches!(
+            dispatcher.handle_request(&enable).await,
+            RpcDispatchOutcome::Handled(_)
+        ));
+
+        let first_frames = {
+            let guard = dispatcher.voice_io.state.lock().await;
+            guard.capture_frames
+        };
+        tokio::time::sleep(Duration::from_millis(140)).await;
+        let second_frames = {
+            let guard = dispatcher.voice_io.state.lock().await;
+            assert!(guard.capture_active, "capture should still be active");
+            guard.capture_frames
+        };
+        assert!(
+            second_frames > first_frames,
+            "capture frame count should advance while capture is active"
+        );
+
+        let disable = RpcRequestFrame {
+            id: "req-voice-live-capture-disable".to_owned(),
+            method: "talk.mode".to_owned(),
+            params: serde_json::json!({
+                "enabled": false
+            }),
+        };
+        assert!(matches!(
+            dispatcher.handle_request(&disable).await,
+            RpcDispatchOutcome::Handled(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn dispatcher_voice_runtime_live_playback_worker_drains_queue_without_snapshot_calls() {
+        let dispatcher = RpcDispatcher::new();
+
+        let first = RpcRequestFrame {
+            id: "req-voice-live-worker-first".to_owned(),
+            method: "tts.convert".to_owned(),
+            params: serde_json::json!({
+                "text": "first live worker sample",
+                "channel": "telegram"
+            }),
+        };
+        let first_duration = match dispatcher.handle_request(&first).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/durationMs")
+                .and_then(Value::as_u64)
+                .expect("first duration"),
+            _ => panic!("expected first tts.convert handled"),
+        };
+
+        let second = RpcRequestFrame {
+            id: "req-voice-live-worker-second".to_owned(),
+            method: "tts.convert".to_owned(),
+            params: serde_json::json!({
+                "text": "second live worker sample",
+                "channel": "telegram"
+            }),
+        };
+        let second_duration = match dispatcher.handle_request(&second).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/durationMs")
+                .and_then(Value::as_u64)
+                .expect("second duration"),
+            _ => panic!("expected second tts.convert handled"),
+        };
+
+        tokio::time::sleep(Duration::from_millis(
+            first_duration
+                .saturating_add(second_duration)
+                .saturating_add(180),
+        ))
+        .await;
+
+        let guard = dispatcher.voice_io.state.lock().await;
+        assert!(
+            !guard.playback_active,
+            "playback should be inactive after queued items drain"
+        );
+        assert!(
+            guard.playback_queue.is_empty(),
+            "playback queue should be empty after worker drain"
+        );
+        assert!(
+            guard.playback_last_completed_at_ms.is_some(),
+            "playback completion timestamp should be populated"
+        );
     }
 
     #[tokio::test]
@@ -33855,6 +34333,130 @@ mod tests {
                 .is_none(),
             "external-map local runtime should not leave pending invokes"
         );
+    }
+
+    #[tokio::test]
+    async fn dispatcher_local_node_host_runtime_platform_override_routes_by_node_platform() {
+        let dispatcher = RpcDispatcher::new();
+        let (fallback_command, fallback_args, ios_command, ios_args): (
+            &str,
+            Vec<&str>,
+            &str,
+            Vec<&str>,
+        ) = if cfg!(windows) {
+            (
+                "cmd",
+                vec!["/C", "exit 1"],
+                "cmd",
+                vec!["/C", "echo %OPENCLAW_NODE_HOST_REQUEST%"],
+            )
+        } else {
+            (
+                "sh",
+                vec!["-lc", "exit 1"],
+                "sh",
+                vec!["-lc", "printf '%s' \"$OPENCLAW_NODE_HOST_REQUEST\""],
+            )
+        };
+        patch_config(
+            &dispatcher,
+            json!({
+                "nodeHost": {
+                    "localNodeIds": ["local-node-platform-ios-1", "local-node-platform-android-1"],
+                    "externalCommand": fallback_command,
+                    "externalArgs": fallback_args,
+                    "externalPlatforms": {
+                        "ios": {
+                            "command": ios_command,
+                            "args": ios_args
+                        }
+                    }
+                }
+            }),
+        )
+        .await;
+
+        for (node_id, platform) in [
+            ("local-node-platform-ios-1", "ios"),
+            ("local-node-platform-android-1", "android"),
+        ] {
+            let pair = RpcRequestFrame {
+                id: format!("req-local-node-platform-pair-{platform}"),
+                method: "node.pair.request".to_owned(),
+                params: serde_json::json!({
+                    "nodeId": node_id,
+                    "platform": platform,
+                    "displayName": format!("Local Platform Runtime Node {platform}"),
+                    "caps": ["host.local"],
+                    "commands": ["location.get"]
+                }),
+            };
+            let request_id = match dispatcher.handle_request(&pair).await {
+                RpcDispatchOutcome::Handled(payload) => payload
+                    .pointer("/request/requestId")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .expect("pair request id"),
+                _ => panic!("expected node.pair.request handled"),
+            };
+            let approve = RpcRequestFrame {
+                id: format!("req-local-node-platform-approve-{platform}"),
+                method: "node.pair.approve".to_owned(),
+                params: serde_json::json!({
+                    "requestId": request_id
+                }),
+            };
+            assert!(matches!(
+                dispatcher.handle_request(&approve).await,
+                RpcDispatchOutcome::Handled(_)
+            ));
+        }
+
+        let invoke_ios = RpcRequestFrame {
+            id: "req-local-node-platform-invoke-ios".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-platform-ios-1",
+                "command": "location.get",
+                "params": {},
+                "idempotencyKey": "local-node-platform-ios-location"
+            }),
+        };
+        match dispatcher.handle_request(&invoke_ios).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(payload.pointer("/ok").and_then(Value::as_bool), Some(true));
+                assert_eq!(
+                    payload
+                        .pointer("/payload/result/nodeId")
+                        .and_then(Value::as_str),
+                    Some("local-node-platform-ios-1")
+                );
+            }
+            _ => panic!("expected ios node.invoke handled"),
+        }
+
+        let invoke_android = RpcRequestFrame {
+            id: "req-local-node-platform-invoke-android".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "local-node-platform-android-1",
+                "command": "location.get",
+                "params": {},
+                "idempotencyKey": "local-node-platform-android-location"
+            }),
+        };
+        match dispatcher.handle_request(&invoke_android).await {
+            RpcDispatchOutcome::Error { code, message, .. } => {
+                assert_eq!(code, 503);
+                assert!(
+                    message.contains("external host runtime")
+                        || message.contains("external-host")
+                        || message.contains("failed"),
+                    "{message}"
+                );
+            }
+            _ => panic!("expected android node.invoke failure from fallback external command"),
+        }
     }
 
     #[tokio::test]

@@ -1,8 +1,8 @@
-## CP3 Tool Runtime Parity Gate
+﻿## CP3 Tool Runtime Parity Gate
 
-- Fixtures passed: 14/14
-- Total duration: 9208 ms
-- Avg fixture duration: 658 ms
+- Fixtures passed: 17/17
+- Total duration: 14571 ms
+- Avg fixture duration: 857 ms
 - Artifact log: cp3-gate.log
 - Artifact metrics: cp3-metrics.json
 - Fixture corpus: tool-runtime-corpus.json

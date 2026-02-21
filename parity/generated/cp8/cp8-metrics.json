@@ -1,27 +1,27 @@
-{
-  "gate": "cp8",
-  "passed": 13,
-  "totalFixtures": 13,
-  "totalDurationMs": 11628,
-  "avgFixtureDurationMs": 894,
-  "reliabilityFixtureCount": 8,
-  "securityFixtureCount": 4,
-  "benchmarkFixtureCount": 1,
-  "benchmarkMetrics": {
-    "elapsedMs": 24,
-    "fixture": "gateway::tests::dispatcher_status_benchmark_emits_latency_profile",
-    "iterations": 512,
-    "latencyUs": {
-      "max": 375,
-      "min": 24,
-      "p50": 29,
-      "p95": 80,
-      "p99": 137
-    },
-    "rssKiB": null,
-    "throughputOpsPerSec": 20974.065076952695
-  },
-  "cutoverRunbookPath": "parity/CP8_CUTOVER_RUNBOOK.md",
-  "cutoverRunbookValidated": true,
-  "resultsTsv": "cp8-fixture-results.tsv"
+﻿{
+    "gate":  "cp8",
+    "passed":  15,
+    "totalFixtures":  15,
+    "totalDurationMs":  18635,
+    "avgFixtureDurationMs":  1242,
+    "reliabilityFixtureCount":  10,
+    "securityFixtureCount":  4,
+    "benchmarkFixtureCount":  1,
+    "benchmarkMetrics":  {
+                             "elapsedMs":  38,
+                             "fixture":  "gateway::tests::dispatcher_status_benchmark_emits_latency_profile",
+                             "iterations":  512,
+                             "latencyUs":  {
+                                               "max":  422,
+                                               "min":  34,
+                                               "p50":  62,
+                                               "p95":  89,
+                                               "p99":  151
+                                           },
+                             "rssKiB":  null,
+                             "throughputOpsPerSec":  13457.782777717906
+                         },
+    "cutoverRunbookPath":  "parity/CP8_CUTOVER_RUNBOOK.md",
+    "cutoverRunbookValidated":  true,
+    "resultsTsv":  "cp8-fixture-results.tsv"
 }

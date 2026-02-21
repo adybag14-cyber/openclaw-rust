@@ -1,8 +1,8 @@
-{
-  "gate": "cp4",
-  "passed": 69,
-  "totalFixtures": 69,
-  "totalDurationMs": 33495,
-  "avgFixtureDurationMs": 485,
-  "resultsTsv": "cp4-fixture-results.tsv"
+﻿{
+    "gate":  "cp4",
+    "passed":  74,
+    "totalFixtures":  74,
+    "totalDurationMs":  61733,
+    "avgFixtureDurationMs":  834,
+    "resultsTsv":  "cp4-fixture-results.tsv"
 }

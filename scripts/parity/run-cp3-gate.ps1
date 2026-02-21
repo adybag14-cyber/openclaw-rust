@@ -23,7 +23,10 @@ $tests = @(
   "tool_runtime::tests::tool_runtime_policy_and_loop_guard_enforced_on_tool_host",
   "tool_runtime::tests::tool_runtime_background_exec_process_poll_roundtrip",
   "tool_runtime::tests::tool_runtime_gateway_and_sessions_tools_cover_history_list_and_reset",
+  "tool_runtime::tests::tool_runtime_message_send_supports_media_payload_and_channel_validation",
   "tool_runtime::tests::tool_runtime_message_tool_supports_poll_read_edit_delete_and_reactions",
+  "tool_runtime::tests::tool_runtime_message_tool_enforces_channel_capabilities",
+  "tool_runtime::tests::tool_runtime_message_thread_actions_emit_transport_receipts",
   "tool_runtime::tests::tool_runtime_browser_canvas_and_nodes_tools_cover_runtime_families"
 )
 

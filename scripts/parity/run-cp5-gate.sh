@@ -21,7 +21,9 @@ tests=(
   "gateway::tests::dispatcher_node_invoke_and_event_methods_follow_parity_contract"
   "gateway::tests::dispatcher_node_invoke_supports_camera_screen_location_and_system_commands_when_declared"
   "gateway::tests::dispatcher_local_node_host_runtime_completes_node_invoke_commands_in_process"
+  "gateway::tests::dispatcher_local_node_host_runtime_platform_override_routes_by_node_platform"
   "gateway::tests::dispatcher_local_node_host_runtime_command_override_map_routes_by_command"
+  "gateway::tests::dispatcher_local_node_host_runtime_command_override_can_run_without_global_command"
 )
 
 echo -e "test\tduration_ms\tstatus" > "${results_file}"

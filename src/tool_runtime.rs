@@ -13,7 +13,10 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::channels::{normalize_channel_id, ChannelCapabilities, DriverRegistry};
+use crate::channels::{
+    build_channel_transport_receipt, channel_supports_message_action, normalize_channel_id,
+    ChannelCapabilities, ChannelMessageAction, DriverRegistry,
+};
 use crate::config::ToolRuntimePolicyConfig;
 use crate::security::tool_loop::{ToolLoopGuard, ToolLoopLevel};
 use crate::security::tool_policy::ToolPolicyMatcher;
@@ -255,6 +258,17 @@ pub struct ToolRuntimeHost {
     message_stickers: Mutex<HashMap<String, VecDeque<ToolRuntimeMessageSticker>>>,
     member_roles: Mutex<HashMap<String, Vec<String>>>,
     message_channel_capabilities: HashMap<String, ChannelCapabilities>,
+}
+
+#[derive(Clone, Copy)]
+struct MessageTransportReceiptInput<'a> {
+    action: ChannelMessageAction,
+    channel: Option<&'a str>,
+    message_id: &'a str,
+    target: Option<&'a str>,
+    thread_id: Option<&'a str>,
+    reply_to: Option<&'a str>,
+    dry_run: bool,
 }
 
 impl ToolRuntimeHost {
@@ -966,31 +980,10 @@ impl ToolRuntimeHost {
     }
 
     fn message_channel_supports_action(capability: &ChannelCapabilities, action: &str) -> bool {
-        match action {
-            "poll" => matches!(
-                capability.name,
-                "whatsapp" | "telegram" | "discord" | "matrix" | "msteams"
-            ),
-            "react" => matches!(
-                capability.name,
-                "discord" | "googlechat" | "slack" | "telegram" | "whatsapp" | "signal"
-            ),
-            "reactions" => matches!(capability.name, "discord" | "googlechat" | "slack"),
-            "read" => matches!(capability.name, "discord" | "slack"),
-            "edit" => matches!(capability.name, "discord" | "slack"),
-            "delete" => matches!(capability.name, "discord" | "slack" | "telegram"),
-            "pin" | "unpin" | "pins" => matches!(capability.name, "discord" | "slack"),
-            "permissions" | "search" => capability.name == "discord",
-            "thread-create" | "thread-list" | "thread-reply" => capability.name == "discord",
-            "emoji-list" => matches!(capability.name, "discord" | "slack"),
-            "emoji-upload" | "sticker-send" | "sticker-upload" => capability.name == "discord",
-            "member-info" => matches!(capability.name, "discord" | "slack"),
-            "role-info" | "channel-info" | "channel-list" | "voice-status" | "event-list"
-            | "event-create" | "role-add" | "role-remove" | "timeout" | "kick" | "ban" => {
-                capability.name == "discord"
-            }
-            _ => true,
-        }
+        let Some(mapped_action) = ChannelMessageAction::from_alias(action) else {
+            return true;
+        };
+        channel_supports_message_action(capability, mapped_action)
     }
 
     fn enforce_message_channel_action_support(
@@ -1017,6 +1010,23 @@ impl ToolRuntimeHost {
             ));
         }
         Ok(Some(capability.name.to_owned()))
+    }
+
+    fn build_message_transport_receipt_value(
+        &self,
+        input: MessageTransportReceiptInput<'_>,
+    ) -> Option<Value> {
+        let channel = input.channel?;
+        let capability = self.message_channel_capabilities.get(channel)?;
+        Some(build_channel_transport_receipt(
+            capability,
+            input.action,
+            input.message_id,
+            input.target,
+            input.thread_id,
+            input.reply_to,
+            input.dry_run,
+        ))
     }
 
     async fn execute_message_send(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
@@ -1063,6 +1073,15 @@ impl ToolRuntimeHost {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
+        let transport = self.build_message_transport_receipt_value(MessageTransportReceiptInput {
+            action: ChannelMessageAction::Send,
+            channel: channel.as_deref(),
+            message_id: message_id.as_str(),
+            target: target.as_deref(),
+            thread_id: thread_id.as_deref(),
+            reply_to: reply_to.as_deref(),
+            dry_run,
+        });
         Ok(json!({
             "status": "completed",
             "action": "send",
@@ -1075,6 +1094,7 @@ impl ToolRuntimeHost {
             "target": target,
             "replyTo": reply_to,
             "dryRun": dry_run,
+            "transport": transport,
             "message": message,
             "media": media,
             "mediaCount": media.len()
@@ -1160,11 +1180,26 @@ impl ToolRuntimeHost {
         let mut deliveries = Vec::new();
         for channel in &channels {
             for target in &targets {
+                let transport =
+                    self.message_channel_capabilities
+                        .get(channel.as_str())
+                        .map(|capability| {
+                            build_channel_transport_receipt(
+                                capability,
+                                ChannelMessageAction::Broadcast,
+                                message_id.as_str(),
+                                Some(target.as_str()),
+                                thread_id.as_deref(),
+                                None,
+                                dry_run,
+                            )
+                        });
                 deliveries.push(json!({
                     "channel": channel,
                     "target": target,
                     "status": delivery_status,
-                    "ok": true
+                    "ok": true,
+                    "transport": transport
                 }));
             }
         }
@@ -1241,8 +1276,8 @@ impl ToolRuntimeHost {
                 "user".to_owned(),
                 format!("[poll] {question}"),
                 thread_id.clone(),
-                channel,
-                target,
+                channel.clone(),
+                target.clone(),
             )
             .await;
         let message_id = entry
@@ -1250,6 +1285,15 @@ impl ToolRuntimeHost {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
+        let transport = self.build_message_transport_receipt_value(MessageTransportReceiptInput {
+            action: ChannelMessageAction::Poll,
+            channel: channel.as_deref(),
+            message_id: message_id.as_str(),
+            target: target.as_deref(),
+            thread_id: thread_id.as_deref(),
+            reply_to: None,
+            dry_run: false,
+        });
         Ok(json!({
             "status": "completed",
             "action": "poll",
@@ -1258,6 +1302,7 @@ impl ToolRuntimeHost {
             "threadId": thread_id,
             "entry": entry,
             "count": count,
+            "transport": transport,
             "poll": {
                 "id": format!("poll-{}", now_ms()),
                 "question": question,
@@ -1385,7 +1430,7 @@ impl ToolRuntimeHost {
 
     async fn execute_message_edit(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
-        let _channel = self.enforce_message_channel_action_support(request, "edit")?;
+        let channel = self.enforce_message_channel_action_support(request, "edit")?;
         let message = first_string_arg(&request.args, &["message", "content", "text", "prompt"])
             .ok_or_else(|| {
                 ToolRuntimeError::new(
@@ -1430,12 +1475,22 @@ impl ToolRuntimeHost {
         entry.message = message;
         entry.edited_at_ms = Some(now);
         timeline.updated_at_ms = now;
+        let transport = self.build_message_transport_receipt_value(MessageTransportReceiptInput {
+            action: ChannelMessageAction::Edit,
+            channel: channel.as_deref(),
+            message_id: message_id.as_str(),
+            target: entry.target_id.as_deref(),
+            thread_id: entry.thread_id.as_deref(),
+            reply_to: None,
+            dry_run: false,
+        });
         Ok(json!({
             "status": "completed",
             "action": "edit",
             "sessionId": session_id,
             "messageId": message_id,
             "entry": serialize_session_entry(entry),
+            "transport": transport,
             "edited": true
         }))
     }
@@ -1445,7 +1500,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
-        let _channel = self.enforce_message_channel_action_support(request, "delete")?;
+        let channel = self.enforce_message_channel_action_support(request, "delete")?;
         let explicit_message_id =
             first_string_arg(&request.args, &["messageId", "message_id", "id"]);
 
@@ -1484,12 +1539,22 @@ impl ToolRuntimeHost {
             true
         };
         timeline.updated_at_ms = now;
+        let transport = self.build_message_transport_receipt_value(MessageTransportReceiptInput {
+            action: ChannelMessageAction::Delete,
+            channel: channel.as_deref(),
+            message_id: message_id.as_str(),
+            target: entry.target_id.as_deref(),
+            thread_id: entry.thread_id.as_deref(),
+            reply_to: None,
+            dry_run: false,
+        });
         Ok(json!({
             "status": "completed",
             "action": "delete",
             "sessionId": session_id,
             "messageId": message_id,
             "deleted": deleted,
+            "transport": transport,
             "entry": serialize_session_entry(entry)
         }))
     }
@@ -1945,7 +2010,11 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
-        let _channel = self.enforce_message_channel_action_support(request, "thread-create")?;
+        let channel = self.enforce_message_channel_action_support(request, "thread-create")?;
+        let target = first_string_arg(
+            &request.args,
+            &["target", "to", "channelId", "channel_id", "channel"],
+        );
         let name = first_string_arg(
             &request.args,
             &["threadName", "thread_name", "name", "title"],
@@ -1981,10 +2050,20 @@ impl ToolRuntimeHost {
                 let _ = threads.remove(&evict);
             }
         }
+        let transport = self.build_message_transport_receipt_value(MessageTransportReceiptInput {
+            action: ChannelMessageAction::ThreadCreate,
+            channel: channel.as_deref(),
+            message_id: thread.id.as_str(),
+            target: target.as_deref(),
+            thread_id: Some(thread.id.as_str()),
+            reply_to: None,
+            dry_run: false,
+        });
         Ok(json!({
             "status": "completed",
             "action": "thread-create",
             "sessionId": session_id,
+            "transport": transport,
             "thread": serialize_message_thread(&thread)
         }))
     }
@@ -2097,8 +2176,8 @@ impl ToolRuntimeHost {
                 role,
                 message,
                 Some(thread_id.clone()),
-                channel,
-                target,
+                channel.clone(),
+                target.clone(),
             )
             .await;
         let message_id = entry
@@ -2106,6 +2185,15 @@ impl ToolRuntimeHost {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
+        let transport = self.build_message_transport_receipt_value(MessageTransportReceiptInput {
+            action: ChannelMessageAction::ThreadReply,
+            channel: channel.as_deref(),
+            message_id: message_id.as_str(),
+            target: target.as_deref(),
+            thread_id: Some(thread_id.as_str()),
+            reply_to: None,
+            dry_run: false,
+        });
         Ok(json!({
             "status": "completed",
             "action": "thread-reply",
@@ -2113,7 +2201,8 @@ impl ToolRuntimeHost {
             "threadId": thread_id,
             "messageId": message_id,
             "entry": entry,
-            "count": count
+            "count": count,
+            "transport": transport
         }))
     }
 
@@ -2686,7 +2775,7 @@ impl ToolRuntimeHost {
         request: &ToolRuntimeRequest,
     ) -> ToolRuntimeResult<Value> {
         let session_id = resolve_message_session_id(request);
-        let _channel = self.enforce_message_channel_action_support(request, "react")?;
+        let channel = self.enforce_message_channel_action_support(request, "react")?;
         let explicit_message_id =
             first_string_arg(&request.args, &["messageId", "message_id", "id"]);
         let remove = first_bool_arg(&request.args, &["remove", "delete"]).unwrap_or(false);
@@ -2771,6 +2860,15 @@ impl ToolRuntimeHost {
         };
         timeline.updated_at_ms = now;
         let reactions = serialize_session_reactions(&entry.reactions);
+        let transport = self.build_message_transport_receipt_value(MessageTransportReceiptInput {
+            action: ChannelMessageAction::React,
+            channel: channel.as_deref(),
+            message_id: message_id.as_str(),
+            target: entry.target_id.as_deref(),
+            thread_id: entry.thread_id.as_deref(),
+            reply_to: None,
+            dry_run: false,
+        });
         Ok(json!({
             "status": "completed",
             "action": "react",
@@ -2780,6 +2878,7 @@ impl ToolRuntimeHost {
             "remove": remove,
             "applied": applied,
             "reactionCount": reactions.len(),
+            "transport": transport,
             "reactions": reactions
         }))
     }
@@ -5825,6 +5924,27 @@ mod tests {
                 .and_then(serde_json::Value::as_u64),
             Some(2)
         );
+        assert_eq!(
+            media_only_send
+                .result
+                .pointer("/transport/adapter")
+                .and_then(serde_json::Value::as_str),
+            Some("discord")
+        );
+        assert_eq!(
+            media_only_send
+                .result
+                .pointer("/transport/action")
+                .and_then(serde_json::Value::as_str),
+            Some("send")
+        );
+        assert_eq!(
+            media_only_send
+                .result
+                .pointer("/transport/replyTo")
+                .and_then(serde_json::Value::as_str),
+            Some("msg-1")
+        );
         assert!(media_only_send
             .result
             .to_string()
@@ -5994,6 +6114,97 @@ mod tests {
             .result
             .to_string()
             .contains("deploy beta ready"));
+    }
+
+    #[tokio::test]
+    async fn tool_runtime_message_thread_actions_emit_transport_receipts() {
+        let host = build_host(default_policy()).await;
+
+        let thread_create = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-thread-transport-create-1".to_owned(),
+                session_id: "agent:main:discord:group:ops".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "thread-create",
+                    "channel": "discord",
+                    "target": "channel:ops",
+                    "threadName": "ops-thread"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("thread create");
+
+        let thread_id = thread_create
+            .result
+            .pointer("/thread/id")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .expect("thread id");
+        assert_eq!(
+            thread_create
+                .result
+                .pointer("/transport/adapter")
+                .and_then(serde_json::Value::as_str),
+            Some("discord")
+        );
+        assert_eq!(
+            thread_create
+                .result
+                .pointer("/transport/action")
+                .and_then(serde_json::Value::as_str),
+            Some("thread-create")
+        );
+        assert_eq!(
+            thread_create
+                .result
+                .pointer("/transport/threadId")
+                .and_then(serde_json::Value::as_str),
+            Some(thread_id.as_str())
+        );
+
+        let thread_reply = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-thread-transport-reply-1".to_owned(),
+                session_id: "agent:main:discord:group:ops".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "thread-reply",
+                    "channel": "discord",
+                    "target": "channel:ops",
+                    "threadId": thread_id,
+                    "message": "reply in thread"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("thread reply");
+        assert_eq!(
+            thread_reply
+                .result
+                .pointer("/transport/adapter")
+                .and_then(serde_json::Value::as_str),
+            Some("discord")
+        );
+        assert_eq!(
+            thread_reply
+                .result
+                .pointer("/transport/action")
+                .and_then(serde_json::Value::as_str),
+            Some("thread-reply")
+        );
+        assert_eq!(
+            thread_reply
+                .result
+                .pointer("/transport/target")
+                .and_then(serde_json::Value::as_str),
+            Some("channel:ops")
+        );
     }
 
     #[tokio::test]
