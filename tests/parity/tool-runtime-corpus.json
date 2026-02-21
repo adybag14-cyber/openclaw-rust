@@ -363,6 +363,198 @@
       }
     },
     {
+      "name": "message-channel-info",
+      "request": {
+        "request_id": "cp3-message-channel-info-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "channel-info",
+          "target": "channel:123"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "runtime-channel"
+      }
+    },
+    {
+      "name": "message-channel-list",
+      "request": {
+        "request_id": "cp3-message-channel-list-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "channel-list",
+          "guildId": "guild-1"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"count\":2"
+      }
+    },
+    {
+      "name": "message-role-add",
+      "request": {
+        "request_id": "cp3-message-role-add-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "role-add",
+          "guildId": "guild-1",
+          "userId": "user-1",
+          "roleId": "role-ops"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"applied\":true"
+      }
+    },
+    {
+      "name": "message-member-info",
+      "request": {
+        "request_id": "cp3-message-member-info-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "member-info",
+          "guildId": "guild-1",
+          "userId": "user-1"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "role-ops"
+      }
+    },
+    {
+      "name": "message-event-create",
+      "request": {
+        "request_id": "cp3-message-event-create-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "event-create",
+          "guildId": "guild-1",
+          "eventName": "Release Window",
+          "startTime": "2026-02-21T20:00:00Z"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "Release Window"
+      }
+    },
+    {
+      "name": "message-event-list",
+      "request": {
+        "request_id": "cp3-message-event-list-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "event-list",
+          "guildId": "guild-1"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"count\":1"
+      }
+    },
+    {
+      "name": "message-timeout",
+      "request": {
+        "request_id": "cp3-message-timeout-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "timeout",
+          "guildId": "guild-1",
+          "userId": "user-1",
+          "durationMin": 30
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"applied\":true"
+      }
+    },
+    {
+      "name": "message-kick",
+      "request": {
+        "request_id": "cp3-message-kick-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "kick",
+          "guildId": "guild-1",
+          "userId": "user-1"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"action\":\"kick\""
+      }
+    },
+    {
+      "name": "message-ban",
+      "request": {
+        "request_id": "cp3-message-ban-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "ban",
+          "guildId": "guild-1",
+          "userId": "user-1",
+          "deleteDays": 2
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"action\":\"ban\""
+      }
+    },
+    {
+      "name": "message-role-remove",
+      "request": {
+        "request_id": "cp3-message-role-remove-1",
+        "session_id": "cp3-thread-2",
+        "tool_name": "message",
+        "args": {
+          "action": "role-remove",
+          "guildId": "guild-1",
+          "userId": "user-1",
+          "roleId": "role-ops"
+        },
+        "sandboxed": false
+      },
+      "expect": {
+        "ok": true,
+        "status": "completed",
+        "contains": "\"applied\":true"
+      }
+    },
+    {
       "name": "message-pin",
       "request": {
         "request_id": "cp3-message-pin-1",

@@ -161,6 +161,20 @@ struct ToolRuntimeThreadRegistry {
     updated_at_ms: u64,
 }
 
+#[derive(Debug, Clone)]
+struct ToolRuntimeMessageEvent {
+    id: String,
+    guild_id: String,
+    name: String,
+    start_time: String,
+    end_time: Option<String>,
+    description: Option<String>,
+    channel_id: Option<String>,
+    location: Option<String>,
+    event_type: String,
+    created_at_ms: u64,
+}
+
 pub struct ToolRuntimeHost {
     workspace_root: PathBuf,
     sandbox_root: PathBuf,
@@ -173,9 +187,12 @@ pub struct ToolRuntimeHost {
     process_counter: Mutex<u64>,
     session_entry_counter: Mutex<u64>,
     thread_counter: Mutex<u64>,
+    message_event_counter: Mutex<u64>,
     process_sessions: Mutex<HashMap<String, ToolRuntimeProcessSession>>,
     session_timelines: Mutex<HashMap<String, ToolRuntimeSessionTimeline>>,
     session_threads: Mutex<HashMap<String, ToolRuntimeThreadRegistry>>,
+    message_events: Mutex<HashMap<String, VecDeque<ToolRuntimeMessageEvent>>>,
+    member_roles: Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl ToolRuntimeHost {
@@ -221,9 +238,12 @@ impl ToolRuntimeHost {
             process_counter: Mutex::new(0),
             session_entry_counter: Mutex::new(0),
             thread_counter: Mutex::new(0),
+            message_event_counter: Mutex::new(0),
             process_sessions: Mutex::new(HashMap::new()),
             session_timelines: Mutex::new(HashMap::new()),
             session_threads: Mutex::new(HashMap::new()),
+            message_events: Mutex::new(HashMap::new()),
+            member_roles: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -814,6 +834,24 @@ impl ToolRuntimeHost {
             "thread-create" | "thread_create" => self.execute_message_thread_create(request).await,
             "thread-list" | "thread_list" => self.execute_message_thread_list(request).await,
             "thread-reply" | "thread_reply" => self.execute_message_thread_reply(request).await,
+            "member-info" | "member_info" => self.execute_message_member_info(request).await,
+            "role-info" | "role_info" => self.execute_message_role_info(request).await,
+            "channel-info" | "channel_info" => self.execute_message_channel_info(request).await,
+            "channel-list" | "channel_list" => self.execute_message_channel_list(request).await,
+            "voice-status" | "voice_status" => self.execute_message_voice_status(request).await,
+            "event-list" | "event_list" => self.execute_message_event_list(request).await,
+            "event-create" | "event_create" => self.execute_message_event_create(request).await,
+            "role-add" | "role_add" => {
+                self.execute_message_role_mutation(request, "role-add")
+                    .await
+            }
+            "role-remove" | "role_remove" => {
+                self.execute_message_role_mutation(request, "role-remove")
+                    .await
+            }
+            "timeout" => self.execute_message_timeout(request).await,
+            "kick" => self.execute_message_kick(request).await,
+            "ban" => self.execute_message_ban(request).await,
             "history" | "list" | "reset" | "clear" => {
                 let mut translated = request.clone();
                 let mut map = translated.args.as_object().cloned().unwrap_or_default();
@@ -1291,7 +1329,19 @@ impl ToolRuntimeHost {
                 "pins": true,
                 "threadCreate": true,
                 "threadList": true,
-                "threadReply": true
+                "threadReply": true,
+                "memberInfo": true,
+                "roleInfo": true,
+                "channelInfo": true,
+                "channelList": true,
+                "voiceStatus": true,
+                "eventList": true,
+                "eventCreate": true,
+                "roleAdd": true,
+                "roleRemove": true,
+                "timeout": true,
+                "kick": true,
+                "ban": true
             }
         }))
     }
@@ -1459,6 +1509,302 @@ impl ToolRuntimeHost {
             "messageId": message_id,
             "entry": entry,
             "count": count
+        }))
+    }
+
+    async fn execute_message_member_info(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
+        let user_id = required_string_arg(&request.args, &["userId", "user_id"], "userId")?;
+        let key = message_member_role_key(&guild_id, &user_id);
+        let roles = self
+            .member_roles
+            .lock()
+            .await
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        Ok(json!({
+            "status": "completed",
+            "action": "member-info",
+            "sessionId": session_id,
+            "member": {
+                "guildId": guild_id,
+                "userId": user_id,
+                "displayName": format!("member-{user_id}"),
+                "roles": roles,
+                "joinedAt": null
+            }
+        }))
+    }
+
+    async fn execute_message_role_info(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
+        let role_id = first_string_arg(&request.args, &["roleId", "role_id"]);
+        let role_name = role_id
+            .as_deref()
+            .map(|id| format!("role-{id}"))
+            .unwrap_or_else(|| "role-member".to_owned());
+        Ok(json!({
+            "status": "completed",
+            "action": "role-info",
+            "sessionId": session_id,
+            "role": {
+                "guildId": guild_id,
+                "roleId": role_id,
+                "name": role_name
+            }
+        }))
+    }
+
+    async fn execute_message_channel_info(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let target = required_string_arg(
+            &request.args,
+            &["target", "channelId", "channel_id"],
+            "target",
+        )?;
+        Ok(json!({
+            "status": "completed",
+            "action": "channel-info",
+            "sessionId": session_id,
+            "channel": {
+                "id": target,
+                "name": "runtime-channel",
+                "kind": "text",
+                "archived": false
+            }
+        }))
+    }
+
+    async fn execute_message_channel_list(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
+        Ok(json!({
+            "status": "completed",
+            "action": "channel-list",
+            "sessionId": session_id,
+            "guildId": guild_id,
+            "channels": [
+                {
+                    "id": format!("{guild_id}-general"),
+                    "name": "general",
+                    "kind": "text"
+                },
+                {
+                    "id": format!("{guild_id}-ops"),
+                    "name": "ops",
+                    "kind": "text"
+                }
+            ],
+            "count": 2
+        }))
+    }
+
+    async fn execute_message_voice_status(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
+        let user_id = required_string_arg(&request.args, &["userId", "user_id"], "userId")?;
+        Ok(json!({
+            "status": "completed",
+            "action": "voice-status",
+            "sessionId": session_id,
+            "voice": {
+                "guildId": guild_id,
+                "userId": user_id,
+                "connected": false,
+                "channelId": null,
+                "muted": false,
+                "deafened": false
+            }
+        }))
+    }
+
+    async fn execute_message_event_list(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
+        let limit = request
+            .args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(50)
+            .clamp(1, 200) as usize;
+        let events = self.message_events.lock().await;
+        let mut rows = events
+            .get(&guild_id)
+            .map(|value| value.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        rows.sort_by(|left, right| right.created_at_ms.cmp(&left.created_at_ms));
+        if rows.len() > limit {
+            rows.truncate(limit);
+        }
+        let payload = rows.iter().map(serialize_message_event).collect::<Vec<_>>();
+        Ok(json!({
+            "status": "completed",
+            "action": "event-list",
+            "sessionId": session_id,
+            "guildId": guild_id,
+            "events": payload,
+            "count": payload.len(),
+            "limit": limit
+        }))
+    }
+
+    async fn execute_message_event_create(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
+        let event_name =
+            required_string_arg(&request.args, &["eventName", "event_name"], "eventName")?;
+        let start_time =
+            required_string_arg(&request.args, &["startTime", "start_time"], "startTime")?;
+        let event = ToolRuntimeMessageEvent {
+            id: self.next_message_event_id().await,
+            guild_id: guild_id.clone(),
+            name: event_name,
+            start_time,
+            end_time: first_string_arg(&request.args, &["endTime", "end_time"]),
+            description: first_string_arg(&request.args, &["desc", "description"]),
+            channel_id: first_string_arg(&request.args, &["channelId", "channel_id"]),
+            location: first_string_arg(&request.args, &["location"]),
+            event_type: first_string_arg(&request.args, &["eventType", "event_type"])
+                .unwrap_or_else(|| "external".to_owned()),
+            created_at_ms: now_ms(),
+        };
+        let mut events = self.message_events.lock().await;
+        let registry = events.entry(guild_id.clone()).or_default();
+        registry.push_back(event.clone());
+        while registry.len() > self.session_history_limit {
+            registry.pop_front();
+        }
+        Ok(json!({
+            "status": "completed",
+            "action": "event-create",
+            "sessionId": session_id,
+            "event": serialize_message_event(&event)
+        }))
+    }
+
+    async fn execute_message_role_mutation(
+        &self,
+        request: &ToolRuntimeRequest,
+        action: &str,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
+        let user_id = required_string_arg(&request.args, &["userId", "user_id"], "userId")?;
+        let role_id = required_string_arg(&request.args, &["roleId", "role_id"], "roleId")?;
+        let key = message_member_role_key(&guild_id, &user_id);
+        let mut members = self.member_roles.lock().await;
+        let roles = members.entry(key).or_default();
+        let applied = if action == "role-add" {
+            if roles.iter().any(|value| value == &role_id) {
+                false
+            } else {
+                roles.push(role_id.clone());
+                roles.sort();
+                true
+            }
+        } else {
+            let before = roles.len();
+            roles.retain(|value| value != &role_id);
+            before != roles.len()
+        };
+        Ok(json!({
+            "status": "completed",
+            "action": action,
+            "sessionId": session_id,
+            "guildId": guild_id,
+            "userId": user_id,
+            "roleId": role_id,
+            "applied": applied,
+            "roles": roles
+        }))
+    }
+
+    async fn execute_message_timeout(
+        &self,
+        request: &ToolRuntimeRequest,
+    ) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
+        let user_id = required_string_arg(&request.args, &["userId", "user_id"], "userId")?;
+        let duration_min = request
+            .args
+            .get("durationMin")
+            .or_else(|| request.args.get("duration_min"))
+            .and_then(Value::as_u64)
+            .map(|value| value.clamp(1, 40_320));
+        let until = first_string_arg(&request.args, &["until"]);
+        Ok(json!({
+            "status": "completed",
+            "action": "timeout",
+            "sessionId": session_id,
+            "guildId": guild_id,
+            "userId": user_id,
+            "durationMin": duration_min,
+            "until": until,
+            "applied": duration_min.is_some() || until.is_some()
+        }))
+    }
+
+    async fn execute_message_kick(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
+        let user_id = required_string_arg(&request.args, &["userId", "user_id"], "userId")?;
+        let reason = first_string_arg(&request.args, &["reason"]);
+        Ok(json!({
+            "status": "completed",
+            "action": "kick",
+            "sessionId": session_id,
+            "guildId": guild_id,
+            "userId": user_id,
+            "reason": reason,
+            "applied": true
+        }))
+    }
+
+    async fn execute_message_ban(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
+        let session_id = resolve_message_session_id(request);
+        let guild_id = required_string_arg(&request.args, &["guildId", "guild_id"], "guildId")?;
+        let user_id = required_string_arg(&request.args, &["userId", "user_id"], "userId")?;
+        let reason = first_string_arg(&request.args, &["reason"]);
+        let delete_days = request
+            .args
+            .get("deleteDays")
+            .or_else(|| request.args.get("delete_days"))
+            .and_then(Value::as_u64)
+            .map(|value| value.clamp(0, 7));
+        Ok(json!({
+            "status": "completed",
+            "action": "ban",
+            "sessionId": session_id,
+            "guildId": guild_id,
+            "userId": user_id,
+            "reason": reason,
+            "deleteDays": delete_days,
+            "applied": true
         }))
     }
 
@@ -2028,6 +2374,12 @@ impl ToolRuntimeHost {
         format!("thread-{:06}", *counter)
     }
 
+    async fn next_message_event_id(&self) -> String {
+        let mut counter = self.message_event_counter.lock().await;
+        *counter += 1;
+        format!("event-{:06}", *counter)
+    }
+
     async fn append_session_entry(
         &self,
         session_id: String,
@@ -2242,6 +2594,25 @@ fn serialize_message_thread(thread: &ToolRuntimeMessageThread) -> Value {
         "sourceMessageId": thread.source_message_id,
         "archived": thread.archived
     })
+}
+
+fn serialize_message_event(event: &ToolRuntimeMessageEvent) -> Value {
+    json!({
+        "id": event.id,
+        "guildId": event.guild_id,
+        "name": event.name,
+        "startTime": event.start_time,
+        "endTime": event.end_time,
+        "description": event.description,
+        "channelId": event.channel_id,
+        "location": event.location,
+        "eventType": event.event_type,
+        "ts": event.created_at_ms
+    })
+}
+
+fn message_member_role_key(guild_id: &str, user_id: &str) -> String {
+    format!("{guild_id}::{user_id}")
 }
 
 fn serialize_session_entry(entry: &ToolRuntimeSessionEntry) -> Value {
@@ -3544,6 +3915,153 @@ mod tests {
                 .pointer("/messages/0/message")
                 .and_then(serde_json::Value::as_str),
             Some("threaded parity message")
+        );
+
+        let role_add = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-role-add-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "role-add",
+                    "guildId": "guild-1",
+                    "userId": "user-1",
+                    "roleId": "role-ops"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message role-add");
+        assert_eq!(
+            role_add
+                .result
+                .get("applied")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let member_info = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-member-info-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "member-info",
+                    "guildId": "guild-1",
+                    "userId": "user-1"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message member-info");
+        assert_eq!(
+            member_info
+                .result
+                .pointer("/member/roles/0")
+                .and_then(serde_json::Value::as_str),
+            Some("role-ops")
+        );
+
+        let event_create = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-event-create-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "event-create",
+                    "guildId": "guild-1",
+                    "eventName": "Release Window",
+                    "startTime": "2026-02-21T20:00:00Z"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message event-create");
+        assert_eq!(
+            event_create
+                .result
+                .pointer("/event/name")
+                .and_then(serde_json::Value::as_str),
+            Some("Release Window")
+        );
+
+        let event_list = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-event-list-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "event-list",
+                    "guildId": "guild-1"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message event-list");
+        assert_eq!(
+            event_list
+                .result
+                .get("count")
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+
+        let timeout = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-timeout-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "timeout",
+                    "guildId": "guild-1",
+                    "userId": "user-1",
+                    "durationMin": 30
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message timeout");
+        assert_eq!(
+            timeout
+                .result
+                .get("applied")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let role_remove = host
+            .execute(ToolRuntimeRequest {
+                request_id: "message-parity-role-remove-1".to_owned(),
+                session_id: "message-parity".to_owned(),
+                tool_name: "message".to_owned(),
+                args: serde_json::json!({
+                    "action": "role-remove",
+                    "guildId": "guild-1",
+                    "userId": "user-1",
+                    "roleId": "role-ops"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("message role-remove");
+        assert_eq!(
+            role_remove
+                .result
+                .get("applied")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
         );
 
         let read = host

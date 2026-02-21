@@ -1696,7 +1696,7 @@ mod tests {
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
     > {
-        let (mut ws, _) = connect_async(url).await?;
+        let mut ws = connect_ws_with_retry(url).await?;
         let challenge = ws
             .next()
             .await
@@ -1746,7 +1746,7 @@ mod tests {
         >,
         Value,
     )> {
-        let (mut ws, _) = connect_async(url).await?;
+        let mut ws = connect_ws_with_retry(url).await?;
         let challenge = ws
             .next()
             .await
@@ -1782,6 +1782,28 @@ mod tests {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("missing hello result"))?;
         Ok((ws, hello))
+    }
+
+    async fn connect_ws_with_retry(
+        url: &str,
+    ) -> Result<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    > {
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 0..5 {
+            match connect_async(url).await {
+                Ok((ws, _)) => return Ok(ws),
+                Err(err) => {
+                    last_err = Some(err.into());
+                    if attempt < 4 {
+                        tokio::time::sleep(Duration::from_millis(30 * (attempt + 1) as u64)).await;
+                    }
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("websocket connect failed")))
     }
 
     fn response_body_slice(raw: &[u8]) -> Result<&[u8]> {
