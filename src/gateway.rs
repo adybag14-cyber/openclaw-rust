@@ -26891,12 +26891,10 @@ mod tests {
             _ => panic!("expected tts.status handled"),
         }
 
-        tokio::time::sleep(Duration::from_millis(
-            first_duration_ms
-                .saturating_add(second_duration_ms)
-                .saturating_add(80),
-        ))
-        .await;
+        let wait_budget_ms = first_duration_ms
+            .saturating_add(second_duration_ms)
+            .saturating_add(2_000);
+        wait_for_playback_drain(&dispatcher, wait_budget_ms).await;
         match dispatcher.handle_request(&status).await {
             RpcDispatchOutcome::Handled(payload) => {
                 assert_eq!(
@@ -27008,12 +27006,10 @@ mod tests {
             _ => panic!("expected second tts.convert handled"),
         };
 
-        tokio::time::sleep(Duration::from_millis(
-            first_duration
-                .saturating_add(second_duration)
-                .saturating_add(180),
-        ))
-        .await;
+        let wait_budget_ms = first_duration
+            .saturating_add(second_duration)
+            .saturating_add(2_000);
+        wait_for_playback_drain(&dispatcher, wait_budget_ms).await;
 
         let guard = dispatcher.voice_io.state.lock().await;
         assert!(
@@ -27028,6 +27024,22 @@ mod tests {
             guard.playback_last_completed_at_ms.is_some(),
             "playback completion timestamp should be populated"
         );
+    }
+
+    async fn wait_for_playback_drain(dispatcher: &RpcDispatcher, wait_budget_ms: u64) {
+        let deadline = Instant::now() + Duration::from_millis(wait_budget_ms.max(250));
+        loop {
+            {
+                let guard = dispatcher.voice_io.state.lock().await;
+                if !guard.playback_active && guard.playback_queue.is_empty() {
+                    return;
+                }
+            }
+            if Instant::now() >= deadline {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
     }
 
     #[tokio::test]

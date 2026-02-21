@@ -99,11 +99,27 @@ pub struct SecurityConfig {
     pub virustotal_api_key: Option<String>,
     pub virustotal_timeout_ms: u64,
     #[serde(default)]
+    pub edr_telemetry_path: Option<PathBuf>,
+    #[serde(default = "default_edr_telemetry_max_age_secs")]
+    pub edr_telemetry_max_age_secs: u64,
+    #[serde(default = "default_edr_high_risk_tags")]
+    pub edr_high_risk_tags: Vec<String>,
+    #[serde(default = "default_edr_telemetry_risk_bonus")]
+    pub edr_telemetry_risk_bonus: u8,
+    #[serde(default)]
     pub policy_bundle_path: Option<PathBuf>,
     #[serde(default)]
     pub policy_bundle_key: Option<String>,
     #[serde(default)]
     pub policy_bundle_keys: HashMap<String, String>,
+    #[serde(default)]
+    pub attestation_expected_sha256: Option<String>,
+    #[serde(default = "default_attestation_mismatch_risk_bonus")]
+    pub attestation_mismatch_risk_bonus: u8,
+    #[serde(default)]
+    pub attestation_report_path: Option<PathBuf>,
+    #[serde(default)]
+    pub attestation_hmac_key: Option<String>,
     pub quarantine_dir: PathBuf,
     pub protect_paths: Vec<PathBuf>,
     pub allowed_command_prefixes: Vec<String>,
@@ -225,9 +241,17 @@ impl Default for Config {
                 block_threshold: 65,
                 virustotal_api_key: None,
                 virustotal_timeout_ms: 1_400,
+                edr_telemetry_path: None,
+                edr_telemetry_max_age_secs: default_edr_telemetry_max_age_secs(),
+                edr_high_risk_tags: default_edr_high_risk_tags(),
+                edr_telemetry_risk_bonus: default_edr_telemetry_risk_bonus(),
                 policy_bundle_path: None,
                 policy_bundle_key: None,
                 policy_bundle_keys: HashMap::new(),
+                attestation_expected_sha256: None,
+                attestation_mismatch_risk_bonus: default_attestation_mismatch_risk_bonus(),
+                attestation_report_path: None,
+                attestation_hmac_key: None,
                 quarantine_dir: PathBuf::from(".openclaw-rs/quarantine"),
                 protect_paths: vec![
                     PathBuf::from("./openclaw.mjs"),
@@ -352,6 +376,56 @@ impl Config {
         if let Ok(v) = env::var("OPENCLAW_RS_VT_API_KEY") {
             self.security.virustotal_api_key = Some(v);
         }
+        if let Ok(v) = env::var("OPENCLAW_RS_EDR_TELEMETRY_PATH") {
+            let trimmed = v.trim();
+            self.security.edr_telemetry_path = if trimmed.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(trimmed))
+            };
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_EDR_TELEMETRY_MAX_AGE_SECS") {
+            if let Ok(n) = v.parse::<u64>() {
+                self.security.edr_telemetry_max_age_secs = n.max(1);
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_EDR_HIGH_RISK_TAGS") {
+            self.security.edr_high_risk_tags = split_csv(&v);
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_EDR_TELEMETRY_RISK_BONUS") {
+            if let Ok(n) = v.parse::<u8>() {
+                self.security.edr_telemetry_risk_bonus = n.max(1);
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_ATTESTATION_EXPECTED_SHA256") {
+            let trimmed = v.trim();
+            self.security.attestation_expected_sha256 = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            };
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_ATTESTATION_MISMATCH_RISK_BONUS") {
+            if let Ok(n) = v.parse::<u8>() {
+                self.security.attestation_mismatch_risk_bonus = n.max(1);
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_ATTESTATION_REPORT_PATH") {
+            let trimmed = v.trim();
+            self.security.attestation_report_path = if trimmed.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(trimmed))
+            };
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_ATTESTATION_HMAC_KEY") {
+            let trimmed = v.trim();
+            self.security.attestation_hmac_key = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            };
+        }
         if let Ok(v) = env::var("OPENCLAW_RS_POLICY_BUNDLE_PATH") {
             let trimmed = v.trim();
             if trimmed.is_empty() {
@@ -434,6 +508,23 @@ impl Config {
         }
         if self.runtime.idempotency_max_entries == 0 {
             anyhow::bail!("runtime.idempotency_max_entries must be > 0");
+        }
+        if self.security.edr_telemetry_max_age_secs == 0 {
+            anyhow::bail!("security.edr_telemetry_max_age_secs must be > 0");
+        }
+        if self.security.edr_telemetry_risk_bonus == 0 {
+            anyhow::bail!("security.edr_telemetry_risk_bonus must be > 0");
+        }
+        if self.security.attestation_mismatch_risk_bonus == 0 {
+            anyhow::bail!("security.attestation_mismatch_risk_bonus must be > 0");
+        }
+        if let Some(expected_hash) = self.security.attestation_expected_sha256.as_deref() {
+            let normalized = expected_hash.trim().to_ascii_lowercase();
+            if !is_sha256_hex(&normalized) {
+                anyhow::bail!(
+                    "security.attestation_expected_sha256 must be a 64-character hex digest",
+                );
+            }
         }
         if self.gateway.server.bind.trim().is_empty() {
             anyhow::bail!("gateway.server.bind must not be empty");
@@ -572,6 +663,10 @@ fn parse_bool(s: &str) -> bool {
     )
 }
 
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
 fn default_tool_risk_bonus() -> HashMap<String, u8> {
     HashMap::from([
         ("exec".to_owned(), 20),
@@ -592,6 +687,29 @@ fn default_channel_risk_bonus() -> HashMap<String, u8> {
         ("whatsapp".to_owned(), 6),
         ("webchat".to_owned(), 8),
     ])
+}
+
+fn default_edr_telemetry_max_age_secs() -> u64 {
+    300
+}
+
+fn default_edr_high_risk_tags() -> Vec<String> {
+    vec![
+        "ransomware".to_owned(),
+        "credential_access".to_owned(),
+        "persistence".to_owned(),
+        "tamper".to_owned(),
+        "remote_access".to_owned(),
+        "c2".to_owned(),
+    ]
+}
+
+fn default_edr_telemetry_risk_bonus() -> u8 {
+    45
+}
+
+fn default_attestation_mismatch_risk_bonus() -> u8 {
+    55
 }
 
 fn default_idempotency_ttl_secs() -> u64 {

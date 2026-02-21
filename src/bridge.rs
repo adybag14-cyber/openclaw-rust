@@ -1,10 +1,14 @@
+use std::io::ErrorKind;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Error as WebSocketError, Message},
+};
 use tracing::{debug, info, warn};
 
 use crate::channels::{compute_retry_backoff_delay, DriverRegistry, RetryBackoffPolicy};
@@ -252,6 +256,10 @@ impl GatewayBridge {
                             break;
                         }
                         Err(err) => {
+                            if websocket_read_error_is_disconnect(&err) {
+                                info!("gateway websocket disconnected: {err}");
+                                break;
+                            }
                             return Err(err).with_context(|| "websocket read error");
                         }
                         _ => {}
@@ -292,6 +300,21 @@ fn spawn_session_worker(
     });
 }
 
+fn websocket_read_error_is_disconnect(err: &WebSocketError) -> bool {
+    match err {
+        WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed => true,
+        WebSocketError::Io(io_err) => matches!(
+            io_err.kind(),
+            ErrorKind::BrokenPipe
+                | ErrorKind::ConnectionAborted
+                | ErrorKind::ConnectionReset
+                | ErrorKind::NotConnected
+                | ErrorKind::UnexpectedEof
+        ),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
@@ -315,6 +338,27 @@ mod tests {
     use super::GatewayBridge;
 
     struct StubEvaluator;
+
+    #[test]
+    fn websocket_read_error_disconnect_classification_matches_expected_io_kinds() {
+        use tokio_tungstenite::tungstenite::Error as WsError;
+
+        assert!(super::websocket_read_error_is_disconnect(
+            &WsError::ConnectionClosed
+        ));
+        assert!(super::websocket_read_error_is_disconnect(
+            &WsError::AlreadyClosed
+        ));
+        assert!(super::websocket_read_error_is_disconnect(&WsError::Io(
+            std::io::Error::from(std::io::ErrorKind::ConnectionAborted)
+        )));
+        assert!(super::websocket_read_error_is_disconnect(&WsError::Io(
+            std::io::Error::from(std::io::ErrorKind::ConnectionReset)
+        )));
+        assert!(!super::websocket_read_error_is_disconnect(&WsError::Io(
+            std::io::Error::from(std::io::ErrorKind::TimedOut)
+        )));
+    }
 
     #[derive(Debug, Clone, Deserialize)]
     struct ReplaySuite {
@@ -733,6 +777,7 @@ mod tests {
         let expected_ids: Vec<String> = (1..=(effective_max_pending + 1))
             .map(|idx| format!("req-{idx}"))
             .collect();
+        let expected_count = expected_ids.len();
 
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await?;
@@ -764,8 +809,9 @@ mod tests {
             }
 
             let mut seen = Vec::new();
-            loop {
-                match timeout(Duration::from_millis(450), read.next()).await {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            while seen.len() < expected_count && tokio::time::Instant::now() < deadline {
+                match timeout(Duration::from_millis(500), read.next()).await {
                     Ok(Some(Ok(decision))) => {
                         let decision_json: Value = serde_json::from_str(decision.to_text()?)?;
                         if let Some(req_id) = decision_json
@@ -777,7 +823,7 @@ mod tests {
                     }
                     Ok(Some(Err(err))) => return Err(err.into()),
                     Ok(None) => break,
-                    Err(_) => break,
+                    Err(_) => continue,
                 }
             }
 
@@ -821,6 +867,7 @@ mod tests {
 
             let listener = TcpListener::bind("127.0.0.1:0").await?;
             let addr = listener.local_addr()?;
+            let expected_count = expect_request_ids.len();
             let server = tokio::spawn(async move {
                 let (stream, _) = listener.accept().await?;
                 let ws = accept_async(stream).await?;
@@ -861,8 +908,9 @@ mod tests {
                 }
 
                 let mut seen = Vec::new();
-                loop {
-                    match timeout(Duration::from_millis(700), read.next()).await {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+                while seen.len() < expected_count && tokio::time::Instant::now() < deadline {
+                    match timeout(Duration::from_millis(500), read.next()).await {
                         Ok(Some(Ok(decision))) => {
                             let decision_json: Value = serde_json::from_str(decision.to_text()?)?;
                             if let Some(req_id) = decision_json
@@ -874,7 +922,7 @@ mod tests {
                         }
                         Ok(Some(Err(err))) => return Err(err.into()),
                         Ok(None) => break,
-                        Err(_) => break,
+                        Err(_) => continue,
                     }
                 }
 

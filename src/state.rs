@@ -259,6 +259,12 @@ CREATE TABLE IF NOT EXISTS session_state (
     last_source TEXT NOT NULL,
     last_channel TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_session_state_last_seen_ms
+ON session_state(last_seen_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_session_state_last_action
+ON session_state(last_action);
+CREATE INDEX IF NOT EXISTS idx_session_state_last_channel
+ON session_state(last_channel);
 "#;
 
 #[cfg(feature = "sqlite-state")]
@@ -411,6 +417,9 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(feature = "sqlite-state")]
+    use rusqlite::Connection;
 
     use super::{IdempotencyCache, SessionStateStore};
     use crate::types::{ActionRequest, Decision, DecisionAction};
@@ -636,6 +645,35 @@ mod tests {
         assert_eq!(b.review_count, 1);
         assert_eq!(b.last_channel.as_deref(), Some("telegram"));
 
+        cleanup_sqlite_artifacts(&path).await;
+    }
+
+    #[cfg(feature = "sqlite-state")]
+    #[tokio::test]
+    async fn sqlite_state_schema_creates_hot_path_indexes() {
+        let path = temp_sqlite_state_path("schema-indexes");
+        let _store = SessionStateStore::new(path.clone()).await.expect("store");
+        let conn = Connection::open(&path).expect("open sqlite");
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='session_state'",
+            )
+            .expect("prepare sqlite_master query");
+        let names = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query indexes")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect indexes");
+
+        assert!(names
+            .iter()
+            .any(|name| name == "idx_session_state_last_seen_ms"));
+        assert!(names
+            .iter()
+            .any(|name| name == "idx_session_state_last_action"));
+        assert!(names
+            .iter()
+            .any(|name| name == "idx_session_state_last_channel"));
         cleanup_sqlite_artifacts(&path).await;
     }
 

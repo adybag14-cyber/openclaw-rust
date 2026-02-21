@@ -1,7 +1,9 @@
+mod attestation;
 mod command_guard;
 mod host_guard;
 mod policy_bundle;
 mod prompt_guard;
+mod telemetry_guard;
 pub(crate) mod tool_loop;
 pub(crate) mod tool_policy;
 mod virustotal;
@@ -22,10 +24,12 @@ use crate::config::{Config, PolicyAction};
 use crate::state::{IdempotencyCache, SessionStateStore};
 use crate::types::{ActionRequest, Decision, DecisionAction};
 
+use self::attestation::RuntimeAttestationGuard;
 use self::command_guard::CommandGuard;
 use self::host_guard::HostIntegrityGuard;
 use self::policy_bundle::apply_signed_policy_bundle;
 use self::prompt_guard::PromptInjectionGuard;
+use self::telemetry_guard::EdrTelemetryGuard;
 use self::tool_loop::{ToolLoopGuard, ToolLoopLevel};
 use self::tool_policy::ToolPolicyMatcher;
 use self::virustotal::VirusTotalClient;
@@ -40,6 +44,8 @@ pub struct DefenderEngine {
     prompt_guard: PromptInjectionGuard,
     command_guard: CommandGuard,
     host_guard: HostIntegrityGuard,
+    telemetry_guard: EdrTelemetryGuard,
+    attestation_guard: RuntimeAttestationGuard,
     tool_policy: ToolPolicyMatcher,
     tool_loop_guard: ToolLoopGuard,
     vt: Option<VirusTotalClient>,
@@ -68,6 +74,8 @@ impl DefenderEngine {
             &cfg.security.blocked_command_patterns,
         )?;
         let host_guard = HostIntegrityGuard::new(&cfg.security.protect_paths).await?;
+        let telemetry_guard = EdrTelemetryGuard::new(&cfg);
+        let attestation_guard = RuntimeAttestationGuard::new(&cfg).await?;
         let tool_policy = ToolPolicyMatcher::new(cfg.security.tool_runtime_policy.clone());
         let tool_loop_guard =
             ToolLoopGuard::new(cfg.security.tool_runtime_policy.loop_detection.clone());
@@ -80,9 +88,15 @@ impl DefenderEngine {
         let session_store = SessionStateStore::new(cfg.runtime.session_state_path.clone()).await?;
 
         info!(
-            "defender initialized (vt={}, protected_paths={})",
+            "defender initialized (vt={}, protected_paths={}, edr_feed={}, attestation_verified={})",
             vt.is_some(),
-            cfg.security.protect_paths.len()
+            cfg.security.protect_paths.len(),
+            cfg.security
+                .edr_telemetry_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none".to_owned()),
+            attestation_guard.snapshot().verified
         );
 
         Ok(Arc::new(Self {
@@ -90,6 +104,8 @@ impl DefenderEngine {
             prompt_guard,
             command_guard,
             host_guard,
+            telemetry_guard,
+            attestation_guard,
             tool_policy,
             tool_loop_guard,
             vt,
@@ -191,6 +207,26 @@ impl DefenderEngine {
                 tags.push("host_integrity_error".to_owned());
                 reasons.push("host integrity check failed".to_owned());
                 risk = risk.saturating_add(20);
+            }
+        }
+
+        if let Some(alert) = self.attestation_guard.mismatch_alert() {
+            risk = risk.saturating_add(alert.risk_bonus);
+            tags.push(alert.tag);
+            reasons.push(alert.reason);
+        }
+
+        match self.telemetry_guard.recent_alert().await {
+            Ok(Some(alert)) => {
+                risk = risk.saturating_add(alert.risk_bonus);
+                tags.push(alert.tag);
+                reasons.push(alert.reason);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                warn!("edr telemetry read failed: {err:#}");
+                tags.push("edr_telemetry_error".to_owned());
+                reasons.push("failed reading edr telemetry feed".to_owned());
             }
         }
 
@@ -456,9 +492,17 @@ mod tests {
                 block_threshold: 65,
                 virustotal_api_key: None,
                 virustotal_timeout_ms: 400,
+                edr_telemetry_path: None,
+                edr_telemetry_max_age_secs: 300,
+                edr_high_risk_tags: vec!["ransomware".to_owned(), "tamper".to_owned()],
+                edr_telemetry_risk_bonus: 45,
                 policy_bundle_path: None,
                 policy_bundle_key: None,
                 policy_bundle_keys: std::collections::HashMap::new(),
+                attestation_expected_sha256: None,
+                attestation_mismatch_risk_bonus: 55,
+                attestation_report_path: None,
+                attestation_hmac_key: None,
                 quarantine_dir,
                 protect_paths: vec![protected],
                 allowed_command_prefixes: vec!["git ".to_owned()],
@@ -743,5 +787,82 @@ mod tests {
         let third = engine.evaluate(make_req("loop-3")).await;
         assert_eq!(third.action, DecisionAction::Block);
         assert!(third.tags.iter().any(|tag| tag == "tool_loop_critical"));
+    }
+
+    #[tokio::test]
+    async fn attestation_mismatch_adds_risk_signal() {
+        let mut cfg = test_config(false);
+        cfg.security.attestation_expected_sha256 = Some("0".repeat(64));
+        cfg.security.attestation_mismatch_risk_bonus = 55;
+        let engine: Arc<dyn ActionEvaluator> = DefenderEngine::new(cfg).await.expect("engine");
+        let req = ActionRequest {
+            id: "attestation-mismatch-1".to_owned(),
+            source: "test".to_owned(),
+            session_id: Some("s-attestation".to_owned()),
+            prompt: None,
+            command: None,
+            tool_name: None,
+            channel: None,
+            url: None,
+            file_path: None,
+            raw: serde_json::json!({}),
+        };
+
+        let decision = engine.evaluate(req).await;
+        assert!(decision
+            .tags
+            .iter()
+            .any(|tag| tag == "runtime_attestation_mismatch"));
+        assert!(decision.risk_score >= 55);
+        assert!(matches!(
+            decision.action,
+            DecisionAction::Review | DecisionAction::Block
+        ));
+    }
+
+    #[tokio::test]
+    async fn edr_telemetry_feed_alert_adds_risk_signal() {
+        let mut cfg = test_config(false);
+        let mut feed_path = temp_dir("edr-feed");
+        feed_path.push("feed.jsonl");
+        if let Some(parent) = feed_path.parent() {
+            std::fs::create_dir_all(parent).expect("create telemetry feed dir");
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_millis() as u64;
+        let line = format!(
+            "{{\"timestampMs\":{},\"severity\":\"critical\",\"tags\":[\"benign\"]}}\n",
+            now
+        );
+        std::fs::write(&feed_path, line).expect("write telemetry feed");
+        cfg.security.edr_telemetry_path = Some(feed_path.clone());
+        cfg.security.edr_telemetry_max_age_secs = 300;
+        cfg.security.edr_telemetry_risk_bonus = 50;
+
+        let engine: Arc<dyn ActionEvaluator> = DefenderEngine::new(cfg).await.expect("engine");
+        let req = ActionRequest {
+            id: "edr-alert-1".to_owned(),
+            source: "test".to_owned(),
+            session_id: Some("s-edr".to_owned()),
+            prompt: None,
+            command: None,
+            tool_name: None,
+            channel: None,
+            url: None,
+            file_path: None,
+            raw: serde_json::json!({}),
+        };
+
+        let decision = engine.evaluate(req).await;
+        assert!(decision.tags.iter().any(|tag| tag == "edr_telemetry_alert"));
+        assert!(decision.risk_score >= 50);
+        assert!(matches!(
+            decision.action,
+            DecisionAction::Review | DecisionAction::Block
+        ));
+
+        let _ = std::fs::remove_file(feed_path);
     }
 }

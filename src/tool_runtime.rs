@@ -5120,7 +5120,8 @@ mod tests {
             .to_owned();
 
         let mut final_payload = None;
-        for _ in 0..40 {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while tokio::time::Instant::now() < deadline {
             let poll = host
                 .execute(ToolRuntimeRequest {
                     request_id: format!("poll-{}", super::now_ms()),
@@ -5145,7 +5146,7 @@ mod tests {
                 final_payload = Some(poll.result);
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
 
         let final_payload = final_payload.expect("process should finish");

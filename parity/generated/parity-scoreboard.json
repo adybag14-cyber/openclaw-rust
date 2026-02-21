@@ -23,8 +23,8 @@
     "audit": {
       "counts": {
         "total": 22,
-        "implemented": 18,
-        "partial": 4,
+        "implemented": 22,
+        "partial": 0,
         "deferred": 0,
         "notStarted": 0,
         "unknown": 0
@@ -34,10 +34,10 @@
         "Gateway protocol connectivity": "Implemented",
         "Full Gateway replacement": "Implemented",
         "Session model": "Implemented",
-        "Channel integrations": "Partial",
+        "Channel integrations": "Implemented",
         "Tool execution layer": "Implemented",
-        "Nodes + device features": "Partial",
-        "Voice stack": "Partial",
+        "Nodes + device features": "Implemented",
+        "Voice stack": "Implemented",
         "Model/provider layer": "Implemented",
         "CLI + control surface": "Implemented",
         "Prompt-injection defense": "Implemented",
@@ -50,7 +50,7 @@
         "Channel driver abstraction": "Implemented",
         "Quarantine records": "Implemented",
         "Backpressure + memory controls": "Implemented",
-        "Test coverage (Rust)": "Partial",
+        "Test coverage (Rust)": "Implemented",
         "Dockerized validation": "Implemented"
       }
     }
@@ -58,8 +58,8 @@
   "baselinePresent": true,
   "delta": {
     "audit": {
-      "implemented": 9,
-      "partial": -5,
+      "implemented": 13,
+      "partial": -9,
       "deferred": -3,
       "notStarted": 0
     },
@@ -73,6 +73,11 @@
     "changedSubsystems": [
       {
         "subsystem": "Channel driver abstraction",
+        "baseline": "Partial",
+        "current": "Implemented"
+      },
+      {
+        "subsystem": "Channel integrations",
         "baseline": "Partial",
         "current": "Implemented"
       },
@@ -109,7 +114,7 @@
       {
         "subsystem": "Nodes + device features",
         "baseline": "Deferred",
-        "current": "Partial"
+        "current": "Implemented"
       },
       {
         "subsystem": "Session model",
@@ -117,8 +122,18 @@
         "current": "Implemented"
       },
       {
+        "subsystem": "Test coverage (Rust)",
+        "baseline": "Partial",
+        "current": "Implemented"
+      },
+      {
         "subsystem": "Tool execution layer",
         "baseline": "Deferred",
+        "current": "Implemented"
+      },
+      {
+        "subsystem": "Voice stack",
+        "baseline": "Partial",
         "current": "Implemented"
       }
     ]

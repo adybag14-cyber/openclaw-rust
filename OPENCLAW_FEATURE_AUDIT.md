@@ -303,6 +303,12 @@ CP33 increment (2026-02-21):
 - Expanded node pairing/runtime parity with safe inferred command declarations when `node.pair.request` omits `commands`, using platform + capability aware inference while keeping dangerous commands opt-in only.
 - Added node pairing regression coverage for inferred command surfaces and capability-scoped declaration enforcement in `node.invoke`.
 
+CP34 increment (2026-02-21):
+
+- Added defender EDR telemetry ingestion (`security.edr_telemetry_*`) with bounded-age JSONL feed scanning, high-severity/high-risk-tag detection, and deterministic risk fusion into policy decisions.
+- Added runtime binary attestation hardening (`security.attestation_*`) with startup SHA-256 digest verification, configurable mismatch risk escalation, and optional signed attestation report artifacts for external verification workflows.
+- Added SQLite hot-path index tuning for session-state persistence (`last_seen_ms`, `last_action`, `last_channel`) with dedicated sqlite-state fixture coverage to validate schema/index creation.
+
 - `Runtime portability`: Upstream OpenClaw feature surface is macOS/Linux/Windows workflow and Linux service deployment. Rust status is `Implemented`. Notes: Rust toolchain pinned to 1.83; Ubuntu build script and systemd user unit included.
 - `Gateway protocol connectivity`: Upstream OpenClaw feature surface is WS control plane (`connect`, events, session/gateway methods). Rust status is `Implemented`. Notes: Rust bridge uses typed frame helpers (`req`/`resp`/`event`), method-family classification, known-method registry, `connect` post-handshake rejection parity ("connect is only valid as the first request"), complete upstream base/handler RPC method coverage (100% coverage from `parity/method-surface-report.md`), and runtime event-surface parity in standalone hello payloads (upstream gateway events + configured decision event, configurable `tickIntervalMs`, periodic `tick`, and graceful `shutdown` event emission). Dispatcher coverage includes gateway introspection (`health`, `status`), usage summaries (`usage.status`, `usage.cost`), system control parity (`last-heartbeat`, `set-heartbeats`, `system-presence`, `system-event`, `wake`), talk/channel control parity (`talk.config`, `talk.mode`, `channels.status`, `channels.logout`), TTS/VoiceWake control parity (`tts.status`, `tts.enable`, `tts.disable`, `tts.convert`, `tts.setProvider`, `tts.providers`, `voicewake.get`, `voicewake.set` with in-memory provider/enable/trigger state + conversion payload shaping), web login parity (`web.login.start`, `web.login.wait` with in-memory QR session lifecycle), browser parity (`browser.request` validation + no-node unavailable contract + browser-node proxy runtime path via `node.invoke.result` completion), exec approvals parity (`exec.approvals.get`, `exec.approvals.set`, `exec.approvals.node.get`, `exec.approvals.node.set` with base-hash concurrency checks + socket token redaction + bounded per-node snapshots), exec approval workflow parity (`exec.approval.request`, `exec.approval.waitDecision`, `exec.approval.resolve` with bounded pending map + timeout/grace cleanup + two-phase acceptance path), chat RPC parity (`chat.history`, `chat.send`, `chat.abort`, `chat.inject` with bounded in-memory run registry, idempotent run-status responses, session-level abort semantics, assistant injection path, inbound send sanitization/null-byte rejection, stop-command abort routing, transcript-backed history payload shaping, `id`/`parentId` chat history chain fields, and `chat.inject` final event payload emission with upstream-aligned `seq = 0`), fixture-driven payload parity corpus checks (`dispatcher_payload_corpus_matches_upstream_fixtures` against `tests/parity/gateway-payload-corpus.json`, currently covering `chat.*`, `tts.*`, `voicewake.*`, `web.login.*`, `update.run`, `sessions.*`, `browser.request`, `config.*`, `logs.tail`, `cron.*`, `exec.approvals.*`, `exec.approval.*`, and `wizard.*`), outbound send parity (`send` with idempotency replay cache, internal `webchat` channel rejection guidance, channel validation/defaulting, and mirrored session transcript writes), poll parity (`poll` with idempotency replay cache, channel poll-capability gating, and Telegram-only option guards for `durationSeconds`/`isAnonymous`), update parity (`update.run` with restart-sentinel shaped payload), wizard parity (`wizard.start`, `wizard.next`, `wizard.cancel`, `wizard.status` with single-running-session guard), device pairing/token parity (`device.pair.list`, `device.pair.approve`, `device.pair.reject`, `device.pair.remove`, `device.token.rotate`, `device.token.revoke` with bounded in-memory pending/paired registry + token summaries/redaction), node pairing parity (`node.pair.request`, `node.pair.list`, `node.pair.approve`, `node.pair.reject`, `node.pair.verify`, `node.rename`, `node.list`, `node.describe`, `node.invoke`, `node.invoke.result`, `node.event` with bounded in-memory pending/paired registry + token verification + paired-node inventory views + invoke/result runtime queue), model/agent control parity (`models.list`, `agents.list`, `agents.create`, `agents.update`, `agents.delete`, `agents.files.list`, `agents.files.get`, `agents.files.set`, `agent`, `agent.identity.get`, `agent.wait` with idempotent started/in_flight/ok run lifecycle + wait integration + slash reset handling for `/new` and `/reset`), skills control parity (`skills.status`, `skills.bins`, `skills.install`, `skills.update` with API-key normalization + in-memory config state), cron RPC parity (`cron.list`, `cron.status`, `cron.add`, `cron.update`, `cron.remove`, `cron.run`, `cron.runs` with bounded in-memory run logs), config/log parity (`config.get`, `config.set`, `config.patch`, `config.apply`, `config.schema`, `logs.tail`), plus session control methods (`sessions.list`, `sessions.preview`, `sessions.patch`, `sessions.resolve`, `sessions.reset`, `sessions.delete`, `sessions.compact`, `sessions.usage`, `sessions.usage.timeseries`, `sessions.usage.logs`, `sessions.history`, `sessions.send`, `session.status`) including `sessions.send` rejection of internal-only `webchat` with actionable `chat.send` guidance.
 - `Full Gateway replacement`: Upstream OpenClaw feature surface is sessions, presence, routing, config mutations, cron/webhooks, and control UI serving. Rust status is `Implemented`. Notes: Rust now covers the standalone gateway runtime end-to-end for control-plane operation (WS accept loop, auth/roles/scopes, bounded broadcast/backpressure, cron CRUD + due-run scheduling + webhook delivery semantics, session/routing surfaces, and config mutation flows) and exposes an opt-in control HTTP surface (`gateway.server.http_bind`) for UI, health/status/method discovery, and JSON RPC passthrough (`POST /rpc`) without TypeScript runtime dependency.
@@ -342,10 +348,13 @@ CP33 increment (2026-02-21):
   - per-eval timeout
   - low-overhead Linux RSS sampling
 
-- `Partial` for deeper optimizations:
-  - pooled binary event buffers
-  - scheduler/session hot-path tuning and indexing on SQLite backend for larger deployments
-  - throughput benchmarking vs upstream runtime
+- `Implemented` in phase-2 optimization depth:
+  - SQLite hot-path index tuning on session state backend (`last_seen_ms`, `last_action`, `last_channel`)
+  - CP8 benchmark artifact emission and gate-time metric aggregation (`p50/p95/p99`, throughput, RSS)
+
+- `Partial` for further optimization depth:
+  - pooled binary event buffers in websocket fanout hot paths
+  - side-by-side upstream-vs-rust throughput benchmark automation in CI
 
 ### Goal 3: Defender AI + VirusTotal hardening against prompt injection and host compromise
 
@@ -356,10 +365,8 @@ CP33 increment (2026-02-21):
   - VirusTotal URL/file signal fusion
   - audit-only rollout mode
   - quarantine artifacts
-
-- `Partial`:
-  - no kernel/EDR process telemetry ingestion
-  - no remote attestation of runtime binary yet
+  - EDR telemetry ingestion via configurable JSONL feed with bounded-age high-risk signal fusion
+  - runtime binary attestation with SHA-256 verification, startup mismatch risk enforcement, and optional signed attestation report artifacts
 
 ## Immediate Next Build Targets
 

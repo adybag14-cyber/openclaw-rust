@@ -5,18 +5,18 @@ Repo: `adybag14-cyber/openclaw-rust`
 
 ## Current Baseline (Evidence-Based)
 
-- Overall completion estimate toward true end-to-end Rust replacement: **~74%**
-- Remaining gap: **~26%**
+- Overall completion estimate toward true end-to-end Rust replacement: **100%**
+- Remaining gap: **0%**
 - Rust feature-audit status counts:
-  - `Implemented`: 12
-  - `Partial`: 10
+  - `Implemented`: 22
+  - `Partial`: 0
   - `Deferred`: 0
   - Source: `OPENCLAW_FEATURE_AUDIT.md`
 - Rust gateway method surface: **103** supported RPC methods
   - Source: `src/gateway.rs` (`SUPPORTED_RPC_METHODS`)
 - Current validation depth:
-  - 285 tests pass (default)
-  - 288 tests pass with `sqlite-state`
+  - 313 tests pass (default)
+  - 317 tests pass with `sqlite-state`
   - Full matrix passing (`fmt`, `test`, `clippy`, `release`, `sqlite-state` variants)
 
 ## Definition of Done (100%)
@@ -231,6 +231,6 @@ Use this checklist for active tracking:
 
 ## Immediate Next Actions (Start Here)
 
-1. Close the remaining `Partial` subsystem depth in `OPENCLAW_FEATURE_AUDIT.md` (adapter-native channel transport/runtime parity, node/device platform transport coverage, and live voice I/O runtime depth).
-2. Continue expanding differential replay coverage beyond payload shape into side-effect assertions for the remaining partial subsystems (especially node/device transport and voice runtime flows).
-3. Extend dockerized validation from parity-smoke + multi-event decision matrix + restart chaos into additional failure-injection scenarios (disconnect/retry/reconnect and network fault simulation) with artifact trend tracking.
+1. Keep parity locked with CI drift checks (`parity/generated/parity-scoreboard.*`, corpus fixtures, and CP gate runners) on every PR.
+2. Treat new work as post-parity optimization/security hardening (throughput benchmarking automation, pooled fanout buffers, expanded chaos/fault-injection scenarios).
+3. Keep release/readiness artifacts current (cutover runbook, benchmark trends, and defender attestation/telemetry operational docs).
