@@ -538,6 +538,12 @@ impl MethodRegistry {
                     min_role: "client",
                 },
                 MethodSpec {
+                    name: "push.test",
+                    family: MethodFamily::Node,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
                     name: "cron.add",
                     family: MethodFamily::Cron,
                     requires_auth: true,
@@ -710,6 +716,7 @@ pub struct RpcDispatcher {
     agent_runs: AgentRunRegistry,
     nodes: NodePairRegistry,
     node_runtime: NodeRuntimeRegistry,
+    apns: ApnsRegistrationRegistry,
     node_host_runtime: NodeHostRuntimeRegistry,
     exec_approvals: ExecApprovalsRegistry,
     exec_approval: ExecApprovalRegistry,
@@ -778,6 +785,7 @@ const WEB_LOGIN_STORE_PATH: &str = "memory://web-login/sessions.json";
 const WIZARD_STORE_PATH: &str = "memory://wizard/sessions.json";
 const DEFAULT_SEND_CHANNEL: &str = "whatsapp";
 const TTS_PREFS_PATH: &str = "memory://tts/prefs.json";
+const DEFAULT_APNS_PUSH_TIMEOUT_MS: u64 = 10_000;
 const LOCAL_NODE_CAP_HINTS: &[&str] = &[
     "host.local",
     "local-host",
@@ -951,6 +959,7 @@ const SUPPORTED_RPC_METHODS: &[&str] = &[
     "node.invoke",
     "node.invoke.result",
     "node.event",
+    "push.test",
     "browser.request",
     "browser.open",
     "canvas.present",
@@ -1012,6 +1021,7 @@ impl RpcDispatcher {
             agent_runs: AgentRunRegistry::new(),
             nodes: NodePairRegistry::new(),
             node_runtime: NodeRuntimeRegistry::new(),
+            apns: ApnsRegistrationRegistry::new(),
             node_host_runtime: NodeHostRuntimeRegistry::new(),
             exec_approvals: ExecApprovalsRegistry::new(),
             exec_approval: ExecApprovalRegistry::new(),
@@ -1199,6 +1209,7 @@ impl RpcDispatcher {
             "node.invoke" => self.handle_node_invoke(req).await,
             "node.invoke.result" => self.handle_node_invoke_result(req).await,
             "node.event" => self.handle_node_event(req).await,
+            "push.test" => self.handle_push_test(req).await,
             "browser.request" => self.handle_browser_request(req).await,
             "browser.open" => self.handle_browser_open(req).await,
             "canvas.present" => self.handle_canvas_present(req).await,
@@ -3696,6 +3707,14 @@ impl RpcDispatcher {
                 .as_ref()
                 .and_then(|value| serde_json::to_string(value).ok())
         });
+        if normalize(&event) == "push.apns.register" {
+            if let Some(registration) = parse_apns_registration_event_payload(
+                params.payload.as_ref(),
+                payload_json.as_deref(),
+            ) {
+                self.apns.upsert(registration).await;
+            }
+        }
         self.node_runtime
             .record_event(event.clone(), payload_json.clone())
             .await;
@@ -3709,6 +3728,64 @@ impl RpcDispatcher {
         RpcDispatchOutcome::Handled(json!({
             "ok": true
         }))
+    }
+
+    async fn handle_push_test(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<PushTestParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!("invalid push.test params: {err}"));
+            }
+        };
+        let Some(node_id) = normalize_optional_text(Some(params.node_id), 128) else {
+            return RpcDispatchOutcome::bad_request("invalid push.test params: nodeId required");
+        };
+        let environment_override = match params
+            .environment
+            .as_deref()
+            .and_then(|value| normalize_optional_text(Some(value.to_owned()), 32))
+        {
+            Some(value) => match parse_apns_environment(Some(value.as_str())) {
+                Some(parsed) => Some(parsed.to_owned()),
+                None => {
+                    return RpcDispatchOutcome::bad_request(
+                        "invalid push.test params: environment must be sandbox|production",
+                    );
+                }
+            },
+            None => None,
+        };
+        let title =
+            normalize_optional_text(params.title, 256).unwrap_or_else(|| "OpenClaw".to_owned());
+        let body = normalize_optional_text(params.body, 2_048)
+            .unwrap_or_else(|| format!("Push test for node {node_id}"));
+        let Some(mut registration) = self.apns.get(&node_id).await else {
+            return RpcDispatchOutcome::bad_request(format!(
+                "node {node_id} has no APNs registration (connect iOS node first)"
+            ));
+        };
+        if let Some(environment) = environment_override {
+            registration.environment = environment;
+        }
+        let bearer_token = match resolve_apns_bearer_token_from_env() {
+            Ok(value) => value,
+            Err(err) => return RpcDispatchOutcome::bad_request(err),
+        };
+        let result =
+            match send_apns_alert(&bearer_token, &registration, &node_id, &title, &body).await {
+                Ok(value) => value,
+                Err(err) => {
+                    return RpcDispatchOutcome::Error {
+                        code: 503,
+                        message: "push.test unavailable".to_owned(),
+                        details: Some(json!({
+                            "nodeId": node_id,
+                            "reason": err
+                        })),
+                    };
+                }
+            };
+        RpcDispatchOutcome::Handled(json!(result))
     }
 
     async fn handle_browser_request(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
@@ -12108,6 +12185,71 @@ impl NodeRuntimeRegistry {
     }
 }
 
+struct ApnsRegistrationRegistry {
+    state: Mutex<HashMap<String, ApnsRegistrationEntry>>,
+}
+
+#[derive(Debug, Clone)]
+struct ApnsRegistrationEntry {
+    node_id: String,
+    token: String,
+    topic: String,
+    environment: String,
+    updated_at_ms: u64,
+}
+
+impl ApnsRegistrationRegistry {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(HashMap::new()),
+        }
+    }
+
+    async fn upsert(&self, registration: ApnsRegistrationEntry) {
+        let mut guard = self.state.lock().await;
+        guard.insert(normalize(&registration.node_id), registration);
+        while guard.len() > 4_096 {
+            let Some(oldest_key) = guard
+                .iter()
+                .min_by_key(|(_, entry)| entry.updated_at_ms)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            let _ = guard.remove(&oldest_key);
+        }
+    }
+
+    async fn get(&self, node_id: &str) -> Option<ApnsRegistrationEntry> {
+        let normalized = normalize(node_id);
+        if normalized.is_empty() {
+            return None;
+        }
+        let guard = self.state.lock().await;
+        guard.get(&normalized).cloned()
+    }
+
+    #[cfg(test)]
+    async fn count(&self) -> usize {
+        let guard = self.state.lock().await;
+        guard.len()
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ApnsPushAlertResult {
+    ok: bool,
+    status: u16,
+    #[serde(rename = "apnsId", skip_serializing_if = "Option::is_none")]
+    apns_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    #[serde(rename = "tokenSuffix")]
+    token_suffix: String,
+    topic: String,
+    environment: String,
+}
+
 fn prune_oldest_node_invoke_pending(
     pending_invokes: &mut HashMap<String, NodeInvokePendingEntry>,
     max_pending: usize,
@@ -20050,6 +20192,16 @@ struct NodeEventParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct PushTestParams {
+    #[serde(rename = "nodeId", alias = "node_id")]
+    node_id: String,
+    title: Option<String>,
+    body: Option<String>,
+    environment: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BrowserOpenParams {
     url: String,
     #[serde(rename = "nodeId", alias = "node_id")]
@@ -20464,6 +20616,176 @@ where
     } else {
         serde_json::from_value(value.clone())
     }
+}
+
+fn parse_apns_environment(value: Option<&str>) -> Option<&'static str> {
+    let raw = value?.trim().to_ascii_lowercase();
+    match raw.as_str() {
+        "sandbox" => Some("sandbox"),
+        "production" => Some("production"),
+        _ => None,
+    }
+}
+
+fn normalize_apns_token(value: &str) -> Option<String> {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch == '<' || ch == '>' || ch.is_whitespace() {
+            continue;
+        }
+        out.push(ch.to_ascii_lowercase());
+    }
+    if is_likely_apns_token(&out) {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+fn is_likely_apns_token(value: &str) -> bool {
+    value.len() >= 32 && value.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+fn apns_token_suffix(value: &str) -> String {
+    let suffix_len = value.len().min(8);
+    value[value.len() - suffix_len..].to_owned()
+}
+
+fn resolve_apns_bearer_token_from_env() -> Result<String, String> {
+    env::var("OPENCLAW_APNS_BEARER_TOKEN")
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 16_384))
+        .ok_or_else(|| "APNs auth missing: set OPENCLAW_APNS_BEARER_TOKEN for push.test".to_owned())
+}
+
+fn parse_apns_reason(body: &str) -> Option<String> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+        let reason = parsed
+            .get("reason")
+            .and_then(Value::as_str)
+            .and_then(|value| {
+                let value = value.trim();
+                if value.is_empty() {
+                    None
+                } else {
+                    Some(value.to_owned())
+                }
+            });
+        if reason.is_some() {
+            return reason;
+        }
+    }
+    Some(trimmed.chars().take(200).collect())
+}
+
+fn parse_apns_registration_event_payload(
+    payload: Option<&Value>,
+    payload_json: Option<&str>,
+) -> Option<ApnsRegistrationEntry> {
+    let payload_value = payload
+        .cloned()
+        .or_else(|| payload_json.and_then(parse_payload_json))?;
+    let map = payload_value.as_object()?;
+    let node_id = normalize_optional_text(
+        map.get("nodeId")
+            .or_else(|| map.get("node_id"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        128,
+    )?;
+    let token_raw = map
+        .get("token")
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())?;
+    let token = normalize_apns_token(&token_raw)?;
+    let topic = normalize_optional_text(
+        map.get("topic")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        255,
+    )?;
+    let environment = parse_apns_environment(
+        map.get("environment")
+            .and_then(Value::as_str)
+            .or(Some("sandbox")),
+    )
+    .unwrap_or("sandbox")
+    .to_owned();
+    Some(ApnsRegistrationEntry {
+        node_id,
+        token,
+        topic,
+        environment,
+        updated_at_ms: now_ms(),
+    })
+}
+
+async fn send_apns_alert(
+    bearer_token: &str,
+    registration: &ApnsRegistrationEntry,
+    node_id: &str,
+    title: &str,
+    body: &str,
+) -> Result<ApnsPushAlertResult, String> {
+    let authority = if registration.environment == "production" {
+        "https://api.push.apple.com"
+    } else {
+        "https://api.sandbox.push.apple.com"
+    };
+    let payload = json!({
+        "aps": {
+            "alert": {
+                "title": title,
+                "body": body
+            },
+            "sound": "default"
+        },
+        "openclaw": {
+            "kind": "push.test",
+            "nodeId": node_id,
+            "ts": now_ms()
+        }
+    });
+    let url = format!("{authority}/3/device/{}", registration.token);
+    let client = reqwest::Client::builder()
+        .build()
+        .map_err(|err| format!("failed creating APNs client: {err}"))?;
+    let response = client
+        .post(url)
+        .timeout(Duration::from_millis(DEFAULT_APNS_PUSH_TIMEOUT_MS))
+        .header("authorization", format!("bearer {bearer_token}"))
+        .header("apns-topic", registration.topic.clone())
+        .header("apns-push-type", "alert")
+        .header("apns-priority", "10")
+        .header("apns-expiration", "0")
+        .header("content-type", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|err| format!("APNs request failed: {err}"))?;
+    let status = response.status().as_u16();
+    let apns_id = response
+        .headers()
+        .get("apns-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let body_text = response.text().await.unwrap_or_default();
+    Ok(ApnsPushAlertResult {
+        ok: status == 200,
+        status,
+        apns_id,
+        reason: parse_apns_reason(&body_text),
+        token_suffix: apns_token_suffix(&registration.token),
+        topic: registration.topic.clone(),
+        environment: registration.environment.clone(),
+    })
 }
 
 fn param_patch_value(params: &Value, keys: &[&str]) -> Option<Option<Value>> {
@@ -33089,6 +33411,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_node_event_push_apns_register_updates_registry() {
+        let dispatcher = RpcDispatcher::new();
+        let req = RpcRequestFrame {
+            id: "req-node-event-push-register".to_owned(),
+            method: "node.event".to_owned(),
+            params: serde_json::json!({
+                "event": "push.apns.register",
+                "payload": {
+                    "nodeId": "ios-node-1",
+                    "token": "AABBCCDDEEFF00112233445566778899",
+                    "topic": "ai.openclaw.ios",
+                    "environment": "sandbox"
+                }
+            }),
+        };
+        assert!(matches!(
+            dispatcher.handle_request(&req).await,
+            RpcDispatchOutcome::Handled(_)
+        ));
+        let registration = dispatcher
+            .apns
+            .get("ios-node-1")
+            .await
+            .expect("registration");
+        assert_eq!(registration.node_id, "ios-node-1");
+        assert_eq!(registration.environment, "sandbox");
+        assert_eq!(registration.topic, "ai.openclaw.ios");
+        assert_eq!(registration.token, "aabbccddeeff00112233445566778899");
+        assert_eq!(dispatcher.apns.count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_push_test_validates_and_requires_registration() {
+        let dispatcher = RpcDispatcher::new();
+
+        let invalid_shape = RpcRequestFrame {
+            id: "req-push-test-invalid-shape".to_owned(),
+            method: "push.test".to_owned(),
+            params: serde_json::json!({
+                "node": "ios-node-1"
+            }),
+        };
+        assert!(matches!(
+            dispatcher.handle_request(&invalid_shape).await,
+            RpcDispatchOutcome::Error { code: 400, .. }
+        ));
+
+        let invalid_environment = RpcRequestFrame {
+            id: "req-push-test-invalid-env".to_owned(),
+            method: "push.test".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "ios-node-1",
+                "environment": "staging"
+            }),
+        };
+        assert!(matches!(
+            dispatcher.handle_request(&invalid_environment).await,
+            RpcDispatchOutcome::Error { code: 400, .. }
+        ));
+
+        let missing_registration = RpcRequestFrame {
+            id: "req-push-test-missing-registration".to_owned(),
+            method: "push.test".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "ios-node-1"
+            }),
+        };
+        match dispatcher.handle_request(&missing_registration).await {
+            RpcDispatchOutcome::Error { code, message, .. } => {
+                assert_eq!(code, 400);
+                assert!(message.contains("has no APNs registration"));
+            }
+            _ => panic!("expected push.test missing-registration error"),
+        }
+    }
+
+    #[tokio::test]
     async fn dispatcher_node_policy_allows_dangerous_commands_with_allowlist_override() {
         let dispatcher = RpcDispatcher::new();
         patch_config(
@@ -34105,7 +34504,7 @@ mod tests {
                             "OPENCLAW_RS_TEST_ENV": "true",
                             "PATH": "ignored"
                         },
-                        "timeoutMs": 1000
+                        "timeoutMs": 5000
                     },
                     "idempotencyKey": "local-node-system-run-argv"
                 })
@@ -34120,7 +34519,7 @@ mod tests {
                             "OPENCLAW_RS_TEST_ENV": "true",
                             "PATH": "ignored"
                         },
-                        "timeoutMs": 1000
+                        "timeoutMs": 5000
                     },
                     "idempotencyKey": "local-node-system-run-argv"
                 })
@@ -34150,10 +34549,10 @@ mod tests {
                     payload
                         .pointer("/payload/result/timeoutMs")
                         .and_then(Value::as_u64),
-                    Some(1000)
+                    Some(5000)
                 );
             }
-            _ => panic!("expected node.invoke handled"),
+            other => panic!("expected node.invoke handled, got {other:?}"),
         }
     }
 

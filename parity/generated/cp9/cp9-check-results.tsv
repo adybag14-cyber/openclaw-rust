@@ -1,2 +1,5 @@
-check	duration_ms	status
-docker-daemon	32497	fail
+﻿check	duration_ms	status
+docker-daemon	630	pass
+docker-smoke	170595	pass
+docker-compose-parity	20500	pass
+docker-compose-chaos-restart	23749	pass

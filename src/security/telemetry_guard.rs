@@ -241,16 +241,30 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use crate::config::Config;
 
     use super::EdrTelemetryGuard;
 
+    static FEED_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_feed_path(test_name: &str) -> PathBuf {
+        let mut feed = std::env::temp_dir();
+        let sequence = FEED_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        feed.push(format!(
+            "openclaw-rs-edr-feed-{test_name}-{}-{}-{}.jsonl",
+            std::process::id(),
+            super::now_ms(),
+            sequence
+        ));
+        feed
+    }
+
     #[tokio::test]
     async fn telemetry_alerts_on_recent_high_severity_event() {
         let mut cfg = Config::default();
-        let mut feed = std::env::temp_dir();
-        feed.push(format!("openclaw-rs-edr-feed-{}.jsonl", super::now_ms()));
+        let feed = unique_feed_path("high-severity");
         let now = super::now_ms();
         let payload = format!(
             "{{\"timestampMs\":{},\"severity\":\"critical\",\"tags\":[\"benign\"]}}\n",
@@ -276,8 +290,7 @@ mod tests {
     #[tokio::test]
     async fn telemetry_ignores_stale_events() {
         let mut cfg = Config::default();
-        let mut feed = std::env::temp_dir();
-        feed.push(format!("openclaw-rs-edr-feed-{}.jsonl", super::now_ms()));
+        let feed = unique_feed_path("stale");
         let stale = super::now_ms().saturating_sub(600_000);
         let payload = format!(
             "{{\"timestampMs\":{},\"severity\":\"critical\",\"tags\":[\"ransomware\"]}}\n",

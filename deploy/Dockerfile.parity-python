@@ -8,4 +8,4 @@ RUN pip install --no-cache-dir websockets==12.0
 
 COPY deploy/parity-compose /app/parity-compose
 
-ENTRYPOINT ["python", "/app/parity-compose/gateway_mock.py"]
+CMD ["python", "/app/parity-compose/gateway_mock.py"]

@@ -1,11 +1,11 @@
-{
-  "gate": "cp2",
-  "defaultPassed": 15,
-  "sqliteFeaturePassed": 2,
-  "totalFixtures": 17,
-  "totalDurationMs": 19981,
-  "avgFixtureDurationMs": 1175,
-  "soakFixtureCount": 3,
-  "soakFixtureDurationMs": 10751,
-  "resultsTsv": "cp2-fixture-results.tsv"
+﻿{
+    "gate":  "cp2",
+    "defaultPassed":  15,
+    "sqliteFeaturePassed":  2,
+    "totalFixtures":  17,
+    "totalDurationMs":  15876,
+    "avgFixtureDurationMs":  934,
+    "soakFixtureCount":  3,
+    "soakFixtureDurationMs":  7870,
+    "resultsTsv":  "cp2-fixture-results.tsv"
 }
