@@ -806,6 +806,40 @@ const LOCAL_NODE_HOST_EXTERNAL_RESPONSE_LINE_MAX_CHARS: usize = 262_144;
 const LOCAL_NODE_HOST_SYSTEM_RUN_ALLOWLIST: &[&str] = &[
     "echo", "whoami", "pwd", "uname", "id", "date", "hostname", "ls", "dir",
 ];
+const NODE_CANVAS_COMMANDS: &[&str] = &[
+    "canvas.present",
+    "canvas.hide",
+    "canvas.navigate",
+    "canvas.eval",
+    "canvas.snapshot",
+    "canvas.a2ui.push",
+    "canvas.a2ui.pushJSONL",
+    "canvas.a2ui.reset",
+];
+const NODE_CAMERA_COMMANDS: &[&str] = &["camera.list"];
+const NODE_LOCATION_COMMANDS: &[&str] = &["location.get"];
+const NODE_DEVICE_COMMANDS: &[&str] = &["device.info", "device.status"];
+const NODE_CONTACTS_COMMANDS: &[&str] = &["contacts.search"];
+const NODE_CALENDAR_COMMANDS: &[&str] = &["calendar.events"];
+const NODE_REMINDERS_COMMANDS: &[&str] = &["reminders.list"];
+const NODE_PHOTOS_COMMANDS: &[&str] = &["photos.latest"];
+const NODE_MOTION_COMMANDS: &[&str] = &["motion.activity", "motion.pedometer"];
+const NODE_IOS_SYSTEM_COMMANDS: &[&str] = &["system.notify"];
+const NODE_SYSTEM_COMMANDS: &[&str] = &[
+    "system.run",
+    "system.which",
+    "system.notify",
+    "browser.proxy",
+];
+const NODE_DEFAULT_DANGEROUS_COMMANDS: &[&str] = &[
+    "camera.snap",
+    "camera.clip",
+    "screen.record",
+    "contacts.add",
+    "calendar.add",
+    "reminders.add",
+    "sms.send",
+];
 const TTS_OPENAI_MODELS: &[&str] = &["gpt-4o-mini-tts", "tts-1", "tts-1-hd"];
 const TTS_OPENAI_VOICES: &[&str] = &[
     "alloy", "ash", "ballad", "cedar", "coral", "echo", "fable", "juniper", "marin", "onyx",
@@ -845,6 +879,7 @@ static SEND_MESSAGE_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static POLL_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static TTS_AUDIO_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static VOICE_CAPTURE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static VOICE_PLAYBACK_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const SUPPORTED_RPC_METHODS: &[&str] = &[
     "connect",
     "health",
@@ -1603,6 +1638,7 @@ impl RpcDispatcher {
                 },
                 "playback": {
                     "active": io_state.playback_active,
+                    "sessionId": io_state.playback_session_id,
                     "queueDepth": io_state.playback_queue_depth,
                     "outputDevice": io_state.output_device,
                     "lastAudioPath": io_state.playback_last_audio_path,
@@ -1692,6 +1728,7 @@ impl RpcDispatcher {
             },
             "playback": {
                 "active": io_state.playback_active,
+                "sessionId": io_state.playback_session_id,
                 "queueDepth": io_state.playback_queue_depth,
                 "outputDevice": io_state.output_device,
                 "lastAudioPath": io_state.playback_last_audio_path,
@@ -1786,6 +1823,7 @@ impl RpcDispatcher {
             "outputDevice": io_state.output_device,
             "playback": {
                 "active": io_state.playback_active,
+                "sessionId": io_state.playback_session_id,
                 "queueDepth": io_state.playback_queue_depth,
                 "lastAudioPath": io_state.playback_last_audio_path,
                 "lastProvider": io_state.playback_last_provider,
@@ -3512,12 +3550,13 @@ impl RpcDispatcher {
                 })),
             };
         };
-        if !node_command_allowed(&node, &command) {
+        let node_policy = self.config.node_command_policy_config().await;
+        if let Err(reason) = node_command_allowed(&node, &command, &node_policy) {
             return RpcDispatchOutcome::Error {
                 code: 400,
                 message: "node command not allowed".to_owned(),
                 details: Some(json!({
-                    "reason": "command-not-declared",
+                    "reason": reason.reason(),
                     "command": command
                 })),
             };
@@ -3753,12 +3792,13 @@ impl RpcDispatcher {
                 })),
             };
         };
-        if !node_inventory_command_allowed(&node, "browser.proxy") {
+        let node_policy = self.config.node_command_policy_config().await;
+        if let Err(reason) = node_inventory_command_allowed(&node, "browser.proxy", &node_policy) {
             return RpcDispatchOutcome::Error {
                 code: 400,
                 message: "node command not allowed".to_owned(),
                 details: Some(json!({
-                    "reason": "command-not-declared",
+                    "reason": reason.reason(),
                     "command": "browser.proxy",
                     "nodeId": node.node_id
                 })),
@@ -3971,12 +4011,13 @@ impl RpcDispatcher {
                 })),
             };
         };
-        if !node_command_allowed(&node, "canvas.present") {
+        let node_policy = self.config.node_command_policy_config().await;
+        if let Err(reason) = node_command_allowed(&node, "canvas.present", &node_policy) {
             return RpcDispatchOutcome::Error {
                 code: 400,
                 message: "node command not allowed".to_owned(),
                 details: Some(json!({
-                    "reason": "command-not-declared",
+                    "reason": reason.reason(),
                     "command": "canvas.present",
                     "nodeId": node_id
                 })),
@@ -7319,7 +7360,19 @@ struct VoiceIoState {
     playback_last_started_at_ms: Option<u64>,
     playback_last_completed_at_ms: Option<u64>,
     playback_last_duration_ms: Option<u64>,
+    playback_session_id: Option<String>,
+    playback_active_until_ms: Option<u64>,
+    playback_queue: VecDeque<VoicePlaybackQueuedEntry>,
     updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct VoicePlaybackQueuedEntry {
+    session_id: String,
+    audio_path: String,
+    provider: String,
+    duration_ms: u64,
+    output_device: String,
 }
 
 impl VoiceIoRegistry {
@@ -7340,13 +7393,17 @@ impl VoiceIoRegistry {
                 playback_last_started_at_ms: None,
                 playback_last_completed_at_ms: None,
                 playback_last_duration_ms: None,
+                playback_session_id: None,
+                playback_active_until_ms: None,
+                playback_queue: VecDeque::new(),
                 updated_at_ms: now_ms(),
             }),
         }
     }
 
     async fn snapshot(&self) -> VoiceIoState {
-        let guard = self.state.lock().await;
+        let mut guard = self.state.lock().await;
+        Self::refresh_playback_state(&mut guard, now_ms());
         guard.clone()
     }
 
@@ -7357,6 +7414,8 @@ impl VoiceIoRegistry {
         output_device: Option<&str>,
     ) -> VoiceIoState {
         let mut guard = self.state.lock().await;
+        let now = now_ms();
+        Self::refresh_playback_state(&mut guard, now);
         if let Some(device) =
             input_device.and_then(|value| normalize_optional_text(Some(value.to_owned()), 128))
         {
@@ -7370,27 +7429,29 @@ impl VoiceIoRegistry {
         if enabled {
             if guard.capture_session_id.is_none() {
                 let sequence = VOICE_CAPTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
-                guard.capture_session_id = Some(format!("capture-{}-{sequence}", now_ms()));
+                guard.capture_session_id = Some(format!("capture-{now}-{sequence}"));
             }
             guard.capture_active = true;
             if guard.capture_started_at_ms.is_none() {
-                guard.capture_started_at_ms = Some(now_ms());
+                guard.capture_started_at_ms = Some(now);
             }
-            guard.capture_last_frame_at_ms = Some(now_ms());
+            guard.capture_last_frame_at_ms = Some(now);
             guard.capture_frames = guard.capture_frames.saturating_add(1);
         } else {
             guard.capture_active = false;
         }
-        guard.updated_at_ms = now_ms();
+        guard.updated_at_ms = now;
         guard.clone()
     }
 
     async fn touch_capture_frame(&self) -> VoiceIoState {
         let mut guard = self.state.lock().await;
+        let now = now_ms();
+        Self::refresh_playback_state(&mut guard, now);
         if guard.capture_active {
-            guard.capture_last_frame_at_ms = Some(now_ms());
+            guard.capture_last_frame_at_ms = Some(now);
             guard.capture_frames = guard.capture_frames.saturating_add(1);
-            guard.updated_at_ms = now_ms();
+            guard.updated_at_ms = now;
         }
         guard.clone()
     }
@@ -7403,23 +7464,63 @@ impl VoiceIoRegistry {
         output_device: Option<&str>,
     ) -> VoiceIoState {
         let mut guard = self.state.lock().await;
-        if let Some(device) =
-            output_device.and_then(|value| normalize_optional_text(Some(value.to_owned()), 128))
-        {
-            guard.output_device = device;
-        }
-        guard.playback_queue_depth = guard.playback_queue_depth.saturating_add(1);
-        guard.playback_active = true;
-        guard.playback_last_audio_path = Some(audio_path.to_owned());
-        guard.playback_last_provider = Some(provider.to_owned());
-        guard.playback_last_started_at_ms = Some(now_ms());
-        guard.playback_last_duration_ms = Some(duration_ms);
-        // Playback is simulated; mark completion immediately while preserving metadata.
-        guard.playback_last_completed_at_ms = Some(now_ms());
-        guard.playback_active = false;
-        guard.playback_queue_depth = guard.playback_queue_depth.saturating_sub(1);
-        guard.updated_at_ms = now_ms();
+        let now = now_ms();
+        let playback_device = output_device
+            .and_then(|value| normalize_optional_text(Some(value.to_owned()), 128))
+            .unwrap_or_else(|| guard.output_device.clone());
+        let sequence = VOICE_PLAYBACK_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
+        guard.playback_queue.push_back(VoicePlaybackQueuedEntry {
+            session_id: format!("playback-{now}-{sequence}"),
+            audio_path: audio_path.to_owned(),
+            provider: provider.to_owned(),
+            duration_ms: duration_ms.max(200),
+            output_device: playback_device,
+        });
+        Self::refresh_playback_state(&mut guard, now);
+        guard.updated_at_ms = now;
         guard.clone()
+    }
+
+    fn refresh_playback_state(state: &mut VoiceIoState, now: u64) {
+        let mut updated = false;
+        let mut cursor_ms = now;
+        loop {
+            if state.playback_active {
+                let until_ms = state.playback_active_until_ms.unwrap_or(cursor_ms);
+                if now >= until_ms {
+                    state.playback_active = false;
+                    state.playback_last_completed_at_ms = Some(until_ms);
+                    state.playback_session_id = None;
+                    state.playback_active_until_ms = None;
+                    cursor_ms = until_ms;
+                    updated = true;
+                    continue;
+                }
+                break;
+            }
+            let Some(next) = state.playback_queue.pop_front() else {
+                break;
+            };
+            let start_ms = cursor_ms.min(now);
+            state.playback_active = true;
+            state.playback_session_id = Some(next.session_id);
+            state.playback_last_audio_path = Some(next.audio_path);
+            state.playback_last_provider = Some(next.provider);
+            state.playback_last_started_at_ms = Some(start_ms);
+            state.playback_last_duration_ms = Some(next.duration_ms);
+            state.playback_active_until_ms = Some(start_ms.saturating_add(next.duration_ms));
+            state.output_device = next.output_device;
+            updated = true;
+            continue;
+        }
+
+        state.playback_queue_depth = state.playback_queue.len();
+        if state.playback_active {
+            state.playback_queue_depth = state.playback_queue_depth.saturating_add(1);
+        }
+        if updated {
+            state.updated_at_ms = now;
+        }
     }
 }
 
@@ -8440,6 +8541,12 @@ struct NodeHostRuntimeConfig {
     external_command: Option<String>,
     external_args: Vec<String>,
     external_commands: HashMap<String, NodeHostExternalCommand>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct NodeCommandPolicyConfig {
+    allow_commands: Vec<String>,
+    deny_commands: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -9925,33 +10032,207 @@ fn next_node_pair_token(node_id: &str) -> String {
     format!("ntk_{}", &digest[..48])
 }
 
-fn node_command_allowed(node: &PairedNodeEntry, command: &str) -> bool {
-    let normalized = command.trim();
-    if normalized.is_empty() {
-        return false;
-    }
-    let Some(commands) = &node.commands else {
-        return true;
-    };
-    if commands.is_empty() {
-        return true;
-    }
-    commands
-        .iter()
-        .any(|allowed| allowed.eq_ignore_ascii_case(normalized))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NodeCommandPolicyFailure {
+    CommandRequired,
+    CommandNotAllowlisted,
+    NodeDidNotDeclareCommands,
+    CommandNotDeclaredByNode,
 }
 
-fn node_inventory_command_allowed(node: &NodeInventoryEntry, command: &str) -> bool {
-    let normalized = command.trim();
-    if normalized.is_empty() {
-        return false;
+impl NodeCommandPolicyFailure {
+    fn reason(self) -> &'static str {
+        match self {
+            NodeCommandPolicyFailure::CommandRequired => "command required",
+            NodeCommandPolicyFailure::CommandNotAllowlisted => "command not allowlisted",
+            NodeCommandPolicyFailure::NodeDidNotDeclareCommands => "node did not declare commands",
+            NodeCommandPolicyFailure::CommandNotDeclaredByNode => "command not declared by node",
+        }
     }
-    if node.commands.is_empty() {
-        return true;
+}
+
+fn normalize_node_platform_id(platform: Option<&str>, device_family: Option<&str>) -> &'static str {
+    let platform_raw = platform
+        .and_then(|value| normalize_optional_text(Some(value.to_owned()), 128))
+        .map(|value| normalize(&value))
+        .unwrap_or_default();
+    if platform_raw.starts_with("ios") {
+        return "ios";
     }
-    node.commands
+    if platform_raw.starts_with("android") {
+        return "android";
+    }
+    if platform_raw.starts_with("mac") || platform_raw.starts_with("darwin") {
+        return "macos";
+    }
+    if platform_raw.starts_with("win") {
+        return "windows";
+    }
+    if platform_raw.starts_with("linux") {
+        return "linux";
+    }
+    let family_raw = device_family
+        .and_then(|value| normalize_optional_text(Some(value.to_owned()), 128))
+        .map(|value| normalize(&value))
+        .unwrap_or_default();
+    if family_raw.contains("iphone") || family_raw.contains("ipad") || family_raw.contains("ios") {
+        return "ios";
+    }
+    if family_raw.contains("android") {
+        return "android";
+    }
+    if family_raw.contains("mac") {
+        return "macos";
+    }
+    if family_raw.contains("windows") {
+        return "windows";
+    }
+    if family_raw.contains("linux") {
+        return "linux";
+    }
+    "unknown"
+}
+
+fn node_allowlist_insert_many(allowlist: &mut HashSet<String>, commands: &[&str]) {
+    for command in commands {
+        let normalized = normalize(command);
+        if !normalized.is_empty() {
+            allowlist.insert(normalized);
+        }
+    }
+}
+
+fn resolve_node_command_allowlist(
+    policy: &NodeCommandPolicyConfig,
+    platform: Option<&str>,
+    device_family: Option<&str>,
+) -> HashSet<String> {
+    let platform_id = normalize_node_platform_id(platform, device_family);
+    let mut allowlist = HashSet::new();
+    match platform_id {
+        "ios" => {
+            node_allowlist_insert_many(&mut allowlist, NODE_CANVAS_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_CAMERA_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_LOCATION_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_DEVICE_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_CONTACTS_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_CALENDAR_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_REMINDERS_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_PHOTOS_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_MOTION_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_IOS_SYSTEM_COMMANDS);
+        }
+        "android" => {
+            node_allowlist_insert_many(&mut allowlist, NODE_CANVAS_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_CAMERA_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_LOCATION_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_DEVICE_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_CONTACTS_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_CALENDAR_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_REMINDERS_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_PHOTOS_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_MOTION_COMMANDS);
+        }
+        "macos" => {
+            node_allowlist_insert_many(&mut allowlist, NODE_CANVAS_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_CAMERA_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_LOCATION_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_DEVICE_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_CONTACTS_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_CALENDAR_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_REMINDERS_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_PHOTOS_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_MOTION_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_SYSTEM_COMMANDS);
+        }
+        "linux" | "windows" => {
+            node_allowlist_insert_many(&mut allowlist, NODE_SYSTEM_COMMANDS);
+        }
+        _ => {
+            node_allowlist_insert_many(&mut allowlist, NODE_CANVAS_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_CAMERA_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_LOCATION_COMMANDS);
+            node_allowlist_insert_many(&mut allowlist, NODE_SYSTEM_COMMANDS);
+        }
+    }
+
+    // Keep high-risk command defaults blocked unless explicitly opted in.
+    for command in NODE_DEFAULT_DANGEROUS_COMMANDS {
+        let normalized = normalize(command);
+        if !normalized.is_empty() {
+            allowlist.remove(&normalized);
+        }
+    }
+
+    for command in &policy.allow_commands {
+        let normalized = normalize(command);
+        if !normalized.is_empty() {
+            allowlist.insert(normalized);
+        }
+    }
+    for command in &policy.deny_commands {
+        let normalized = normalize(command);
+        if !normalized.is_empty() {
+            allowlist.remove(&normalized);
+        }
+    }
+    allowlist
+}
+
+fn node_command_declared(declared_commands: &[String], command: &str) -> bool {
+    declared_commands
         .iter()
-        .any(|allowed| allowed.eq_ignore_ascii_case(normalized))
+        .any(|declared| declared.eq_ignore_ascii_case(command))
+}
+
+fn check_node_command_allowed(
+    command: &str,
+    declared_commands: Option<&[String]>,
+    allowlist: &HashSet<String>,
+) -> Result<(), NodeCommandPolicyFailure> {
+    let Some(command_trimmed) = normalize_optional_text(Some(command.to_owned()), 160) else {
+        return Err(NodeCommandPolicyFailure::CommandRequired);
+    };
+    let command_normalized = normalize(&command_trimmed);
+    if !allowlist.contains(&command_normalized) {
+        return Err(NodeCommandPolicyFailure::CommandNotAllowlisted);
+    }
+    let Some(declared_commands) = declared_commands else {
+        return Err(NodeCommandPolicyFailure::NodeDidNotDeclareCommands);
+    };
+    if declared_commands.is_empty() {
+        return Err(NodeCommandPolicyFailure::NodeDidNotDeclareCommands);
+    }
+    if !node_command_declared(declared_commands, &command_trimmed) {
+        return Err(NodeCommandPolicyFailure::CommandNotDeclaredByNode);
+    }
+    Ok(())
+}
+
+fn node_command_allowed(
+    node: &PairedNodeEntry,
+    command: &str,
+    policy: &NodeCommandPolicyConfig,
+) -> Result<(), NodeCommandPolicyFailure> {
+    let allowlist = resolve_node_command_allowlist(
+        policy,
+        node.platform.as_deref(),
+        node.device_family.as_deref(),
+    );
+    check_node_command_allowed(command, node.commands.as_deref(), &allowlist)
+}
+
+fn node_inventory_command_allowed(
+    node: &NodeInventoryEntry,
+    command: &str,
+    policy: &NodeCommandPolicyConfig,
+) -> Result<(), NodeCommandPolicyFailure> {
+    let allowlist = resolve_node_command_allowlist(
+        policy,
+        node.platform.as_deref(),
+        node.device_family.as_deref(),
+    );
+    check_node_command_allowed(command, Some(&node.commands), &allowlist)
 }
 
 fn node_inventory_browser_capable(node: &NodeInventoryEntry) -> bool {
@@ -15720,6 +16001,11 @@ impl ConfigRegistry {
         let guard = self.state.lock().await;
         node_host_runtime_config_from_config(&guard.config)
     }
+
+    async fn node_command_policy_config(&self) -> NodeCommandPolicyConfig {
+        let guard = self.state.lock().await;
+        node_command_policy_config_from_config(&guard.config)
+    }
 }
 
 fn default_gateway_config_document() -> Value {
@@ -16420,6 +16706,60 @@ fn node_host_runtime_config_from_config(config: &Value) -> NodeHostRuntimeConfig
         external_command,
         external_args,
         external_commands,
+    }
+}
+
+fn node_command_policy_config_from_config(config: &Value) -> NodeCommandPolicyConfig {
+    let gateway_nodes = config
+        .get("gateway")
+        .and_then(Value::as_object)
+        .and_then(|gateway| gateway.get("nodes").and_then(Value::as_object));
+    let root_nodes = config.get("nodes").and_then(Value::as_object);
+    let node = config.get("node").and_then(Value::as_object);
+    let node_policy = node.and_then(|node_obj| node_obj.get("policy").and_then(Value::as_object));
+
+    let allow_commands = gateway_nodes
+        .and_then(|obj| {
+            read_config_string_list(obj, &["allowCommands", "allow_commands"], 256, 160)
+        })
+        .or_else(|| {
+            root_nodes.and_then(|obj| {
+                read_config_string_list(obj, &["allowCommands", "allow_commands"], 256, 160)
+            })
+        })
+        .or_else(|| {
+            node.and_then(|obj| {
+                read_config_string_list(obj, &["allowCommands", "allow_commands"], 256, 160)
+            })
+        })
+        .or_else(|| {
+            node_policy.and_then(|obj| {
+                read_config_string_list(obj, &["allowCommands", "allow_commands"], 256, 160)
+            })
+        })
+        .unwrap_or_default();
+    let deny_commands = gateway_nodes
+        .and_then(|obj| read_config_string_list(obj, &["denyCommands", "deny_commands"], 256, 160))
+        .or_else(|| {
+            root_nodes.and_then(|obj| {
+                read_config_string_list(obj, &["denyCommands", "deny_commands"], 256, 160)
+            })
+        })
+        .or_else(|| {
+            node.and_then(|obj| {
+                read_config_string_list(obj, &["denyCommands", "deny_commands"], 256, 160)
+            })
+        })
+        .or_else(|| {
+            node_policy.and_then(|obj| {
+                read_config_string_list(obj, &["denyCommands", "deny_commands"], 256, 160)
+            })
+        })
+        .unwrap_or_default();
+
+    NodeCommandPolicyConfig {
+        allow_commands,
+        deny_commands,
     }
 }
 
@@ -25906,17 +26246,27 @@ mod tests {
                 "outputDevice": "spk-runtime"
             }),
         };
-        let last_audio_path = match dispatcher.handle_request(&convert).await {
+        let (last_audio_path, duration_ms) = match dispatcher.handle_request(&convert).await {
             RpcDispatchOutcome::Handled(payload) => {
                 assert_eq!(
                     payload.pointer("/playback/active").and_then(Value::as_bool),
-                    Some(false)
+                    Some(true)
                 );
-                payload
-                    .pointer("/audioPath")
+                assert!(payload
+                    .pointer("/playback/sessionId")
                     .and_then(Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .expect("tts.convert audioPath")
+                    .is_some());
+                (
+                    payload
+                        .pointer("/audioPath")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .expect("tts.convert audioPath"),
+                    payload
+                        .pointer("/durationMs")
+                        .and_then(Value::as_u64)
+                        .expect("tts.convert durationMs"),
+                )
             }
             _ => panic!("expected tts.convert handled"),
         };
@@ -25944,8 +26294,40 @@ mod tests {
                         .and_then(Value::as_str),
                     Some("spk-runtime")
                 );
+                assert_eq!(
+                    payload.pointer("/playback/active").and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert!(payload
+                    .pointer("/playback/sessionId")
+                    .and_then(Value::as_str)
+                    .is_some());
             }
             _ => panic!("expected tts.status handled"),
+        }
+
+        tokio::time::sleep(Duration::from_millis(duration_ms.saturating_add(50))).await;
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/playback/active").and_then(Value::as_bool),
+                    Some(false)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/playback/queueDepth")
+                        .and_then(Value::as_u64),
+                    Some(0)
+                );
+                assert!(payload
+                    .pointer("/playback/lastCompletedAtMs")
+                    .and_then(Value::as_u64)
+                    .is_some());
+                assert!(payload
+                    .pointer("/playback/sessionId")
+                    .is_some_and(Value::is_null));
+            }
+            _ => panic!("expected tts.status handled after playback completion"),
         }
 
         let talk_disable = RpcRequestFrame {
@@ -25963,6 +26345,130 @@ mod tests {
                 );
             }
             _ => panic!("expected talk.mode disable handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_voice_runtime_queues_playback_sessions_fifo() {
+        let dispatcher = RpcDispatcher::new();
+
+        let first = RpcRequestFrame {
+            id: "req-voice-queue-first".to_owned(),
+            method: "tts.convert".to_owned(),
+            params: serde_json::json!({
+                "text": "first",
+                "channel": "telegram",
+                "outputDevice": "spk-a"
+            }),
+        };
+        let (first_audio, first_duration_ms) = match dispatcher.handle_request(&first).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/playback/active").and_then(Value::as_bool),
+                    Some(true)
+                );
+                (
+                    payload
+                        .pointer("/audioPath")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .expect("first audio path"),
+                    payload
+                        .pointer("/durationMs")
+                        .and_then(Value::as_u64)
+                        .expect("first duration"),
+                )
+            }
+            _ => panic!("expected first tts.convert handled"),
+        };
+
+        let second = RpcRequestFrame {
+            id: "req-voice-queue-second".to_owned(),
+            method: "tts.convert".to_owned(),
+            params: serde_json::json!({
+                "text": "second",
+                "channel": "telegram",
+                "outputDevice": "spk-b"
+            }),
+        };
+        let (second_audio, second_duration_ms) = match dispatcher.handle_request(&second).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/playback/active").and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert!(payload
+                    .pointer("/playback/queueDepth")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|depth| depth >= 1));
+                (
+                    payload
+                        .pointer("/audioPath")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .expect("second audio path"),
+                    payload
+                        .pointer("/durationMs")
+                        .and_then(Value::as_u64)
+                        .expect("second duration"),
+                )
+            }
+            _ => panic!("expected second tts.convert handled"),
+        };
+
+        assert_ne!(first_audio, second_audio);
+
+        let status = RpcRequestFrame {
+            id: "req-voice-queue-status".to_owned(),
+            method: "tts.status".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/playback/active").and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert!(payload
+                    .pointer("/playback/queueDepth")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|depth| depth >= 1));
+            }
+            _ => panic!("expected tts.status handled"),
+        }
+
+        tokio::time::sleep(Duration::from_millis(
+            first_duration_ms
+                .saturating_add(second_duration_ms)
+                .saturating_add(80),
+        ))
+        .await;
+        match dispatcher.handle_request(&status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/playback/active").and_then(Value::as_bool),
+                    Some(false)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/playback/queueDepth")
+                        .and_then(Value::as_u64),
+                    Some(0)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/playback/lastAudioPath")
+                        .and_then(Value::as_str),
+                    Some(second_audio.as_str())
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/playback/outputDevice")
+                        .and_then(Value::as_str),
+                    Some("spk-b")
+                );
+            }
+            _ => panic!("expected tts.status handled after queue drain"),
         }
     }
 
@@ -31951,15 +32457,232 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_node_policy_blocks_dangerous_commands_without_allowlist_override() {
+        let dispatcher = RpcDispatcher::new();
+
+        let pair = RpcRequestFrame {
+            id: "req-node-policy-dangerous-block-pair".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "node-policy-1",
+                "platform": "macos",
+                "commands": ["camera.snap"]
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&pair).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("pair request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+        let approve = RpcRequestFrame {
+            id: "req-node-policy-dangerous-block-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        assert!(matches!(
+            dispatcher.handle_request(&approve).await,
+            RpcDispatchOutcome::Handled(_)
+        ));
+
+        let invoke = RpcRequestFrame {
+            id: "req-node-policy-dangerous-block-invoke".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "node-policy-1",
+                "command": "camera.snap",
+                "idempotencyKey": "node-policy-dangerous-block"
+            }),
+        };
+        match dispatcher.handle_request(&invoke).await {
+            RpcDispatchOutcome::Error {
+                code,
+                message,
+                details,
+            } => {
+                assert_eq!(code, 400);
+                assert_eq!(message, "node command not allowed");
+                assert_eq!(
+                    details
+                        .as_ref()
+                        .and_then(|value| value.pointer("/reason"))
+                        .and_then(Value::as_str),
+                    Some("command not allowlisted")
+                );
+            }
+            _ => panic!("expected node.invoke rejection"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_node_policy_allows_dangerous_commands_with_allowlist_override() {
+        let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "gateway": {
+                    "nodes": {
+                        "allowCommands": ["camera.snap"]
+                    }
+                }
+            }),
+        )
+        .await;
+
+        let pair = RpcRequestFrame {
+            id: "req-node-policy-allow-pair".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "node-policy-allow-1",
+                "platform": "macos",
+                "commands": ["camera.snap"]
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&pair).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("pair request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+        let approve = RpcRequestFrame {
+            id: "req-node-policy-allow-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        assert!(matches!(
+            dispatcher.handle_request(&approve).await,
+            RpcDispatchOutcome::Handled(_)
+        ));
+
+        let invoke = RpcRequestFrame {
+            id: "req-node-policy-allow-invoke".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "node-policy-allow-1",
+                "command": "camera.snap",
+                "idempotencyKey": "node-policy-allow"
+            }),
+        };
+        match dispatcher.handle_request(&invoke).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(payload.pointer("/ok").and_then(Value::as_bool), Some(true));
+            }
+            _ => panic!("expected node.invoke handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_node_policy_deny_commands_override_allow_commands() {
+        let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "gateway": {
+                    "nodes": {
+                        "allowCommands": ["camera.snap"],
+                        "denyCommands": ["camera.snap"]
+                    }
+                }
+            }),
+        )
+        .await;
+
+        let pair = RpcRequestFrame {
+            id: "req-node-policy-deny-pair".to_owned(),
+            method: "node.pair.request".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "node-policy-deny-1",
+                "platform": "macos",
+                "commands": ["camera.snap"]
+            }),
+        };
+        let request_id = match dispatcher.handle_request(&pair).await {
+            RpcDispatchOutcome::Handled(payload) => payload
+                .pointer("/request/requestId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .expect("pair request id"),
+            _ => panic!("expected node.pair.request handled"),
+        };
+        let approve = RpcRequestFrame {
+            id: "req-node-policy-deny-approve".to_owned(),
+            method: "node.pair.approve".to_owned(),
+            params: serde_json::json!({
+                "requestId": request_id
+            }),
+        };
+        assert!(matches!(
+            dispatcher.handle_request(&approve).await,
+            RpcDispatchOutcome::Handled(_)
+        ));
+
+        let invoke = RpcRequestFrame {
+            id: "req-node-policy-deny-invoke".to_owned(),
+            method: "node.invoke".to_owned(),
+            params: serde_json::json!({
+                "nodeId": "node-policy-deny-1",
+                "command": "camera.snap",
+                "idempotencyKey": "node-policy-deny"
+            }),
+        };
+        match dispatcher.handle_request(&invoke).await {
+            RpcDispatchOutcome::Error {
+                code,
+                message,
+                details,
+            } => {
+                assert_eq!(code, 400);
+                assert_eq!(message, "node command not allowed");
+                assert_eq!(
+                    details
+                        .as_ref()
+                        .and_then(|value| value.pointer("/reason"))
+                        .and_then(Value::as_str),
+                    Some("command not allowlisted")
+                );
+            }
+            _ => panic!("expected node.invoke rejection"),
+        }
+    }
+
+    #[tokio::test]
     async fn dispatcher_node_invoke_supports_camera_screen_location_and_system_commands_when_declared(
     ) {
         let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "gateway": {
+                    "nodes": {
+                        "allowCommands": [
+                            "camera.snap",
+                            "camera.clip",
+                            "screen.record",
+                            "contacts.add",
+                            "calendar.add",
+                            "reminders.add",
+                            "sms.send"
+                        ]
+                    }
+                }
+            }),
+        )
+        .await;
 
         let pair_request = RpcRequestFrame {
             id: "req-node-sensors-pair-request".to_owned(),
             method: "node.pair.request".to_owned(),
             params: serde_json::json!({
                 "nodeId": "node-sensors-1",
+                "platform": "macos",
                 "commands": [
                     "camera.list",
                     "camera.snap",
@@ -32128,6 +32851,18 @@ mod tests {
         patch_config(
             &dispatcher,
             json!({
+                "gateway": {
+                    "nodes": {
+                        "allowCommands": [
+                            "camera.snap",
+                            "camera.clip",
+                            "contacts.add",
+                            "calendar.add",
+                            "reminders.add",
+                            "sms.send"
+                        ]
+                    }
+                },
                 "nodeHost": {
                     "localNodeIds": ["local-node-runtime-1"],
                     "allowSystemRun": true
@@ -32141,6 +32876,7 @@ mod tests {
             method: "node.pair.request".to_owned(),
             params: serde_json::json!({
                 "nodeId": "local-node-runtime-1",
+                "platform": "macos",
                 "displayName": "Local Host Runtime Node",
                 "caps": ["host.local"],
                 "commands": [
