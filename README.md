@@ -9,6 +9,7 @@ Minimum supported Rust version: `1.83`.
 - End-to-end Rust parity program status: **complete**.
 - Feature audit scoreboard: `22 implemented`, `0 partial`, `0 deferred`.
 - RPC method-surface parity: `103` Rust methods, `100%` coverage vs upstream base + handlers.
+- Runtime audit: blanket dead-code suppression removed; only targeted transcript-entry allowance remains in `tool_runtime` for parity/test inspection fields.
 - Latest full validation matrix:
   - `cargo +1.83.0-x86_64-pc-windows-gnu test` -> `331` passed
   - `cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state` -> `335` passed
@@ -158,6 +159,10 @@ systemctl --user status openclaw-agent-rs.service
 
 ## Provider setup examples
 
+For full provider coverage status (built-in defaults vs alias-only/config-required, bridge defaults, OAuth catalog, and endpoint references), see:
+
+- `PROVIDER_SUPPORT_MATRIX.md`
+
 Use `config.patch`/`config.apply` to register OpenAI-compatible providers explicitly:
 
 ```json
@@ -208,6 +213,14 @@ Use `config.patch`/`config.apply` to register OpenAI-compatible providers explic
 For Zhipu coding-plan models, use provider `zhipuai-coding` or override `baseUrl` with `https://open.bigmodel.cn/api/coding/paas/v4`.
 
 For additional official website bridges (for example Kimi/Minimax/Zhipu web surfaces), keep `api` in website-bridge mode and configure provider-specific `websiteUrl` plus `bridgeBaseUrls` endpoints exposed by that provider.
+
+Kimi is supported as:
+
+- OpenAI-compatible API runtime (`kimi-coding`) with key/token auth.
+- OAuth provider catalog entry (`auth.oauth.*`).
+- Website bridge hint surface (`websiteUrl = https://www.kimi.com`) for explicitly configured bridge mode.
+
+Guest/no-login website execution is not assumed for Kimi in runtime defaults; configure authenticated bridge/API flows.
 
 Bridge-ready provider aliases are normalized for:
 

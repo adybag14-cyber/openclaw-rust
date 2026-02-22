@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::ffi::OsString;
@@ -89,6 +87,8 @@ pub struct ToolRuntimeResponse {
     pub warnings: Vec<String>,
 }
 
+// Runtime transcript entries are currently consumed by parity/tests and
+// debug inspection paths, but not every field is read on every build target.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ToolTranscriptEntry {

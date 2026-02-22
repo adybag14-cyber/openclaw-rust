@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Highlights
+- Added `PROVIDER_SUPPORT_MATRIX.md` with an exhaustive runtime/provider coverage matrix: built-in defaults, alias-only/config-required providers, bridge defaults, OAuth catalog coverage, and endpoint reference links.
+- Removed blanket `#![allow(dead_code)]` from `tool_runtime` and kept only targeted dead-code allowance on transcript inspection fields.
+- Renamed `update.run` noop step label from `rust-agent parity update stub` to `rust-agent restart sentinel` to reflect intended control-plane semantics.
+
 ## v1.0.1 - 2026-02-22
 
 ### Highlights

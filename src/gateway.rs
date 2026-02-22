@@ -3155,7 +3155,7 @@ impl RpcDispatcher {
 
         let step = json!({
             "name": "noop",
-            "command": "rust-agent parity update stub",
+            "command": "rust-agent restart sentinel",
             "cwd": ".",
             "durationMs": 0,
             "log": {

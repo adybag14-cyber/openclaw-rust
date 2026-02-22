@@ -77,6 +77,8 @@ critical_threshold = 20
 # ------------------------------------------------------------------------------
 # OpenAI-compatible provider templates (optional)
 # ------------------------------------------------------------------------------
+# Full support matrix and endpoint references:
+#   PROVIDER_SUPPORT_MATRIX.md
 #
 # [models.providers.opencode]
 # api = "website-openai-bridge"
@@ -112,3 +114,7 @@ critical_threshold = 20
 # api = "openai-completions"
 # baseUrl = "http://127.0.0.1:8080/v1"
 # allowUnauthenticated = true
+#
+# Kimi note:
+#   `kimi-coding` can be configured as an authenticated OpenAI-compatible provider
+#   (and OAuth provider), but guest/no-login website execution is not assumed.
