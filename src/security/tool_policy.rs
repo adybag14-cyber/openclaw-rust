@@ -5,7 +5,7 @@ use crate::config::{ToolRuntimePolicyConfig, ToolRuntimePolicyRule};
 const GROUP_MEMORY: &[&str] = &["memory_search", "memory_get"];
 const GROUP_WEB: &[&str] = &["web_search", "web_fetch"];
 const GROUP_FS: &[&str] = &["read", "write", "edit", "apply_patch"];
-const GROUP_RUNTIME: &[&str] = &["exec", "process"];
+const GROUP_RUNTIME: &[&str] = &["exec", "process", "wasm"];
 const GROUP_SESSIONS: &[&str] = &[
     "sessions",
     "sessions_list",
@@ -16,7 +16,7 @@ const GROUP_SESSIONS: &[&str] = &[
     "session_status",
 ];
 const GROUP_UI: &[&str] = &["browser", "canvas"];
-const GROUP_AUTOMATION: &[&str] = &["cron", "gateway"];
+const GROUP_AUTOMATION: &[&str] = &["cron", "gateway", "routines"];
 const GROUP_MESSAGING: &[&str] = &["message"];
 const GROUP_NODES: &[&str] = &["nodes"];
 const GROUP_OPENCLAW: &[&str] = &[
@@ -26,6 +26,8 @@ const GROUP_OPENCLAW: &[&str] = &[
     "cron",
     "message",
     "gateway",
+    "routines",
+    "wasm",
     "agents_list",
     "sessions_list",
     "sessions_history",

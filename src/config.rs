@@ -170,6 +170,14 @@ pub struct ToolRuntimePolicyConfig {
     pub by_provider: HashMap<String, ToolRuntimePolicyRule>,
     #[serde(default)]
     pub loop_detection: ToolLoopDetectionConfig,
+    #[serde(default)]
+    pub wasm: ToolRuntimeWasmPolicyConfig,
+    #[serde(default)]
+    pub credentials: ToolRuntimeCredentialPolicyConfig,
+    #[serde(default)]
+    pub safety: ToolRuntimeSafetyLayerConfig,
+    #[serde(default)]
+    pub routines: ToolRuntimeRoutinePolicyConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -201,6 +209,110 @@ impl Default for ToolLoopDetectionConfig {
             history_size: default_tool_loop_history_size(),
             warning_threshold: default_tool_loop_warning_threshold(),
             critical_threshold: default_tool_loop_critical_threshold(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolRuntimeLeakAction {
+    Allow,
+    #[default]
+    Review,
+    Block,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolRuntimeWasmPolicyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_tool_wasm_module_root")]
+    pub module_root: PathBuf,
+    #[serde(default = "default_tool_wasm_default_capabilities")]
+    pub default_capabilities: Vec<String>,
+    #[serde(default)]
+    pub module_capabilities: HashMap<String, Vec<String>>,
+    #[serde(default = "default_tool_wasm_fuel_limit")]
+    pub fuel_limit: u64,
+    #[serde(default = "default_tool_wasm_memory_limit_bytes")]
+    pub memory_limit_bytes: u64,
+}
+
+impl Default for ToolRuntimeWasmPolicyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            module_root: default_tool_wasm_module_root(),
+            default_capabilities: default_tool_wasm_default_capabilities(),
+            module_capabilities: HashMap::new(),
+            fuel_limit: default_tool_wasm_fuel_limit(),
+            memory_limit_bytes: default_tool_wasm_memory_limit_bytes(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolRuntimeCredentialPolicyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub env_allowlist: Vec<String>,
+    #[serde(default = "default_tool_runtime_leak_patterns")]
+    pub leak_patterns: Vec<String>,
+    #[serde(default)]
+    pub leak_action: ToolRuntimeLeakAction,
+    #[serde(default = "default_tool_runtime_redaction_token")]
+    pub redaction_token: String,
+}
+
+impl Default for ToolRuntimeCredentialPolicyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            env_allowlist: Vec::new(),
+            leak_patterns: default_tool_runtime_leak_patterns(),
+            leak_action: ToolRuntimeLeakAction::default(),
+            redaction_token: default_tool_runtime_redaction_token(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolRuntimeSafetyLayerConfig {
+    #[serde(default = "default_tool_runtime_safety_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_tool_runtime_safety_sanitize_output")]
+    pub sanitize_output: bool,
+    #[serde(default = "default_tool_runtime_safety_max_output_chars")]
+    pub max_output_chars: usize,
+}
+
+impl Default for ToolRuntimeSafetyLayerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_tool_runtime_safety_enabled(),
+            sanitize_output: default_tool_runtime_safety_sanitize_output(),
+            max_output_chars: default_tool_runtime_safety_max_output_chars(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolRuntimeRoutinePolicyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_tool_runtime_routine_history_limit")]
+    pub history_limit: usize,
+    #[serde(default = "default_tool_runtime_routine_parallel_limit")]
+    pub max_parallel: usize,
+}
+
+impl Default for ToolRuntimeRoutinePolicyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            history_limit: default_tool_runtime_routine_history_limit(),
+            max_parallel: default_tool_runtime_routine_parallel_limit(),
         }
     }
 }
@@ -488,6 +600,18 @@ impl Config {
         if let Ok(v) = env::var("OPENCLAW_RS_SESSION_STATE_PATH") {
             self.runtime.session_state_path = PathBuf::from(v);
         }
+        if let Ok(v) = env::var("OPENCLAW_RS_TOOL_WASM_ENABLED") {
+            self.security.tool_runtime_policy.wasm.enabled = parse_bool(&v);
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_TOOL_CREDENTIALS_ENABLED") {
+            self.security.tool_runtime_policy.credentials.enabled = parse_bool(&v);
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_TOOL_CREDENTIAL_ALLOWLIST") {
+            self.security.tool_runtime_policy.credentials.env_allowlist = split_csv(&v);
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_TOOL_ROUTINES_ENABLED") {
+            self.security.tool_runtime_policy.routines.enabled = parse_bool(&v);
+        }
     }
 
     fn validate(&self) -> Result<()> {
@@ -592,6 +716,33 @@ impl Config {
             anyhow::bail!(
                 "security.tool_runtime_policy.loop_detection.critical_threshold must be greater than warning_threshold"
             );
+        }
+        if self.security.tool_runtime_policy.wasm.fuel_limit == 0 {
+            anyhow::bail!("security.tool_runtime_policy.wasm.fuel_limit must be > 0");
+        }
+        if self.security.tool_runtime_policy.wasm.memory_limit_bytes == 0 {
+            anyhow::bail!("security.tool_runtime_policy.wasm.memory_limit_bytes must be > 0");
+        }
+        if self
+            .security
+            .tool_runtime_policy
+            .credentials
+            .redaction_token
+            .trim()
+            .is_empty()
+        {
+            anyhow::bail!(
+                "security.tool_runtime_policy.credentials.redaction_token must not be empty"
+            );
+        }
+        if self.security.tool_runtime_policy.safety.max_output_chars == 0 {
+            anyhow::bail!("security.tool_runtime_policy.safety.max_output_chars must be > 0");
+        }
+        if self.security.tool_runtime_policy.routines.history_limit == 0 {
+            anyhow::bail!("security.tool_runtime_policy.routines.history_limit must be > 0");
+        }
+        if self.security.tool_runtime_policy.routines.max_parallel == 0 {
+            anyhow::bail!("security.tool_runtime_policy.routines.max_parallel must be > 0");
         }
         match self.gateway.server.auth_mode {
             GatewayAuthMode::Token => {
@@ -730,6 +881,58 @@ fn default_tool_loop_warning_threshold() -> usize {
 
 fn default_tool_loop_critical_threshold() -> usize {
     20
+}
+
+fn default_tool_wasm_module_root() -> PathBuf {
+    PathBuf::from(".openclaw-rs/wasm-modules")
+}
+
+fn default_tool_wasm_default_capabilities() -> Vec<String> {
+    vec![
+        "workspace.read".to_owned(),
+        "http.fetch".to_owned(),
+        "tool.invoke".to_owned(),
+    ]
+}
+
+fn default_tool_wasm_fuel_limit() -> u64 {
+    1_000_000
+}
+
+fn default_tool_wasm_memory_limit_bytes() -> u64 {
+    64 * 1024 * 1024
+}
+
+fn default_tool_runtime_leak_patterns() -> Vec<String> {
+    vec![
+        r"(?i)\b(sk-[a-z0-9]{16,})\b".to_owned(),
+        r"(?i)\b(ghp_[a-z0-9]{16,})\b".to_owned(),
+        r#"(?i)\b(api[_-]?key\s*[:=]\s*["']?[a-z0-9_\-]{8,})\b"#.to_owned(),
+    ]
+}
+
+fn default_tool_runtime_redaction_token() -> String {
+    "[REDACTED_SECRET]".to_owned()
+}
+
+fn default_tool_runtime_safety_enabled() -> bool {
+    true
+}
+
+fn default_tool_runtime_safety_sanitize_output() -> bool {
+    true
+}
+
+fn default_tool_runtime_safety_max_output_chars() -> usize {
+    32_768
+}
+
+fn default_tool_runtime_routine_history_limit() -> usize {
+    256
+}
+
+fn default_tool_runtime_routine_parallel_limit() -> usize {
+    4
 }
 
 fn default_session_state_path() -> PathBuf {

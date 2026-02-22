@@ -1,0 +1,21 @@
+package openclaw:tools@1.5.2;
+
+interface host {
+  log: func(level: string, message: string);
+  now-millis: func() -> u64;
+  workspace-read: func(path: string) -> result<string, string>;
+  http-fetch: func(url: string, method: string, body: option<string>) -> result<string, string>;
+  tool-invoke: func(name: string, payload: string) -> result<string, string>;
+  secret-exists: func(name: string) -> bool;
+}
+
+interface tool {
+  execute: func(input: string) -> result<string, string>;
+  schema: func() -> string;
+  description: func() -> string;
+}
+
+world tool-runtime {
+  import host;
+  export tool;
+}

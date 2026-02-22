@@ -5,6 +5,7 @@ mod gateway;
 mod gateway_server;
 mod memory;
 mod protocol;
+mod routines;
 mod runtime;
 mod scheduler;
 mod security;
@@ -13,6 +14,7 @@ mod state;
 mod telegram_bridge;
 mod tool_runtime;
 mod types;
+mod wasm_sandbox;
 mod website_bridge;
 
 use std::path::{Path, PathBuf};

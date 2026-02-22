@@ -15,11 +15,15 @@ use crate::channels::{
     build_channel_transport_receipt, channel_supports_message_action, normalize_channel_id,
     ChannelCapabilities, ChannelMessageAction, DriverRegistry,
 };
-use crate::config::ToolRuntimePolicyConfig;
+use crate::config::{ToolRuntimeLeakAction, ToolRuntimePolicyConfig, ToolRuntimeSafetyLayerConfig};
+use crate::routines::{RoutineDefinition, RoutineOrchestrator, RoutineTriggerKind};
+use crate::security::credential_injector::CredentialInjector;
+use crate::security::safety_layer::truncate_output;
 use crate::security::tool_loop::{ToolLoopGuard, ToolLoopLevel};
 use crate::security::tool_policy::ToolPolicyMatcher;
 use crate::session_key::parse_session_key;
 use crate::types::ActionRequest;
+use crate::wasm_sandbox::WasmSandbox;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolRuntimeErrorCode {
@@ -121,6 +125,7 @@ struct ToolRuntimeProcessSession {
     session_id: String,
     command: String,
     cwd: String,
+    injected_env_keys: Vec<String>,
     started_at_ms: u64,
     execution: ToolRuntimeProcessExecution,
 }
@@ -258,6 +263,11 @@ pub struct ToolRuntimeHost {
     message_stickers: Mutex<HashMap<String, VecDeque<ToolRuntimeMessageSticker>>>,
     member_roles: Mutex<HashMap<String, Vec<String>>>,
     message_channel_capabilities: HashMap<String, ChannelCapabilities>,
+    credential_injector: CredentialInjector,
+    wasm_sandbox: WasmSandbox,
+    routines_enabled: bool,
+    routine_orchestrator: RoutineOrchestrator,
+    safety_cfg: ToolRuntimeSafetyLayerConfig,
 }
 
 #[derive(Clone, Copy)]
@@ -301,6 +311,17 @@ impl ToolRuntimeHost {
 
         let policy_matcher = ToolPolicyMatcher::new(policy.clone());
         let loop_guard = ToolLoopGuard::new(policy.loop_detection);
+        let credential_injector =
+            CredentialInjector::new(policy.credentials.clone()).map_err(|err| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    format!("invalid credential injector configuration: {err}"),
+                )
+            })?;
+        let wasm_sandbox = WasmSandbox::new(policy.wasm.clone());
+        let routines_enabled = policy.routines.enabled;
+        let routine_orchestrator = RoutineOrchestrator::new(&policy.routines);
+        let safety_cfg = policy.safety.clone();
         let message_channel_capabilities = DriverRegistry::default_registry()
             .capabilities()
             .into_iter()
@@ -330,6 +351,11 @@ impl ToolRuntimeHost {
             message_stickers: Mutex::new(HashMap::new()),
             member_roles: Mutex::new(HashMap::new()),
             message_channel_capabilities,
+            credential_injector,
+            wasm_sandbox,
+            routines_enabled,
+            routine_orchestrator,
+            safety_cfg,
         }))
     }
 
@@ -472,6 +498,8 @@ impl ToolRuntimeHost {
             "browser" => self.execute_browser(request).await,
             "canvas" => self.execute_canvas(request).await,
             "nodes" => self.execute_nodes(request).await,
+            "wasm" => self.execute_wasm(request).await,
+            "routines" => self.execute_routines(request).await,
             _ => Err(ToolRuntimeError::new(
                 ToolRuntimeErrorCode::UnsupportedTool,
                 format!("unsupported tool `{tool_name}`"),
@@ -609,6 +637,24 @@ impl ToolRuntimeHost {
             .get("background")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let injection = self.credential_injector.inject_env_from_args(&request.args);
+        let injected_env_keys = injection
+            .env_pairs
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        let pre_scan = self
+            .credential_injector
+            .scan_text(&format!("{command}\n{}", request.args));
+        if pre_scan.leaked && matches!(pre_scan.action, ToolRuntimeLeakAction::Block) {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::PolicyDenied,
+                format!(
+                    "command payload blocked by leak detector before execution ({} matches)",
+                    pre_scan.matches
+                ),
+            ));
+        }
         let root = self.root_for_request(request);
         let cwd = match first_string_arg(&request.args, &["workdir", "cwd"]) {
             Some(raw) => {
@@ -631,11 +677,11 @@ impl ToolRuntimeHost {
             let session_id = self.next_process_session_id().await;
             let session_cwd = cwd.clone();
             let command_text = command.clone();
+            let env_overrides = injection.env_pairs.clone();
             let started = now_ms();
-            let handle =
-                tokio::spawn(
-                    async move { run_shell_command(command_text, session_cwd.clone()).await },
-                );
+            let handle = tokio::spawn(async move {
+                run_shell_command(command_text, session_cwd.clone(), env_overrides).await
+            });
 
             let mut sessions = self.process_sessions.lock().await;
             sessions.insert(
@@ -644,6 +690,7 @@ impl ToolRuntimeHost {
                     session_id: session_id.clone(),
                     command,
                     cwd: cwd.display().to_string(),
+                    injected_env_keys: injected_env_keys.clone(),
                     started_at_ms: started,
                     execution: ToolRuntimeProcessExecution::Running(handle),
                 },
@@ -651,17 +698,41 @@ impl ToolRuntimeHost {
             return Ok(json!({
                 "status": "running",
                 "sessionId": session_id,
-                "cwd": display_path(root, &cwd)
+                "cwd": display_path(root, &cwd),
+                "injectedEnv": injected_env_keys,
+                "credentialWarnings": injection.warnings,
+                "preExecutionLeakMatches": pre_scan.matches
             }));
         }
 
-        let outcome = run_shell_command(command, cwd.clone()).await?;
+        let mut outcome = run_shell_command(command, cwd.clone(), injection.env_pairs).await?;
+        let output_scan = self.credential_injector.scan_text(&outcome.aggregated);
+        if output_scan.leaked {
+            if matches!(output_scan.action, ToolRuntimeLeakAction::Block) {
+                return Err(ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::PolicyDenied,
+                    format!(
+                        "command output blocked by leak detector ({} matches)",
+                        output_scan.matches
+                    ),
+                ));
+            }
+            outcome.aggregated = output_scan.redacted;
+        }
+        if self.safety_cfg.enabled && self.safety_cfg.sanitize_output {
+            outcome.aggregated =
+                truncate_output(&outcome.aggregated, self.safety_cfg.max_output_chars);
+        }
         Ok(json!({
             "status": outcome.status,
             "exitCode": outcome.exit_code,
             "durationMs": outcome.duration_ms,
             "aggregated": outcome.aggregated,
-            "cwd": display_path(root, &cwd)
+            "cwd": display_path(root, &cwd),
+            "injectedEnv": injected_env_keys,
+            "credentialWarnings": injection.warnings,
+            "preExecutionLeakMatches": pre_scan.matches,
+            "outputLeakMatches": output_scan.matches
         }))
     }
 
@@ -691,7 +762,8 @@ impl ToolRuntimeHost {
                             "status": status,
                             "startedAt": session.started_at_ms,
                             "cwd": session.cwd,
-                            "command": session.command
+                            "command": session.command,
+                            "injectedEnv": session.injected_env_keys
                         })
                     })
                     .collect::<Vec<_>>();
@@ -739,6 +811,7 @@ impl ToolRuntimeHost {
                     }
                     _ => unreachable!(),
                 };
+                let payload = self.apply_exec_output_safety(payload)?;
 
                 if action != "remove" {
                     let mut sessions = self.process_sessions.lock().await;
@@ -750,6 +823,156 @@ impl ToolRuntimeHost {
             _ => Err(ToolRuntimeError::new(
                 ToolRuntimeErrorCode::InvalidArgs,
                 format!("unsupported process action `{action}`"),
+            )),
+        }
+    }
+
+    async fn execute_wasm(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
+        if !self.wasm_sandbox.enabled() {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::PolicyDenied,
+                "wasm tool is disabled by runtime policy",
+            ));
+        }
+
+        let action = request
+            .args
+            .get("action")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("inspect")
+            .to_ascii_lowercase();
+        let module = required_string_arg(
+            &request.args,
+            &["module", "modulePath", "module_path", "path"],
+            "module",
+        )?;
+        let requested_capabilities =
+            collect_string_args(&request.args, &["capabilities", "requestedCapabilities"]);
+        let inspection = self
+            .wasm_sandbox
+            .inspect(&module, &requested_capabilities)
+            .map_err(|err| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::ExecutionFailed,
+                    format!("wasm inspect failed: {err}"),
+                )
+            })?;
+
+        match action.as_str() {
+            "inspect" => Ok(json!({
+                "status": "completed",
+                "inspection": inspection
+            })),
+            "run" | "execute" => {
+                let operation = first_string_arg(&request.args, &["operation"])
+                    .unwrap_or_else(|| "execute".to_owned());
+                let payload = request.args.get("payload").cloned().unwrap_or(Value::Null);
+                let mut response = self
+                    .wasm_sandbox
+                    .execute_stub(&inspection, &operation, &payload)
+                    .map_err(|err| {
+                        ToolRuntimeError::new(
+                            ToolRuntimeErrorCode::PolicyDenied,
+                            format!("wasm execution rejected: {err}"),
+                        )
+                    })?;
+                if let Value::Object(ref mut map) = response {
+                    map.insert(
+                        "inspection".to_owned(),
+                        serde_json::to_value(&inspection).unwrap_or(Value::Null),
+                    );
+                }
+                Ok(response)
+            }
+            _ => Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                format!("unsupported wasm action `{action}`"),
+            )),
+        }
+    }
+
+    async fn execute_routines(&self, request: &ToolRuntimeRequest) -> ToolRuntimeResult<Value> {
+        if !self.routines_enabled {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::PolicyDenied,
+                "routines tool is disabled by runtime policy",
+            ));
+        }
+
+        let action = request
+            .args
+            .get("action")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("list")
+            .to_ascii_lowercase();
+
+        match action.as_str() {
+            "list" => {
+                let routines = self.routine_orchestrator.list().await;
+                Ok(json!({
+                    "status": "completed",
+                    "count": routines.len(),
+                    "routines": routines
+                }))
+            }
+            "history" => {
+                let runs = self.routine_orchestrator.history().await;
+                Ok(json!({
+                    "status": "completed",
+                    "count": runs.len(),
+                    "runs": runs
+                }))
+            }
+            "upsert" | "create" | "add" | "update" => {
+                let definition = routine_definition_from_args(&request.args)?;
+                let saved = self.routine_orchestrator.upsert(definition).await;
+                Ok(json!({
+                    "status": "completed",
+                    "routine": saved
+                }))
+            }
+            "remove" | "delete" => {
+                let routine_id =
+                    required_string_arg(&request.args, &["id", "routineId", "routine_id"], "id")?;
+                let removed = self.routine_orchestrator.remove(&routine_id).await;
+                Ok(json!({
+                    "status": "completed",
+                    "removed": removed.is_some(),
+                    "routine": removed
+                }))
+            }
+            "run" => {
+                let routine_id =
+                    required_string_arg(&request.args, &["id", "routineId", "routine_id"], "id")?;
+                let outcome = self
+                    .routine_orchestrator
+                    .run_now(&routine_id, &request.request_id, "routines.tool")
+                    .await
+                    .map_err(|err| {
+                        ToolRuntimeError::new(
+                            ToolRuntimeErrorCode::ExecutionFailed,
+                            format!("failed running routine: {err}"),
+                        )
+                    })?;
+                Ok(json!({
+                    "status": "completed",
+                    "run": outcome.record,
+                    "request": {
+                        "id": outcome.request.id,
+                        "sessionId": outcome.request.session_id,
+                        "prompt": outcome.request.prompt,
+                        "command": outcome.request.command,
+                        "toolName": outcome.request.tool_name,
+                    }
+                }))
+            }
+            _ => Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                format!("unsupported routines action `{action}`"),
             )),
         }
     }
@@ -777,6 +1000,8 @@ impl ToolRuntimeHost {
             "browser",
             "canvas",
             "nodes",
+            "wasm",
+            "routines",
         ];
 
         match action.as_str() {
@@ -3713,7 +3938,7 @@ impl ToolRuntimeHost {
             Some(raw) => resolve_path_inside_root(root, &raw)?,
             None => root.to_path_buf(),
         };
-        let outcome = run_shell_command(command.clone(), cwd).await?;
+        let outcome = run_shell_command(command.clone(), cwd, Vec::new()).await?;
         let mut aggregated = outcome.aggregated;
         const MAX_CHARS: usize = 8_192;
         if aggregated.chars().count() > MAX_CHARS {
@@ -3971,6 +4196,44 @@ impl ToolRuntimeHost {
         while guard.len() > self.transcript_limit {
             guard.pop_front();
         }
+    }
+
+    fn apply_exec_output_safety(&self, mut payload: Value) -> ToolRuntimeResult<Value> {
+        let Some(aggregated) = payload
+            .get("aggregated")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+        else {
+            return Ok(payload);
+        };
+
+        let scan = self.credential_injector.scan_text(&aggregated);
+        if scan.leaked && matches!(scan.action, ToolRuntimeLeakAction::Block) {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::PolicyDenied,
+                format!(
+                    "process output blocked by leak detector ({} matches)",
+                    scan.matches
+                ),
+            ));
+        }
+
+        let mut updated = if scan.leaked {
+            scan.redacted
+        } else {
+            aggregated
+        };
+        if self.safety_cfg.enabled && self.safety_cfg.sanitize_output {
+            updated = truncate_output(&updated, self.safety_cfg.max_output_chars);
+        }
+
+        if let Value::Object(ref mut map) = payload {
+            map.insert("aggregated".to_owned(), Value::String(updated));
+            if scan.leaked {
+                map.insert("outputLeakMatches".to_owned(), json!(scan.matches));
+            }
+        }
+        Ok(payload)
     }
 }
 
@@ -4412,6 +4675,7 @@ fn resolve_path_inside_root(root: &Path, raw: &str) -> ToolRuntimeResult<PathBuf
 async fn run_shell_command(
     command: String,
     cwd: PathBuf,
+    env_overrides: Vec<(String, String)>,
 ) -> ToolRuntimeResult<ToolRuntimeProcessOutcome> {
     let started = Instant::now();
     let mut cmd = if cfg!(windows) {
@@ -4424,6 +4688,9 @@ async fn run_shell_command(
         command_builder
     };
     cmd.current_dir(&cwd);
+    for (key, value) in env_overrides {
+        cmd.env(key, value);
+    }
 
     let output = cmd.output().await.map_err(|err| {
         ToolRuntimeError::new(
@@ -4527,7 +4794,8 @@ fn process_poll_payload(session: &ToolRuntimeProcessSession) -> Value {
             "status": "running",
             "sessionId": session.session_id,
             "command": session.command,
-            "cwd": session.cwd
+            "cwd": session.cwd,
+            "injectedEnv": session.injected_env_keys
         }),
         ToolRuntimeProcessExecution::Completed(outcome) => json!({
             "status": outcome.status,
@@ -4536,15 +4804,100 @@ fn process_poll_payload(session: &ToolRuntimeProcessSession) -> Value {
             "cwd": session.cwd,
             "exitCode": outcome.exit_code,
             "durationMs": outcome.duration_ms,
-            "aggregated": outcome.aggregated
+            "aggregated": outcome.aggregated,
+            "injectedEnv": session.injected_env_keys
         }),
         ToolRuntimeProcessExecution::Failed(reason) => json!({
             "status": "failed",
             "sessionId": session.session_id,
             "command": session.command,
             "cwd": session.cwd,
-            "error": reason
+            "error": reason,
+            "injectedEnv": session.injected_env_keys
         }),
+    }
+}
+
+fn collect_string_args(args: &Value, keys: &[&str]) -> Vec<String> {
+    for key in keys {
+        if let Some(value) = args.get(*key) {
+            match value {
+                Value::String(single) => {
+                    let trimmed = single.trim();
+                    if !trimmed.is_empty() {
+                        return vec![trimmed.to_owned()];
+                    }
+                }
+                Value::Array(items) => {
+                    let mut out = Vec::new();
+                    for item in items {
+                        if let Some(raw) = item.as_str() {
+                            let trimmed = raw.trim();
+                            if !trimmed.is_empty() {
+                                out.push(trimmed.to_owned());
+                            }
+                        }
+                    }
+                    if !out.is_empty() {
+                        return out;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Vec::new()
+}
+
+fn routine_definition_from_args(args: &Value) -> ToolRuntimeResult<RoutineDefinition> {
+    let id = required_string_arg(args, &["id", "routineId", "routine_id"], "id")?;
+    let name = first_string_arg(args, &["name"]).unwrap_or_else(|| id.clone());
+    let enabled = args.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+    let trigger = first_string_arg(args, &["trigger"])
+        .map(|value| parse_routine_trigger_kind(&value))
+        .unwrap_or(RoutineTriggerKind::Manual);
+    let schedule = first_string_arg(args, &["schedule", "cron"]);
+    let event = first_string_arg(args, &["event", "eventName", "event_name"]);
+    let session_id = first_string_arg(args, &["sessionId", "session_id"]);
+    let prompt = first_string_arg(args, &["prompt", "message", "text"]);
+    let command = first_string_arg(args, &["command"]);
+    let tool_name = first_string_arg(args, &["tool", "toolName", "tool_name"]);
+    let cooldown_secs = args
+        .get("cooldownSecs")
+        .or_else(|| args.get("cooldown_secs"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let max_parallel = args
+        .get("maxParallel")
+        .or_else(|| args.get("max_parallel"))
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(1)
+        .max(1);
+    let payload = args.get("args").cloned().unwrap_or(Value::Null);
+
+    Ok(RoutineDefinition {
+        id,
+        name,
+        enabled,
+        trigger,
+        schedule,
+        event,
+        session_id,
+        prompt,
+        command,
+        tool_name,
+        args: payload,
+        cooldown_secs,
+        max_parallel,
+    })
+}
+
+fn parse_routine_trigger_kind(raw: &str) -> RoutineTriggerKind {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "cron" | "schedule" => RoutineTriggerKind::Cron,
+        "event" | "webhook" => RoutineTriggerKind::Event,
+        _ => RoutineTriggerKind::Manual,
     }
 }
 
@@ -4553,17 +4906,20 @@ fn process_log_payload(session: &ToolRuntimeProcessSession) -> Value {
         ToolRuntimeProcessExecution::Running(_) => json!({
             "status": "running",
             "sessionId": session.session_id,
-            "aggregated": ""
+            "aggregated": "",
+            "injectedEnv": session.injected_env_keys
         }),
         ToolRuntimeProcessExecution::Completed(outcome) => json!({
             "status": outcome.status,
             "sessionId": session.session_id,
-            "aggregated": outcome.aggregated
+            "aggregated": outcome.aggregated,
+            "injectedEnv": session.injected_env_keys
         }),
         ToolRuntimeProcessExecution::Failed(reason) => json!({
             "status": "failed",
             "sessionId": session.session_id,
-            "aggregated": reason
+            "aggregated": reason,
+            "injectedEnv": session.injected_env_keys
         }),
     }
 }
@@ -4955,6 +5311,7 @@ mod tests {
                 warning_threshold: 10,
                 critical_threshold: 20,
             },
+            ..ToolRuntimePolicyConfig::default()
         }
     }
 
@@ -5095,6 +5452,181 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_runtime_exec_injects_allowlisted_credentials_and_redacts_leaks() {
+        let mut policy = default_policy();
+        policy.credentials.enabled = true;
+        policy.credentials.env_allowlist = vec!["OPENCLAW_RS_TEST_SECRET".to_owned()];
+        policy.credentials.leak_patterns = vec!["openclaw-secret-[0-9]+".to_owned()];
+        policy.credentials.redaction_token = "[MASKED]".to_owned();
+
+        std::env::set_var("OPENCLAW_RS_TEST_SECRET", "openclaw-secret-777");
+        let host = build_host(policy).await;
+        let result = host
+            .execute(ToolRuntimeRequest {
+                request_id: "credentials-1".to_owned(),
+                session_id: "credentials-session".to_owned(),
+                tool_name: "exec".to_owned(),
+                args: serde_json::json!({
+                    "command": "echo %OPENCLAW_RS_TEST_SECRET%",
+                    "injectEnv": ["OPENCLAW_RS_TEST_SECRET"]
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("exec with injected credentials");
+
+        let aggregated = result
+            .result
+            .get("aggregated")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        assert!(!aggregated.contains("openclaw-secret-777"));
+        assert!(aggregated.contains("[MASKED]"));
+        assert_eq!(
+            result
+                .result
+                .pointer("/injectedEnv/0")
+                .and_then(serde_json::Value::as_str),
+            Some("OPENCLAW_RS_TEST_SECRET")
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_runtime_wasm_inspect_and_execute_obey_capability_policy() {
+        let mut policy = default_policy();
+        policy.wasm.enabled = true;
+        policy.wasm.module_root = temp_path("wasm-modules");
+        policy.wasm.default_capabilities = vec!["workspace.read".to_owned()];
+
+        std::fs::create_dir_all(&policy.wasm.module_root).expect("wasm root");
+        let module_path = policy.wasm.module_root.join("sample.wasm");
+        std::fs::write(&module_path, [0x00, 0x61, 0x73, 0x6d]).expect("wasm bytes");
+
+        let host = build_host(policy).await;
+        let inspect = host
+            .execute(ToolRuntimeRequest {
+                request_id: "wasm-inspect-1".to_owned(),
+                session_id: "wasm-session".to_owned(),
+                tool_name: "wasm".to_owned(),
+                args: serde_json::json!({
+                    "action": "inspect",
+                    "module": "sample.wasm",
+                    "capabilities": ["workspace.read", "secret.read"]
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("wasm inspect");
+        assert_eq!(
+            inspect
+                .result
+                .pointer("/inspection/blocked_capabilities/0")
+                .and_then(serde_json::Value::as_str),
+            Some("secret.read")
+        );
+
+        let denied = host
+            .execute(ToolRuntimeRequest {
+                request_id: "wasm-run-denied-1".to_owned(),
+                session_id: "wasm-session".to_owned(),
+                tool_name: "wasm".to_owned(),
+                args: serde_json::json!({
+                    "action": "execute",
+                    "module": "sample.wasm",
+                    "capabilities": ["secret.read"]
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect_err("blocked capability should deny execution");
+        assert_eq!(denied.code.as_str(), "policy_denied");
+    }
+
+    #[tokio::test]
+    async fn tool_runtime_routines_support_upsert_list_run_and_history() {
+        let mut policy = default_policy();
+        policy.routines.enabled = true;
+        let host = build_host(policy).await;
+
+        let upsert = host
+            .execute(ToolRuntimeRequest {
+                request_id: "routine-upsert-1".to_owned(),
+                session_id: "routine-session".to_owned(),
+                tool_name: "routines".to_owned(),
+                args: serde_json::json!({
+                    "action": "upsert",
+                    "id": "nightly-sync",
+                    "name": "Nightly Sync",
+                    "trigger": "cron",
+                    "schedule": "0 0 * * *",
+                    "command": "echo nightly sync"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("routine upsert");
+        assert_eq!(
+            upsert
+                .result
+                .pointer("/routine/id")
+                .and_then(serde_json::Value::as_str),
+            Some("nightly-sync")
+        );
+
+        let run = host
+            .execute(ToolRuntimeRequest {
+                request_id: "routine-run-1".to_owned(),
+                session_id: "routine-session".to_owned(),
+                tool_name: "routines".to_owned(),
+                args: serde_json::json!({
+                    "action": "run",
+                    "id": "nightly-sync"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("routine run");
+        assert_eq!(
+            run.result
+                .pointer("/run/routine_id")
+                .and_then(serde_json::Value::as_str),
+            Some("nightly-sync")
+        );
+
+        let history = host
+            .execute(ToolRuntimeRequest {
+                request_id: "routine-history-1".to_owned(),
+                session_id: "routine-session".to_owned(),
+                tool_name: "routines".to_owned(),
+                args: serde_json::json!({
+                    "action": "history"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("routine history");
+        assert_eq!(
+            history
+                .result
+                .pointer("/runs/0/routine_id")
+                .and_then(serde_json::Value::as_str),
+            Some("nightly-sync")
+        );
+    }
+
+    #[tokio::test]
     async fn tool_runtime_background_exec_process_poll_roundtrip() {
         let host = build_host(default_policy()).await;
         let start = host
@@ -5202,7 +5734,7 @@ mod tests {
                 .get("count")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or_default(),
-            12
+            14
         );
 
         let _ = host

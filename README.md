@@ -17,9 +17,15 @@ provider runtime, persistence, performance strategy, and release layout), see:
 - Feature audit scoreboard: `22 implemented`, `0 partial`, `0 deferred`.
 - RPC method-surface parity: `103` Rust methods, `100%` coverage vs upstream base + handlers.
 - Runtime audit: blanket dead-code suppression removed; only targeted transcript-entry allowance remains in `tool_runtime` for parity/test inspection fields.
+- 1.5.2 release-track integrations added:
+  - `wasm` tool surface with capability-gated sandbox inspection/execute path.
+  - WIT tool contract scaffold at `wit/tool.wit`.
+  - Credential injector + bidirectional leak detection/redaction for runtime command execution.
+  - Layered safety plumbing additions in defender evaluation.
+  - Routines/orchestrator tool surface (`routines`) for managed background automation definitions/runs.
 - Latest full validation matrix:
-  - `cargo +1.83.0-x86_64-pc-windows-gnu test` -> `331` passed
-  - `cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state` -> `335` passed
+  - `cargo +1.83.0-x86_64-pc-windows-gnu test` -> `350` passed (`1` ignored)
+  - `cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state` -> `354` passed (`1` ignored)
   - `clippy -D warnings` + `release` builds pass for default and `sqlite-state`
 
 ## Implemented runtime coverage

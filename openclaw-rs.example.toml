@@ -74,6 +74,29 @@ history_size = 30
 warning_threshold = 10
 critical_threshold = 20
 
+[security.tool_runtime_policy.wasm]
+enabled = false
+module_root = ".openclaw-rs/wasm-modules"
+default_capabilities = ["workspace.read", "http.fetch", "tool.invoke"]
+fuel_limit = 1000000
+memory_limit_bytes = 67108864
+
+[security.tool_runtime_policy.credentials]
+enabled = false
+env_allowlist = ["OPENAI_API_KEY", "GITHUB_TOKEN"]
+leak_action = "review" # allow | review | block
+redaction_token = "[REDACTED_SECRET]"
+
+[security.tool_runtime_policy.safety]
+enabled = true
+sanitize_output = true
+max_output_chars = 32768
+
+[security.tool_runtime_policy.routines]
+enabled = false
+history_limit = 256
+max_parallel = 4
+
 # ------------------------------------------------------------------------------
 # OpenAI-compatible provider templates (optional)
 # ------------------------------------------------------------------------------

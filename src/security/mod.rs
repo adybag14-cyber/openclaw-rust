@@ -1,8 +1,10 @@
 mod attestation;
 mod command_guard;
+pub(crate) mod credential_injector;
 mod host_guard;
 mod policy_bundle;
 mod prompt_guard;
+pub(crate) mod safety_layer;
 mod telemetry_guard;
 pub(crate) mod tool_loop;
 pub(crate) mod tool_policy;
@@ -14,13 +16,12 @@ use std::time::Duration;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{Map, Value};
-use smallvec::SmallVec;
 use tokio::fs;
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tracing::{info, warn};
 
-use crate::config::{Config, PolicyAction};
+use crate::config::{Config, PolicyAction, ToolRuntimeLeakAction};
 use crate::state::{IdempotencyCache, SessionStateStore};
 use crate::types::{ActionRequest, Decision, DecisionAction};
 
@@ -29,6 +30,7 @@ use self::command_guard::CommandGuard;
 use self::host_guard::HostIntegrityGuard;
 use self::policy_bundle::apply_signed_policy_bundle;
 use self::prompt_guard::PromptInjectionGuard;
+use self::safety_layer::SafetyLayerReport;
 use self::telemetry_guard::EdrTelemetryGuard;
 use self::tool_loop::{ToolLoopGuard, ToolLoopLevel};
 use self::tool_policy::ToolPolicyMatcher;
@@ -118,21 +120,25 @@ impl DefenderEngine {
     async fn evaluate_inner(&self, request: ActionRequest) -> Decision {
         let mut risk = 0_u8;
         let mut minimum_action = DecisionAction::Allow;
-        let mut reasons: SmallVec<[String; 8]> = SmallVec::new();
-        let mut tags: SmallVec<[String; 8]> = SmallVec::new();
+        let mut reasons: Vec<String> = Vec::new();
+        let mut tags: Vec<String> = Vec::new();
 
         if let Some(prompt) = &request.prompt {
+            let mut layer = SafetyLayerReport::default();
             let (score, reason_tags, reason_texts) = self.prompt_guard.score(prompt);
-            risk = risk.saturating_add(score);
-            tags.extend(reason_tags);
-            reasons.extend(reason_texts);
+            layer.risk = layer.risk.saturating_add(score);
+            layer.tags.extend(reason_tags);
+            layer.reasons.extend(reason_texts);
+            layer.merge_into(&mut risk, &mut minimum_action, &mut tags, &mut reasons);
         }
 
         if let Some(command) = &request.command {
+            let mut layer = SafetyLayerReport::default();
             let (score, reason_tags, reason_texts) = self.command_guard.score(command);
-            risk = risk.saturating_add(score);
-            tags.extend(reason_tags);
-            reasons.extend(reason_texts);
+            layer.risk = layer.risk.saturating_add(score);
+            layer.tags.extend(reason_tags);
+            layer.reasons.extend(reason_texts);
+            layer.merge_into(&mut risk, &mut minimum_action, &mut tags, &mut reasons);
         }
 
         if let Some(tool_name) = &request.tool_name {
@@ -192,6 +198,26 @@ impl DefenderEngine {
                 risk = risk.saturating_add(*bonus);
                 tags.push("channel_risk_bonus".to_owned());
                 reasons.push(format!("channel `{channel}` risk bonus +{bonus}"));
+            }
+        }
+
+        if let Some(leak_matches) = find_first_u64(&request.raw, &["leakMatches", "leak_matches"]) {
+            if leak_matches > 0 {
+                risk = risk.saturating_add(30);
+                minimum_action = max_action(
+                    minimum_action,
+                    leak_action_to_decision(
+                        self.cfg
+                            .security
+                            .tool_runtime_policy
+                            .credentials
+                            .leak_action,
+                    ),
+                );
+                tags.push("leak_detection".to_owned());
+                reasons.push(format!(
+                    "tool output leak detector flagged {leak_matches} potential secret pattern matches",
+                ));
             }
         }
 
@@ -377,6 +403,14 @@ fn policy_action_to_decision(action: PolicyAction) -> DecisionAction {
     }
 }
 
+fn leak_action_to_decision(action: ToolRuntimeLeakAction) -> DecisionAction {
+    match action {
+        ToolRuntimeLeakAction::Allow => DecisionAction::Allow,
+        ToolRuntimeLeakAction::Review => DecisionAction::Review,
+        ToolRuntimeLeakAction::Block => DecisionAction::Block,
+    }
+}
+
 fn max_action(a: DecisionAction, b: DecisionAction) -> DecisionAction {
     if action_rank(a) >= action_rank(b) {
         a
@@ -411,6 +445,19 @@ fn find_first_string(root: &Value, keys: &[&str]) -> Option<String> {
     }
 }
 
+fn find_first_u64(root: &Value, keys: &[&str]) -> Option<u64> {
+    match root {
+        Value::Object(map) => {
+            if let Some(v) = find_map_u64(map, keys) {
+                return Some(v);
+            }
+            map.values().find_map(|child| find_first_u64(child, keys))
+        }
+        Value::Array(items) => items.iter().find_map(|item| find_first_u64(item, keys)),
+        _ => None,
+    }
+}
+
 fn find_map_string(map: &Map<String, Value>, keys: &[&str]) -> Option<String> {
     for key in keys {
         if let Some(v) = map.get(*key) {
@@ -418,6 +465,27 @@ fn find_map_string(map: &Map<String, Value>, keys: &[&str]) -> Option<String> {
                 Value::String(s) => return Some(s.clone()),
                 Value::Number(n) => return Some(n.to_string()),
                 Value::Bool(b) => return Some(b.to_string()),
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+fn find_map_u64(map: &Map<String, Value>, keys: &[&str]) -> Option<u64> {
+    for key in keys {
+        if let Some(v) = map.get(*key) {
+            match v {
+                Value::Number(num) => {
+                    if let Some(as_u64) = num.as_u64() {
+                        return Some(as_u64);
+                    }
+                }
+                Value::String(s) => {
+                    if let Ok(parsed) = s.parse::<u64>() {
+                        return Some(parsed);
+                    }
+                }
                 _ => {}
             }
         }

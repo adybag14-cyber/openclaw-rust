@@ -1,0 +1,3 @@
+1b895ed8b7f18fd05f39ede866c3e624639b112d7f04047bde19fcd6d76e3869  openclaw-agent-rs-windows-x86_64.exe
+330a86f50eeb45a1f3dee8f109e1e314cbcac4008bab543916009d3d633807ea  openclaw-agent-rs-v1.5.2-windows-x86_64.zip
+c0e9bb5a71b3246e5530643a1836e516cdd5e6de5dff3b577ed32bb43f87b771  RELEASE_NOTES_v1.5.2.md

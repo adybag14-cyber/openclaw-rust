@@ -5,6 +5,25 @@
 ### Highlights
 - No unreleased changes.
 
+## v1.5.2 - 2026-02-22
+
+### Highlights
+- Integrated IronClaw-inspired `wasm` runtime surface with capability-gated sandbox inspection/execute flow and policy-backed defaults under `security.tool_runtime_policy.wasm`.
+- Added WIT tool interface scaffold at `wit/tool.wit` for contract-first portable tool hosting.
+- Added runtime credential injection allowlist + bidirectional leak detection/redaction pipeline (`security.tool_runtime_policy.credentials`) and wired it through `exec`/`process` output handling.
+- Added layered safety helper plumbing for defender evaluation and runtime output truncation/sanitization controls (`security.tool_runtime_policy.safety`).
+- Added routines/orchestrator runtime surface via the new `routines` tool family with upsert/list/run/history actions (`security.tool_runtime_policy.routines`).
+- Fixed workstation MinGW helper script to auto-detect valid toolchains (including WinGet WinLibs) instead of relying on hardcoded user-specific paths.
+
+### Validation
+- `cargo +1.83.0-x86_64-pc-windows-gnu fmt --all -- --check`
+- `cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings`
+- `cargo +1.83.0-x86_64-pc-windows-gnu test`
+- `cargo +1.83.0-x86_64-pc-windows-gnu build --release`
+- `.\scripts\with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets --features sqlite-state -- -D warnings"`
+- `.\scripts\with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"`
+- `.\scripts\with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu build --release --features sqlite-state"`
+
 ## v1.0.2 - 2026-02-22
 
 ### Highlights
