@@ -3,9 +3,22 @@
 ## Unreleased
 
 ### Highlights
-- Added `PROVIDER_SUPPORT_MATRIX.md` with an exhaustive runtime/provider coverage matrix: built-in defaults, alias-only/config-required providers, bridge defaults, OAuth catalog coverage, and endpoint reference links.
-- Removed blanket `#![allow(dead_code)]` from `tool_runtime` and kept only targeted dead-code allowance on transcript inspection fields.
-- Renamed `update.run` noop step label from `rust-agent parity update stub` to `rust-agent restart sentinel` to reflect intended control-plane semantics.
+- No unreleased changes.
+
+## v1.0.2 - 2026-02-22
+
+### Highlights
+- Added native Telegram bridge runtime execution in standalone mode so Telegram is truly online (`running=true`) and can reply through Rust without external helper processes.
+- Fixed standalone runtime shutdown flow for the bridge task lifecycle (clean abort/join handling).
+- Added full technical system document `PROJECT_OVERVIEW.md` covering architecture, data flow, security, provider runtime, persistence, performance constraints, and operational release layout.
+- Rebuilt and repackaged release artifacts for Windows and Ubuntu 20.04 compatible Linux bundles under `dist/release-v1.0.2`.
+
+### Validation
+- `cargo +1.83.0-x86_64-pc-windows-gnu fmt --all -- --check`
+- `cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings`
+- `cargo +1.83.0-x86_64-pc-windows-gnu test`
+- `cargo +1.83.0-x86_64-pc-windows-gnu build --release`
+- `wsl -d Ubuntu-20.04 bash -lc "cd /mnt/c/users/ady/documents/openclaw-rust && rustup toolchain install 1.83.0 && CARGO_TARGET_DIR=target-linux cargo +1.83.0 build --release"`
 
 ## v1.0.1 - 2026-02-22
 

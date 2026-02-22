@@ -4,6 +4,13 @@ This directory contains the Rust rewrite foundation for the OpenClaw runtime.
 
 Minimum supported Rust version: `1.83`.
 
+## Project overview
+
+For a full architecture and subsystem deep dive (runtime layers, security model,
+provider runtime, persistence, performance strategy, and release layout), see:
+
+- `PROJECT_OVERVIEW.md`
+
 ## Current parity status (February 22, 2026)
 
 - End-to-end Rust parity program status: **complete**.
