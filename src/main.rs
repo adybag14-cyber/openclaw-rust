@@ -9,6 +9,7 @@ mod routines;
 mod runtime;
 mod scheduler;
 mod security;
+mod security_audit;
 mod session_key;
 mod state;
 mod telegram_bridge;
@@ -70,6 +71,8 @@ enum CliCommand {
     Run,
     /// Run non-interactive diagnostics for operator parity checks.
     Doctor(DoctorArgs),
+    /// Run security audit and remediation parity surface.
+    Security(SecurityArgs),
     /// Run gateway command parity surface.
     Gateway(GatewayArgs),
     /// Run agent command parity surface.
@@ -88,6 +91,31 @@ struct DoctorArgs {
     #[arg(long)]
     non_interactive: bool,
     /// Emit doctor output as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Clone, Args, Default)]
+struct SecurityArgs {
+    #[command(subcommand)]
+    command: Option<SecuritySubcommand>,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum SecuritySubcommand {
+    /// Audit config + local state for common security foot-guns.
+    Audit(SecurityAuditArgs),
+}
+
+#[derive(Debug, Clone, Args, Default)]
+struct SecurityAuditArgs {
+    /// Attempt best-effort live gateway reachability probe.
+    #[arg(long)]
+    deep: bool,
+    /// Apply deterministic safe remediations and permissions tightening.
+    #[arg(long)]
+    fix: bool,
+    /// Emit output as JSON.
     #[arg(long)]
     json: bool,
 }
@@ -284,6 +312,7 @@ async fn main() -> Result<()> {
     match command {
         CliCommand::Run => run_runtime(cli).await,
         CliCommand::Doctor(args) => run_doctor(&cli.config, args),
+        CliCommand::Security(args) => run_security_command(&cli.config, args).await,
         CliCommand::Gateway(args) => run_gateway_command(cli, args).await,
         CliCommand::Agent(args) => run_agent_command(args).await,
         CliCommand::Message(args) => run_message_command(args).await,
@@ -313,6 +342,52 @@ fn run_doctor(config_path: &Path, args: DoctorArgs) -> Result<()> {
         return Ok(());
     }
     Err(anyhow!("doctor reported blocking issues"))
+}
+
+async fn run_security_command(config_path: &Path, args: SecurityArgs) -> Result<()> {
+    match args
+        .command
+        .unwrap_or(SecuritySubcommand::Audit(SecurityAuditArgs::default()))
+    {
+        SecuritySubcommand::Audit(audit) => {
+            let run = security_audit::run_security_audit(
+                config_path,
+                security_audit::SecurityAuditOptions {
+                    deep: audit.deep,
+                    fix: audit.fix,
+                },
+            )
+            .await;
+
+            if audit.json {
+                if audit.fix {
+                    let value = serde_json::to_value(&run).unwrap_or_else(|_| {
+                        json!({
+                            "report": {
+                                "ts": 0,
+                                "summary": { "critical": 0, "warn": 0, "info": 0 },
+                                "findings": []
+                            }
+                        })
+                    });
+                    print_json_value(&value);
+                } else {
+                    let value = serde_json::to_value(&run.report).unwrap_or_else(|_| {
+                        json!({
+                            "ts": 0,
+                            "summary": { "critical": 0, "warn": 0, "info": 0 },
+                            "findings": []
+                        })
+                    });
+                    print_json_value(&value);
+                }
+                return Ok(());
+            }
+
+            print_security_audit_report(&run.report, run.fix.as_ref());
+            Ok(())
+        }
+    }
 }
 
 async fn run_gateway_command(cli: Cli, args: GatewayArgs) -> Result<()> {
@@ -823,6 +898,70 @@ fn print_doctor_report(report: &DoctorReport, json_output: bool) {
     }
 }
 
+fn print_security_audit_report(
+    report: &security_audit::SecurityAuditReport,
+    fix: Option<&security_audit::SecurityFixResult>,
+) {
+    println!(
+        "security audit: critical={} warn={} info={}",
+        report.summary.critical, report.summary.warn, report.summary.info
+    );
+
+    if let Some(deep) = report.deep.as_ref() {
+        if let Some(gateway) = deep.gateway.as_ref() {
+            let url = gateway.url.as_deref().unwrap_or("n/a");
+            let status = if gateway.ok { "ok" } else { "failed" };
+            let detail = gateway
+                .error
+                .as_deref()
+                .map(|value| format!(" ({value})"))
+                .unwrap_or_default();
+            println!("deep.gateway: {status} url={url}{detail}");
+        }
+    }
+
+    if let Some(fix) = fix {
+        println!("fix: ok={} changes={}", fix.ok, fix.changes.len());
+        for change in &fix.changes {
+            println!("  change: {change}");
+        }
+        for action in &fix.actions {
+            let mut suffix = String::new();
+            if let Some(mode) = action.mode.as_deref() {
+                suffix.push_str(&format!(" mode={mode}"));
+            }
+            if let Some(skipped) = action.skipped.as_deref() {
+                suffix.push_str(&format!(" skipped={skipped}"));
+            }
+            if let Some(error) = action.error.as_deref() {
+                suffix.push_str(&format!(" error={error}"));
+            }
+            println!(
+                "  action: kind={} target={} ok={}{}",
+                action.kind, action.target, action.ok, suffix
+            );
+        }
+        for error in &fix.errors {
+            println!("  error: {error}");
+        }
+    }
+
+    for finding in &report.findings {
+        let severity = match finding.severity {
+            security_audit::SecurityAuditSeverity::Critical => "CRITICAL",
+            security_audit::SecurityAuditSeverity::Warn => "WARN",
+            security_audit::SecurityAuditSeverity::Info => "INFO",
+        };
+        println!(
+            "[{severity}] {}: {} - {}",
+            finding.check_id, finding.title, finding.detail
+        );
+        if let Some(remediation) = finding.remediation.as_deref() {
+            println!("  fix: {remediation}");
+        }
+    }
+}
+
 fn command_available(name: &str) -> bool {
     Command::new(name)
         .arg("--version")
@@ -853,6 +992,28 @@ mod tests {
                 assert!(args.json);
             }
             _ => panic!("expected doctor command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_security_audit_command_and_flags() {
+        let cli = Cli::parse_from([
+            "openclaw-agent-rs",
+            "security",
+            "audit",
+            "--deep",
+            "--fix",
+            "--json",
+        ]);
+        match cli.command {
+            Some(CliCommand::Security(SecurityArgs {
+                command: Some(SecuritySubcommand::Audit(args)),
+            })) => {
+                assert!(args.deep);
+                assert!(args.fix);
+                assert!(args.json);
+            }
+            _ => panic!("expected security audit command"),
         }
     }
 

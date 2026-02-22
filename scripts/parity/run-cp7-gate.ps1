@@ -12,6 +12,7 @@ if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction Sile
 
 $tests = @(
   "tests::cli_parses_doctor_command_and_flags",
+  "tests::cli_parses_security_audit_command_and_flags",
   "tests::cli_parses_gateway_status_command_and_json_flag",
   "tests::cli_parses_message_send_command",
   "tests::doctor_report_marks_config_load_failure_as_blocking",

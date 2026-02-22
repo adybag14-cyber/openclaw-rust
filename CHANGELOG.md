@@ -5,6 +5,39 @@
 ### Highlights
 - No unreleased changes.
 
+## v1.6.3 - 2026-02-22
+
+### Highlights
+- Added upstream-style security CLI parity surface: `openclaw-agent-rs security audit` with `--deep`, `--fix`, and `--json`.
+- Added native security audit report model (`summary`, `findings`, optional deep gateway probe block) plus text/JSON rendering parity in CLI output.
+- Added deterministic safe-fix flow for common foot-guns (`gateway.server.auth_mode=none`, broad group activation, empty command allow/deny lists) and best-effort permission tightening actions.
+- Added filesystem-focused audit checks (config/state/quarantine existence, type mismatches, symlink warnings, unix permission findings).
+- Extended CP7 parity gate fixtures to include the new security-audit CLI parsing path.
+- Bumped runtime/tooling contracts to `v1.6.3` (`Cargo.toml`, `wit/tool.wit`, wasm registry WIT test fixture string).
+
+### Validation
+- `cargo fmt --all`
+- `cargo check`
+- `cargo test`
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo build --release`
+- `cargo run -- doctor --non-interactive --json`
+- `cargo run -- security audit --json`
+- `cargo run -- security audit --deep --json`
+- `cargo test --features sqlite-state`
+- `cargo clippy --all-targets --features sqlite-state -- -D warnings`
+- `cargo build --release --features sqlite-state`
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\parity\run-cp7-gate.ps1 -Toolchain 1.83.0-x86_64-pc-windows-msvc`
+- `wsl -d Ubuntu bash -lc 'source $HOME/.cargo/env && cd /mnt/c/Users/adyba/openclaw-rust && CARGO_TARGET_DIR=target-linux cargo +1.83.0 check'`
+- `wsl -d Ubuntu bash -lc 'source $HOME/.cargo/env && cd /mnt/c/Users/adyba/openclaw-rust && CARGO_TARGET_DIR=target-linux cargo +1.83.0 test --no-run'`
+- `wsl -d Ubuntu bash -lc 'source $HOME/.cargo/env && cd /mnt/c/Users/adyba/openclaw-rust && CARGO_TARGET_DIR=target-linux cargo +1.83.0 build --release'`
+- `docker run --rm ubuntu:20.04 bash -lc 'cat /etc/os-release'`
+- `docker run --rm -v "C:/Users/adyba/openclaw-rust:/workspace" -w /workspace ubuntu:20.04 bash -lc '... CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target-docker cargo +1.83.0 build --release -q && ./target-docker/release/openclaw-agent-rs doctor --non-interactive --json'`
+- `docker run --rm -v "C:/Users/adyba/openclaw-rust:/workspace" -w /workspace ubuntu:20.04 bash -lc '... CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target-docker cargo +1.83.0 test --no-run -q'`
+- Notes:
+  - Initial docker release build attempt without constrained jobs exited with `SIGKILL` (container memory pressure); retry with `CARGO_BUILD_JOBS=1` succeeded.
+  - Docker `cargo test --no-run -q` exceeded the 30-minute command timeout on this workstation.
+
 ## v1.6.2 - 2026-02-22
 
 ### Highlights

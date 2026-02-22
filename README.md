@@ -17,7 +17,8 @@ provider runtime, persistence, performance strategy, and release layout), see:
 - Feature audit scoreboard: `22 implemented`, `0 partial`, `0 deferred`.
 - RPC method-surface parity: `103` Rust methods, `100%` coverage vs upstream base + handlers.
 - Runtime audit: blanket dead-code suppression removed; only targeted transcript-entry allowance remains in `tool_runtime` for parity/test inspection fields.
-- 1.6.2 release-track integrations added:
+- 1.6.3 release-track integrations added:
+  - New `security audit` CLI parity surface (`security audit --deep|--fix|--json`) with structured findings, summary counts, optional deep gateway probe, and deterministic safe-fix actions.
   - Real `wasmtime`-backed `wasm` tool runtime execution path with fuel/memory policy limits.
   - Dynamic WIT tool registry (`registry` / `schema`) and runtime schema generation from `.wit` files.
   - Credential injector upgrades with config-driven `secret_names`, host-boundary injection aliases, and bidirectional leak redaction.
@@ -25,8 +26,8 @@ provider runtime, persistence, performance strategy, and release layout), see:
   - New `security.wasm` config section (`tool_runtime_mode = "wasm_sandbox"`, `wit_root`, `dynamic_wit_loading`) synced into runtime policy.
   - Extended `doctor` checks for wasm runtime mode, WIT root, module root, and wasmtime binary visibility.
 - Latest full validation matrix:
-  - `cargo +1.83.0-x86_64-pc-windows-gnu test` -> `350` passed (`1` ignored)
-  - `cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state` -> `354` passed (`1` ignored)
+  - `cargo test` -> `358` passed (`1` ignored)
+  - `cargo test --features sqlite-state` -> `362` passed (`1` ignored)
   - `clippy -D warnings` + `release` builds pass for default and `sqlite-state`
 
 ## Implemented runtime coverage
@@ -70,6 +71,8 @@ CP7 CLI parity quick checks:
 
 ```bash
 cargo run -- doctor --non-interactive
+cargo run -- security audit --json
+cargo run -- security audit --deep --json
 cargo run -- gateway status --json
 cargo run -- agent --message "status check" --wait --json
 cargo run -- message send --to "+15551234567" --message "hello" --channel telegram --json
@@ -365,7 +368,7 @@ CP6 model provider/auth/failover gate (provider alias normalization + auth overr
 .\scripts\parity\run-cp6-gate.ps1
 ```
 
-CP7 CLI/control parity gate (`doctor` + gateway/agent/message/nodes/sessions CLI fixtures + control update contract checks):
+CP7 CLI/control parity gate (`doctor` + `security audit` + gateway/agent/message/nodes/sessions CLI fixtures + control update contract checks):
 
 ```powershell
 .\scripts\parity\run-cp7-gate.ps1
