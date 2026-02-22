@@ -1,0 +1,1332 @@
+use std::collections::HashSet;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{json, Value};
+use tokio::fs;
+use tokio::task::JoinHandle;
+use tokio::time::{sleep, Duration};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
+use tracing::{debug, info, warn};
+
+use crate::config::GatewayConfig;
+
+const TELEGRAM_POLL_TIMEOUT_SECS: u64 = 20;
+const TELEGRAM_HTTP_TIMEOUT_SECS: u64 = 30;
+const BRIDGE_RETRY_DELAY_SECS: u64 = 2;
+const BRIDGE_IDLE_DELAY_SECS: u64 = 5;
+const BRIDGE_STATUS_REFRESH_SECS: u64 = 60;
+const AGENT_WAIT_TIMEOUT_MS: u64 = 70_000;
+const TELEGRAM_REPLY_MAX_CHARS: usize = 3_500;
+const TELEGRAM_OFFSET_FILE_NAME: &str = "update-offset-default.json";
+const TELEGRAM_ACCOUNT_ID: &str = "default";
+
+#[derive(Debug, Clone)]
+struct ModelCandidate {
+    provider: String,
+    model: String,
+}
+
+#[derive(Debug, Clone)]
+struct TelegramSettings {
+    bot_token: String,
+    dm_policy: String,
+    group_policy: String,
+    allow_from: Vec<String>,
+    candidates: Vec<ModelCandidate>,
+}
+
+#[derive(Debug, Clone)]
+struct TelegramBotIdentity {
+    token: String,
+    id: i64,
+    username: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct TelegramBridge {
+    gateway: GatewayConfig,
+    gateway_ws_url: String,
+    offset_path: PathBuf,
+    legacy_offset_path: PathBuf,
+    http: reqwest::Client,
+    last_status_emit_ms: u64,
+}
+
+pub fn spawn(gateway: GatewayConfig, session_state_path: PathBuf) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let bridge = match TelegramBridge::new(gateway, session_state_path) {
+            Ok(value) => value,
+            Err(err) => {
+                warn!("telegram bridge unavailable: {err}");
+                return;
+            }
+        };
+        bridge.run_forever().await;
+    })
+}
+
+impl TelegramBridge {
+    fn new(gateway: GatewayConfig, session_state_path: PathBuf) -> Result<Self, String> {
+        let gateway_ws_url = derive_gateway_ws_url(&gateway);
+        let offset_path = derive_offset_path(&session_state_path);
+        let legacy_offset_path = PathBuf::from(".openclaw")
+            .join("telegram")
+            .join(TELEGRAM_OFFSET_FILE_NAME);
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(TELEGRAM_HTTP_TIMEOUT_SECS))
+            .build()
+            .map_err(|err| format!("failed building telegram http client: {err}"))?;
+        Ok(Self {
+            gateway,
+            gateway_ws_url,
+            offset_path,
+            legacy_offset_path,
+            http,
+            last_status_emit_ms: 0,
+        })
+    }
+
+    async fn run_forever(mut self) {
+        let mut offset = match load_offset(&self.offset_path, &self.legacy_offset_path).await {
+            Ok(value) => value,
+            Err(err) => {
+                warn!("telegram bridge offset read failed: {err}");
+                0
+            }
+        };
+        let mut identity: Option<TelegramBotIdentity> = None;
+
+        info!(
+            "telegram bridge started (gateway={}, offset_path={})",
+            self.gateway_ws_url,
+            self.offset_path.display()
+        );
+
+        loop {
+            let config = match self.fetch_runtime_config().await {
+                Ok(value) => value,
+                Err(err) => {
+                    warn!("telegram bridge config.get failed: {err}");
+                    sleep(Duration::from_secs(BRIDGE_RETRY_DELAY_SECS)).await;
+                    continue;
+                }
+            };
+
+            let Some(settings) = extract_telegram_settings(&config) else {
+                sleep(Duration::from_secs(BRIDGE_IDLE_DELAY_SECS)).await;
+                continue;
+            };
+
+            if identity
+                .as_ref()
+                .map(|cached| cached.token != settings.bot_token)
+                .unwrap_or(true)
+            {
+                match self.fetch_bot_identity(&settings.bot_token).await {
+                    Ok(value) => {
+                        info!(
+                            "telegram bridge linked bot_id={} username={}",
+                            value.id,
+                            value.username.as_deref().unwrap_or("<unknown>")
+                        );
+                        identity = Some(value);
+                    }
+                    Err(err) => {
+                        warn!("telegram bridge getMe failed: {err}");
+                        sleep(Duration::from_secs(BRIDGE_RETRY_DELAY_SECS)).await;
+                        continue;
+                    }
+                }
+            }
+
+            let Some(bot_identity) = identity.clone() else {
+                sleep(Duration::from_secs(BRIDGE_RETRY_DELAY_SECS)).await;
+                continue;
+            };
+
+            let now = now_ms();
+            if now.saturating_sub(self.last_status_emit_ms) >= BRIDGE_STATUS_REFRESH_SECS * 1_000 {
+                if let Err(err) = self.emit_status_event(&settings).await {
+                    debug!("telegram bridge status event failed: {err}");
+                } else {
+                    self.last_status_emit_ms = now;
+                }
+            }
+
+            let updates = match self.poll_updates(&settings.bot_token, offset).await {
+                Ok(value) => value,
+                Err(err) => {
+                    warn!("telegram bridge getUpdates failed: {err}");
+                    sleep(Duration::from_secs(BRIDGE_RETRY_DELAY_SECS)).await;
+                    continue;
+                }
+            };
+
+            for update in updates {
+                let Some(update_id) = update.get("update_id").and_then(Value::as_u64) else {
+                    continue;
+                };
+                if update_id >= offset {
+                    offset = update_id.saturating_add(1);
+                }
+                if let Err(err) = self.save_offset(offset).await {
+                    warn!("telegram bridge offset write failed: {err}");
+                }
+                if let Err(err) = self
+                    .process_update(&settings, &bot_identity, &update, update_id)
+                    .await
+                {
+                    warn!("telegram bridge update {} failed: {err}", update_id);
+                }
+            }
+        }
+    }
+
+    async fn fetch_runtime_config(&self) -> Result<Value, String> {
+        let result = self
+            .gateway_rpc_call(
+                "config.get",
+                json!({}),
+                Duration::from_secs(15),
+                &["operator.read", "operator.write"],
+            )
+            .await?;
+        let config = result
+            .get("config")
+            .cloned()
+            .ok_or_else(|| "config.get response missing result.config".to_owned())?;
+        if !config.is_object() {
+            return Err("config.get result.config must be an object".to_owned());
+        }
+        Ok(config)
+    }
+
+    async fn fetch_bot_identity(&self, token: &str) -> Result<TelegramBotIdentity, String> {
+        let payload = self.telegram_api(token, "getMe", &[]).await?;
+        let id = payload
+            .get("id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| "telegram getMe missing result.id".to_owned())?;
+        let username = payload
+            .get("username")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text);
+        Ok(TelegramBotIdentity {
+            token: token.to_owned(),
+            id,
+            username,
+        })
+    }
+
+    async fn poll_updates(&self, token: &str, offset: u64) -> Result<Vec<Value>, String> {
+        let mut query = vec![
+            ("timeout", TELEGRAM_POLL_TIMEOUT_SECS.to_string()),
+            ("allowed_updates", "[\"message\"]".to_owned()),
+        ];
+        if offset > 0 {
+            query.push(("offset", offset.to_string()));
+        }
+        let result = self.telegram_api(token, "getUpdates", &query).await?;
+        let updates = result
+            .as_array()
+            .cloned()
+            .ok_or_else(|| "telegram getUpdates result must be an array".to_owned())?;
+        Ok(updates)
+    }
+
+    async fn telegram_api(
+        &self,
+        token: &str,
+        method: &str,
+        query: &[(&str, String)],
+    ) -> Result<Value, String> {
+        let base = format!("https://api.telegram.org/bot{token}/{method}");
+        let response = self
+            .http
+            .get(base)
+            .query(query)
+            .send()
+            .await
+            .map_err(|err| format!("telegram {method} request failed: {err}"))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|err| format!("telegram {method} body read failed: {err}"))?;
+        if !status.is_success() {
+            return Err(format!(
+                "telegram {method} returned status {}: {}",
+                status.as_u16(),
+                truncate_text(&body, 256)
+            ));
+        }
+        let payload: Value = serde_json::from_str(&body)
+            .map_err(|err| format!("telegram {method} invalid JSON: {err}"))?;
+        if !payload.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            let reason = payload
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("telegram API returned ok=false");
+            return Err(format!("telegram {method} failed: {reason}"));
+        }
+        Ok(payload.get("result").cloned().unwrap_or(Value::Null))
+    }
+
+    async fn send_message(
+        &self,
+        token: &str,
+        chat_id: i64,
+        reply_text: &str,
+        reply_to_message_id: Option<i64>,
+    ) -> Result<(), String> {
+        let mut query = vec![
+            ("chat_id", chat_id.to_string()),
+            ("text", truncate_text(reply_text, TELEGRAM_REPLY_MAX_CHARS)),
+            ("disable_web_page_preview", "true".to_owned()),
+        ];
+        if let Some(value) = reply_to_message_id {
+            query.push(("reply_to_message_id", value.to_string()));
+        }
+        let _ = self.telegram_api(token, "sendMessage", &query).await?;
+        Ok(())
+    }
+}
+
+async fn load_offset(primary: &Path, legacy: &Path) -> Result<u64, String> {
+    for path in [primary, legacy] {
+        if !path.exists() {
+            continue;
+        }
+        let raw = fs::read_to_string(path)
+            .await
+            .map_err(|err| format!("failed reading offset file {}: {err}", path.display()))?;
+        let value: Value = serde_json::from_str(&raw)
+            .map_err(|err| format!("failed parsing offset file {}: {err}", path.display()))?;
+        if let Some(offset) = value.get("offset").and_then(Value::as_u64) {
+            return Ok(offset);
+        }
+    }
+    Ok(0)
+}
+
+async fn read_response_frame(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    response_id: &str,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let result = tokio::time::timeout(timeout, async {
+        loop {
+            let Some(message) = ws.next().await else {
+                return Err("gateway socket closed before response".to_owned());
+            };
+            let message = message.map_err(|err| format!("gateway websocket read failed: {err}"))?;
+            match message {
+                Message::Text(text) => {
+                    let parsed: Value = serde_json::from_str(&text)
+                        .map_err(|err| format!("gateway frame JSON parse failed: {err}"))?;
+                    if parsed.get("id").and_then(Value::as_str) == Some(response_id) {
+                        return Ok(parsed);
+                    }
+                }
+                Message::Ping(payload) => {
+                    ws.send(Message::Pong(payload))
+                        .await
+                        .map_err(|err| format!("gateway websocket pong failed: {err}"))?;
+                }
+                Message::Close(frame) => {
+                    let reason = frame
+                        .as_ref()
+                        .map(|value| value.reason.to_string())
+                        .unwrap_or_else(|| "close".to_owned());
+                    return Err(format!("gateway socket closed: {reason}"));
+                }
+                Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {}
+            }
+        }
+    })
+    .await;
+    match result {
+        Ok(value) => value,
+        Err(_) => Err(format!(
+            "gateway request timed out waiting for id {response_id}"
+        )),
+    }
+}
+
+fn derive_gateway_ws_url(gateway: &GatewayConfig) -> String {
+    let bind = gateway.server.bind.trim();
+    if let Ok(socket) = bind.parse::<SocketAddr>() {
+        return format!("ws://127.0.0.1:{}/ws", socket.port());
+    }
+    if let Some((_, port)) = bind.rsplit_once(':') {
+        let port = port.trim().trim_end_matches(']');
+        if !port.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()) {
+            return format!("ws://127.0.0.1:{port}/ws");
+        }
+    }
+    let url = gateway.url.trim();
+    if url.is_empty() {
+        "ws://127.0.0.1:18789/ws".to_owned()
+    } else {
+        url.to_owned()
+    }
+}
+
+fn derive_offset_path(session_state_path: &Path) -> PathBuf {
+    let root = session_state_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(".openclaw-rs"));
+    root.join("telegram").join(TELEGRAM_OFFSET_FILE_NAME)
+}
+
+fn normalize_optional_text(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
+}
+
+fn extract_telegram_settings(config: &Value) -> Option<TelegramSettings> {
+    let channels = config.get("channels")?.as_object()?;
+    let telegram = channels.get("telegram")?.as_object()?;
+    let bot_token = telegram
+        .get("botToken")
+        .and_then(Value::as_str)
+        .and_then(normalize_optional_text)?;
+
+    let dm_policy = telegram
+        .get("dmPolicy")
+        .and_then(Value::as_str)
+        .and_then(normalize_optional_text)
+        .unwrap_or_else(|| "allowlist".to_owned())
+        .to_ascii_lowercase();
+    let group_policy = telegram
+        .get("groupPolicy")
+        .and_then(Value::as_str)
+        .and_then(normalize_optional_text)
+        .unwrap_or_else(|| "mention".to_owned())
+        .to_ascii_lowercase();
+    let mut allow_from = telegram
+        .get("allowFrom")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .filter_map(normalize_optional_text)
+                .map(|value| value.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    allow_from.sort();
+    allow_from.dedup();
+
+    let candidates = extract_model_candidates(config);
+    Some(TelegramSettings {
+        bot_token,
+        dm_policy,
+        group_policy,
+        allow_from,
+        candidates,
+    })
+}
+
+fn extract_model_candidates(config: &Value) -> Vec<ModelCandidate> {
+    let Some(providers) = config
+        .pointer("/models/providers")
+        .and_then(Value::as_object)
+    else {
+        return Vec::new();
+    };
+    let mut weighted = Vec::new();
+    for (provider_name, entry) in providers {
+        let normalized_provider = normalize_provider_alias(provider_name);
+        let Some(models) = entry.get("models").and_then(Value::as_array) else {
+            continue;
+        };
+        for (index, model_entry) in models.iter().enumerate() {
+            let Some(model_id) = model_entry
+                .get("id")
+                .or_else(|| model_entry.get("model"))
+                .and_then(Value::as_str)
+                .and_then(normalize_optional_text)
+            else {
+                continue;
+            };
+            weighted.push((
+                provider_priority(&normalized_provider),
+                normalized_provider.clone(),
+                index,
+                model_id,
+            ));
+        }
+    }
+    weighted.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.cmp(&right.2))
+            .then_with(|| left.3.cmp(&right.3))
+    });
+
+    let mut dedup = HashSet::new();
+    let mut out = Vec::new();
+    for (_, provider, _, model) in weighted {
+        let key = format!("{provider}/{model}");
+        if !dedup.insert(key) {
+            continue;
+        }
+        out.push(ModelCandidate { provider, model });
+    }
+    out
+}
+
+fn provider_priority(provider: &str) -> usize {
+    match provider {
+        "opencodefree" => 0,
+        "opencode" => 1,
+        "openrouter" => 2,
+        "zhipuai" => 3,
+        "openai" => 4,
+        "anthropic" => 5,
+        _ => 100,
+    }
+}
+
+fn normalize_provider_alias(provider: &str) -> String {
+    let normalized = provider.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "zai" | "z.ai" | "zhipu" => "zhipuai".to_owned(),
+        "opencode-free" | "opencode_free" => "opencodefree".to_owned(),
+        value => value.to_owned(),
+    }
+}
+
+fn extract_message_text(message: &Value) -> Option<String> {
+    message
+        .get("text")
+        .and_then(Value::as_str)
+        .and_then(normalize_optional_text)
+        .or_else(|| {
+            message
+                .get("caption")
+                .and_then(Value::as_str)
+                .and_then(normalize_optional_text)
+        })
+}
+
+fn is_help_command(text: &str) -> bool {
+    let lowered = text.trim().to_ascii_lowercase();
+    lowered == "/start" || lowered == "/help"
+}
+
+fn is_allowed_by_dm_policy(message: &Value, dm_policy: &str, allow_from: &[String]) -> bool {
+    if !dm_policy.eq_ignore_ascii_case("allowlist") {
+        return true;
+    }
+    if allow_from.is_empty() {
+        return false;
+    }
+    let mut tags = HashSet::new();
+    if let Some(from) = message.get("from").and_then(Value::as_object) {
+        if let Some(id) = from.get("id").and_then(Value::as_i64) {
+            tags.insert(id.to_string());
+            tags.insert(format!("telegram:{id}"));
+        }
+        if let Some(username) = from
+            .get("username")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+            .map(|value| value.to_ascii_lowercase())
+        {
+            let user = username.trim_start_matches('@').to_owned();
+            tags.insert(user.clone());
+            tags.insert(format!("@{user}"));
+            tags.insert(format!("telegram:@{user}"));
+        }
+    }
+    if let Some(chat_id) = message
+        .get("chat")
+        .and_then(|value| value.get("id"))
+        .and_then(Value::as_i64)
+    {
+        tags.insert(chat_id.to_string());
+        tags.insert(format!("telegram-chat:{chat_id}"));
+    }
+    allow_from
+        .iter()
+        .map(|value| value.to_ascii_lowercase())
+        .any(|value| tags.contains(&value))
+}
+
+fn allows_group_message(
+    message: &Value,
+    chat_type: &str,
+    group_policy: &str,
+    bot_id: i64,
+    bot_username: Option<&str>,
+) -> bool {
+    if chat_type.eq_ignore_ascii_case("private") {
+        return true;
+    }
+    if matches!(group_policy, "all" | "always" | "any") {
+        return true;
+    }
+    if let Some(reply_to_bot) = message
+        .get("reply_to_message")
+        .and_then(|value| value.get("from"))
+        .and_then(|value| value.get("id"))
+        .and_then(Value::as_i64)
+        .map(|id| id == bot_id)
+    {
+        if reply_to_bot {
+            return true;
+        }
+    }
+
+    let Some(text) = extract_message_text(message) else {
+        return false;
+    };
+    if is_help_command(&text) {
+        return true;
+    }
+    let Some(username) = bot_username.map(|value| value.trim().trim_start_matches('@')) else {
+        return false;
+    };
+    if username.is_empty() {
+        return false;
+    }
+    let needle = format!("@{}", username.to_ascii_lowercase());
+    text.to_ascii_lowercase().contains(&needle)
+}
+
+fn build_session_key(message: &Value) -> String {
+    let chat = message.get("chat").and_then(Value::as_object);
+    let chat_type = chat
+        .and_then(|value| value.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("private");
+    let chat_id = chat
+        .and_then(|value| value.get("id"))
+        .and_then(Value::as_i64)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_owned());
+    let from_id = message
+        .get("from")
+        .and_then(|value| value.get("id"))
+        .and_then(Value::as_i64)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_owned());
+    let topic = message
+        .get("message_thread_id")
+        .and_then(Value::as_i64)
+        .map(|value| value.to_string());
+
+    if chat_type.eq_ignore_ascii_case("private") {
+        return format!("agent:main:telegram:dm:{from_id}");
+    }
+    if let Some(topic_id) = topic {
+        return format!("agent:main:telegram:group:{chat_id}:topic:{topic_id}");
+    }
+    format!("agent:main:telegram:group:{chat_id}")
+}
+
+fn extract_assistant_reply(history_result: &Value, run_id: &str) -> Option<String> {
+    let entries = history_result.get("history").and_then(Value::as_array)?;
+    for entry in entries.iter().rev() {
+        let source = entry
+            .get("source")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !source.eq_ignore_ascii_case("agent.assistant") {
+            continue;
+        }
+        let request_id = entry
+            .get("requestId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if request_id != run_id {
+            continue;
+        }
+        if let Some(text) = entry
+            .get("text")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+        {
+            return Some(text);
+        }
+    }
+    for entry in entries.iter().rev() {
+        let source = entry
+            .get("source")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !source.eq_ignore_ascii_case("agent.assistant") {
+            continue;
+        }
+        if let Some(text) = entry
+            .get("text")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+        {
+            return Some(text);
+        }
+    }
+    None
+}
+
+fn truncate_text(value: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut count = 0usize;
+    for ch in value.chars() {
+        if count >= max_chars {
+            break;
+        }
+        out.push(ch);
+        count = count.saturating_add(1);
+    }
+    if value.chars().count() > max_chars && max_chars > 1 {
+        let mut trimmed = out
+            .chars()
+            .take(max_chars.saturating_sub(1))
+            .collect::<String>();
+        trimmed.push('…');
+        trimmed
+    } else {
+        out
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0))
+        .as_millis() as u64
+}
+
+impl TelegramBridge {
+    async fn process_update(
+        &self,
+        settings: &TelegramSettings,
+        bot_identity: &TelegramBotIdentity,
+        update: &Value,
+        update_id: u64,
+    ) -> Result<(), String> {
+        let Some(message) = update.get("message") else {
+            return Ok(());
+        };
+        if !message.is_object() {
+            return Ok(());
+        }
+
+        let from = message.get("from");
+        if from
+            .and_then(|value| value.get("is_bot"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        if from
+            .and_then(|value| value.get("id"))
+            .and_then(Value::as_i64)
+            == Some(bot_identity.id)
+        {
+            return Ok(());
+        }
+
+        let chat_id = message
+            .get("chat")
+            .and_then(|value| value.get("id"))
+            .and_then(Value::as_i64)
+            .ok_or_else(|| "telegram message missing chat.id".to_owned())?;
+        let chat_type = message
+            .get("chat")
+            .and_then(|value| value.get("type"))
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+            .unwrap_or_else(|| "private".to_owned());
+        let message_id = message.get("message_id").and_then(Value::as_i64);
+        let Some(text) = extract_message_text(message) else {
+            return Ok(());
+        };
+
+        if !is_allowed_by_dm_policy(message, &settings.dm_policy, &settings.allow_from) {
+            debug!(
+                "telegram update {} blocked by dmPolicy allowlist",
+                update_id
+            );
+            return Ok(());
+        }
+        if !allows_group_message(
+            message,
+            &chat_type,
+            settings.group_policy.as_str(),
+            bot_identity.id,
+            bot_identity.username.as_deref(),
+        ) {
+            return Ok(());
+        }
+
+        if let Err(err) = self.emit_inbound_event(update_id).await {
+            debug!("telegram inbound event skipped: {err}");
+        }
+
+        let session_key = build_session_key(message);
+        if is_help_command(&text) {
+            self.send_message(
+                &settings.bot_token,
+                chat_id,
+                "OpenClaw Rust is online. Send a message and I will respond.",
+                message_id,
+            )
+            .await?;
+            if let Err(err) = self.emit_outbound_event(update_id).await {
+                debug!("telegram outbound event skipped: {err}");
+            }
+            return Ok(());
+        }
+
+        let thread_id = message
+            .get("message_thread_id")
+            .and_then(Value::as_i64)
+            .map(|value| value.to_string());
+        let response = self
+            .run_agent_with_fallback(&session_key, &text, chat_id, thread_id, settings, update_id)
+            .await
+            .unwrap_or_else(|err| format!("OpenClaw Rust error: {}", truncate_text(&err, 350)));
+
+        self.send_message(&settings.bot_token, chat_id, &response, message_id)
+            .await?;
+        if let Err(err) = self.emit_outbound_event(update_id).await {
+            debug!("telegram outbound event skipped: {err}");
+        }
+        Ok(())
+    }
+
+    async fn run_agent_with_fallback(
+        &self,
+        session_key: &str,
+        text: &str,
+        chat_id: i64,
+        thread_id: Option<String>,
+        settings: &TelegramSettings,
+        update_id: u64,
+    ) -> Result<String, String> {
+        let mut attempted = HashSet::new();
+        match self
+            .run_agent_once(
+                session_key,
+                text,
+                chat_id,
+                thread_id.clone(),
+                update_id,
+                "base",
+            )
+            .await
+        {
+            Ok(reply) => return Ok(reply),
+            Err(err) => {
+                attempted.insert(("".to_owned(), "".to_owned()));
+                debug!("telegram base attempt failed: {err}");
+            }
+        }
+
+        let mut last_error = "agent execution failed".to_owned();
+        for candidate in &settings.candidates {
+            let key = (candidate.provider.clone(), candidate.model.clone());
+            if attempted.contains(&key) {
+                continue;
+            }
+            attempted.insert(key);
+            if let Err(err) = self
+                .gateway_rpc_call(
+                    "sessions.patch",
+                    json!({
+                        "sessionKey": session_key,
+                        "modelProvider": candidate.provider,
+                        "model": candidate.model
+                    }),
+                    Duration::from_secs(15),
+                    &["operator.admin"],
+                )
+                .await
+            {
+                last_error = format!(
+                    "sessions.patch failed for {}/{}: {err}",
+                    candidate.provider, candidate.model
+                );
+                continue;
+            }
+
+            match self
+                .run_agent_once(
+                    session_key,
+                    text,
+                    chat_id,
+                    thread_id.clone(),
+                    update_id,
+                    &format!("{}-{}", candidate.provider, candidate.model),
+                )
+                .await
+            {
+                Ok(reply) => return Ok(reply),
+                Err(err) => {
+                    last_error = err;
+                }
+            }
+        }
+        Err(last_error)
+    }
+
+    async fn run_agent_once(
+        &self,
+        session_key: &str,
+        text: &str,
+        chat_id: i64,
+        thread_id: Option<String>,
+        update_id: u64,
+        attempt_id: &str,
+    ) -> Result<String, String> {
+        let run_id = format!("telegram-{update_id}-{attempt_id}-{}", now_ms());
+        let agent_request = json!({
+            "idempotencyKey": run_id,
+            "sessionKey": session_key,
+            "message": text,
+            "channel": "telegram",
+            "to": chat_id.to_string(),
+            "accountId": TELEGRAM_ACCOUNT_ID,
+            "threadId": thread_id
+        });
+        let run_result = self
+            .gateway_rpc_call(
+                "agent",
+                agent_request,
+                Duration::from_secs(30),
+                &["operator.admin"],
+            )
+            .await?;
+        let resolved_run_id = run_result
+            .get("runId")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+            .unwrap_or_else(|| run_id.clone());
+
+        let wait_result = self
+            .gateway_rpc_call(
+                "agent.wait",
+                json!({
+                    "runId": resolved_run_id,
+                    "timeoutMs": AGENT_WAIT_TIMEOUT_MS
+                }),
+                Duration::from_secs((AGENT_WAIT_TIMEOUT_MS / 1_000).saturating_add(15)),
+                &["operator.admin"],
+            )
+            .await?;
+        let status = wait_result
+            .get("status")
+            .and_then(Value::as_str)
+            .map(|raw| raw.to_ascii_lowercase())
+            .unwrap_or_else(|| "unknown".to_owned());
+        if status != "ok" {
+            let reason = wait_result
+                .get("error")
+                .and_then(Value::as_str)
+                .and_then(normalize_optional_text)
+                .or_else(|| {
+                    run_result
+                        .pointer("/runtime/reason")
+                        .and_then(Value::as_str)
+                        .and_then(normalize_optional_text)
+                })
+                .unwrap_or_else(|| format!("agent run finished with status {status}"));
+            return Err(reason);
+        }
+
+        let history = self
+            .gateway_rpc_call(
+                "sessions.history",
+                json!({
+                    "sessionKey": session_key,
+                    "limit": 80
+                }),
+                Duration::from_secs(15),
+                &["operator.admin"],
+            )
+            .await?;
+        let reply = extract_assistant_reply(&history, &resolved_run_id)
+            .ok_or_else(|| "agent completed without assistant text".to_owned())?;
+        Ok(reply)
+    }
+
+    async fn gateway_rpc_call(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        scopes: &[&str],
+    ) -> Result<Value, String> {
+        let (mut ws, _) = connect_async(&self.gateway_ws_url)
+            .await
+            .map_err(|err| format!("gateway websocket connect failed: {err}"))?;
+
+        let connect_id = format!("telegram-bridge-connect-{}", now_ms());
+        let mut connect_payload = json!({
+            "type": "req",
+            "id": connect_id,
+            "method": "connect",
+            "params": {
+                "role": "operator",
+                "scopes": scopes,
+                "client": {
+                    "id": "openclaw-agent-rs.telegram-bridge"
+                }
+            }
+        });
+        if let Some(token) = self
+            .gateway
+            .token
+            .clone()
+            .as_deref()
+            .and_then(normalize_optional_text)
+        {
+            connect_payload["params"]["auth"]["token"] = Value::String(token);
+        }
+        if let Some(password) = self
+            .gateway
+            .password
+            .clone()
+            .as_deref()
+            .and_then(normalize_optional_text)
+        {
+            connect_payload["params"]["auth"]["password"] = Value::String(password);
+        }
+        ws.send(Message::Text(connect_payload.to_string()))
+            .await
+            .map_err(|err| format!("gateway connect request send failed: {err}"))?;
+        let connect_frame = read_response_frame(&mut ws, &connect_id, timeout).await?;
+        if !connect_frame
+            .get("ok")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            let message = connect_frame
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("gateway connect rejected");
+            return Err(message.to_owned());
+        }
+
+        let request_id = format!("telegram-bridge-{method}-{}", now_ms());
+        let request = json!({
+            "type": "req",
+            "id": request_id,
+            "method": method,
+            "params": params
+        });
+        ws.send(Message::Text(request.to_string()))
+            .await
+            .map_err(|err| format!("gateway request send failed ({method}): {err}"))?;
+        let response = read_response_frame(&mut ws, &request_id, timeout).await?;
+        if !response.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            let message = response
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("gateway request failed");
+            return Err(message.to_owned());
+        }
+        Ok(response.get("result").cloned().unwrap_or(Value::Null))
+    }
+
+    async fn emit_status_event(&self, settings: &TelegramSettings) -> Result<(), String> {
+        self.gateway_emit_event(
+            "telegram.status",
+            json!({
+                "channel": "telegram",
+                "accountId": TELEGRAM_ACCOUNT_ID,
+                "configured": true,
+                "linked": true,
+                "enabled": true,
+                "running": true,
+                "connected": true,
+                "mode": "polling",
+                "botTokenSource": "config",
+                "dmPolicy": settings.dm_policy,
+                "allowFrom": settings.allow_from
+            }),
+        )
+        .await
+    }
+
+    async fn emit_inbound_event(&self, update_id: u64) -> Result<(), String> {
+        self.gateway_emit_event(
+            "telegram.message.received",
+            json!({
+                "channel": "telegram",
+                "accountId": TELEGRAM_ACCOUNT_ID,
+                "updateId": update_id
+            }),
+        )
+        .await
+    }
+
+    async fn emit_outbound_event(&self, update_id: u64) -> Result<(), String> {
+        self.gateway_emit_event(
+            "telegram.message.sent",
+            json!({
+                "channel": "telegram",
+                "accountId": TELEGRAM_ACCOUNT_ID,
+                "updateId": update_id
+            }),
+        )
+        .await
+    }
+
+    async fn gateway_emit_event(&self, event: &str, payload: Value) -> Result<(), String> {
+        let (mut ws, _) = connect_async(&self.gateway_ws_url)
+            .await
+            .map_err(|err| format!("gateway websocket connect failed: {err}"))?;
+        let connect_id = format!("telegram-bridge-event-connect-{}", now_ms());
+        let connect_request = json!({
+            "type": "req",
+            "id": connect_id,
+            "method": "connect",
+            "params": {
+                "role": "operator",
+                "scopes": ["operator.admin"],
+                "client": {
+                    "id": "openclaw-agent-rs.telegram-bridge"
+                }
+            }
+        });
+        ws.send(Message::Text(connect_request.to_string()))
+            .await
+            .map_err(|err| format!("gateway event connect send failed: {err}"))?;
+        let connect_frame =
+            read_response_frame(&mut ws, &connect_id, Duration::from_secs(10)).await?;
+        if !connect_frame
+            .get("ok")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            let message = connect_frame
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("event connect rejected");
+            return Err(message.to_owned());
+        }
+        let frame = json!({
+            "type": "event",
+            "event": event,
+            "payload": payload
+        });
+        ws.send(Message::Text(frame.to_string()))
+            .await
+            .map_err(|err| format!("event send failed: {err}"))?;
+        Ok(())
+    }
+
+    async fn save_offset(&self, offset: u64) -> Result<(), String> {
+        if let Some(parent) = self.offset_path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|err| format!("failed creating offset dir {}: {err}", parent.display()))?;
+        }
+        let temp_path = self.offset_path.with_extension("tmp");
+        let payload = json!({ "offset": offset });
+        fs::write(
+            &temp_path,
+            serde_json::to_vec(&payload)
+                .map_err(|err| format!("failed serializing offset payload: {err}"))?,
+        )
+        .await
+        .map_err(|err| {
+            format!(
+                "failed writing offset temp file {}: {err}",
+                temp_path.display()
+            )
+        })?;
+        fs::rename(&temp_path, &self.offset_path)
+            .await
+            .map_err(|err| {
+                format!(
+                    "failed replacing offset file {}: {err}",
+                    self.offset_path.display()
+                )
+            })?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        allows_group_message, build_session_key, derive_gateway_ws_url, extract_assistant_reply,
+        extract_model_candidates, extract_telegram_settings, is_allowed_by_dm_policy,
+    };
+    use crate::config::Config;
+    use serde_json::json;
+
+    #[test]
+    fn derive_gateway_ws_url_prefers_bind_port() {
+        let mut cfg = Config::default();
+        cfg.gateway.url = "ws://10.0.0.5:9999/ws".to_owned();
+        cfg.gateway.server.bind = "0.0.0.0:18789".to_owned();
+        assert_eq!(
+            derive_gateway_ws_url(&cfg.gateway),
+            "ws://127.0.0.1:18789/ws"
+        );
+    }
+
+    #[test]
+    fn extract_telegram_settings_reads_token_and_allowlist() {
+        let config = json!({
+            "channels": {
+                "telegram": {
+                    "botToken": "123:abc",
+                    "dmPolicy": "allowlist",
+                    "groupPolicy": "mention",
+                    "allowFrom": ["telegram:42", "@Alice", "  "]
+                }
+            },
+            "models": {
+                "providers": {
+                    "opencodefree": {
+                        "models": [{"id": "kimi-k2.5-free"}, {"id": "minimax-m2.5-free"}]
+                    },
+                    "zhipu": {
+                        "models": [{"id": "glm-5"}]
+                    }
+                }
+            }
+        });
+        let settings = extract_telegram_settings(&config).expect("telegram settings");
+        assert_eq!(settings.bot_token, "123:abc");
+        assert_eq!(settings.dm_policy, "allowlist");
+        assert_eq!(settings.group_policy, "mention");
+        assert!(settings.allow_from.contains(&"telegram:42".to_owned()));
+        assert!(settings.allow_from.contains(&"@alice".to_owned()));
+        assert_eq!(settings.candidates.len(), 3);
+        assert_eq!(settings.candidates[0].provider, "opencodefree");
+    }
+
+    #[test]
+    fn allowlist_matches_numeric_and_username_tags() {
+        let message = json!({
+            "from": {"id": 7_670_750_155_i64, "username": "AdyUser"},
+            "chat": {"id": 7_670_750_155_i64}
+        });
+        assert!(is_allowed_by_dm_policy(
+            &message,
+            "allowlist",
+            &["telegram:7670750155".to_owned()]
+        ));
+        assert!(is_allowed_by_dm_policy(
+            &message,
+            "allowlist",
+            &["@adyuser".to_owned()]
+        ));
+        assert!(!is_allowed_by_dm_policy(
+            &message,
+            "allowlist",
+            &["@someoneelse".to_owned()]
+        ));
+    }
+
+    #[test]
+    fn group_policy_requires_mention_when_enabled() {
+        let message = json!({
+            "text": "hello @OpenClawBot please respond",
+            "chat": {"type": "group"}
+        });
+        assert!(allows_group_message(
+            &message,
+            "group",
+            "mention",
+            11,
+            Some("openclawbot")
+        ));
+        let plain = json!({
+            "text": "hello everyone",
+            "chat": {"type": "group"}
+        });
+        assert!(!allows_group_message(
+            &plain,
+            "group",
+            "mention",
+            11,
+            Some("openclawbot")
+        ));
+        assert!(allows_group_message(
+            &plain,
+            "group",
+            "all",
+            11,
+            Some("openclawbot")
+        ));
+    }
+
+    #[test]
+    fn session_key_uses_dm_and_topic_variants() {
+        let dm = json!({
+            "chat": {"id": 99, "type": "private"},
+            "from": {"id": 42}
+        });
+        assert_eq!(build_session_key(&dm), "agent:main:telegram:dm:42");
+        let topic = json!({
+            "chat": {"id": -100123, "type": "supergroup"},
+            "from": {"id": 42},
+            "message_thread_id": 77
+        });
+        assert_eq!(
+            build_session_key(&topic),
+            "agent:main:telegram:group:-100123:topic:77"
+        );
+    }
+
+    #[test]
+    fn extract_assistant_reply_prefers_matching_run_id() {
+        let history = json!({
+            "history": [
+                {"source": "agent.assistant", "requestId": "run-a", "text": "older"},
+                {"source": "agent.assistant", "requestId": "run-b", "text": "target"}
+            ]
+        });
+        assert_eq!(
+            extract_assistant_reply(&history, "run-b").as_deref(),
+            Some("target")
+        );
+    }
+
+    #[test]
+    fn model_candidates_normalize_provider_aliases() {
+        let config = json!({
+            "models": {
+                "providers": {
+                    "z.ai": {
+                        "models": [{"id":"glm-5"}]
+                    },
+                    "opencode_free": {
+                        "models": [{"id":"kimi-k2.5-free"}]
+                    }
+                }
+            }
+        });
+        let candidates = extract_model_candidates(&config);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].provider, "opencodefree");
+        assert_eq!(candidates[1].provider, "zhipuai");
+    }
+}

@@ -10,6 +10,7 @@ use crate::config::{Config, GatewayRuntimeMode};
 use crate::gateway_server::GatewayServer;
 use crate::memory;
 use crate::security::{ActionEvaluator, DefenderEngine};
+use crate::telegram_bridge;
 
 pub struct AgentRuntime {
     config: Config,
@@ -60,6 +61,10 @@ impl AgentRuntime {
                 }
             }
             GatewayRuntimeMode::StandaloneServer => {
+                let telegram_bridge_task = telegram_bridge::spawn(
+                    self.config.gateway.clone(),
+                    self.config.runtime.session_state_path.clone(),
+                );
                 let server = GatewayServer::new(
                     self.config.gateway.clone(),
                     self.config.runtime.decision_event.clone(),
@@ -67,13 +72,16 @@ impl AgentRuntime {
                     self.config.runtime.session_queue_mode,
                     self.config.runtime.group_activation_mode,
                 );
-                tokio::select! {
+                let result = tokio::select! {
                     res = server.run_forever(self.evaluator.clone(), self.config_path.clone()) => res,
                     _ = signal::ctrl_c() => {
                         info!("received ctrl-c, shutting down");
                         Ok(())
                     }
-                }
+                };
+                telegram_bridge_task.abort();
+                let _ = telegram_bridge_task.await;
+                result
             }
         }
     }

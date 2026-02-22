@@ -10,6 +10,7 @@ mod scheduler;
 mod security;
 mod session_key;
 mod state;
+mod telegram_bridge;
 mod tool_runtime;
 mod types;
 mod website_bridge;
