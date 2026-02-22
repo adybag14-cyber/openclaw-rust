@@ -1,12 +1,12 @@
-﻿{
-    "gate":  "cp9",
-    "status":  "pass",
-    "checksRun":  4,
-    "checksPassed":  4,
-    "checksFailed":  0,
-    "totalDurationMs":  215474,
-    "avgCheckDurationMs":  53868,
-    "dockerServerVersion":  "29.2.0",
-    "dockerComposeVersion":  "5.0.2",
-    "resultsTsv":  "cp9-check-results.tsv"
+{
+  "gate": "cp9",
+  "status": "pass",
+  "checksRun": 4,
+  "checksPassed": 4,
+  "checksFailed": 0,
+  "totalDurationMs": 248929,
+  "avgCheckDurationMs": 62232,
+  "dockerServerVersion": "29.2.0",
+  "dockerComposeVersion": "5.0.2",
+  "resultsTsv": "cp9-check-results.tsv"
 }

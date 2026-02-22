@@ -88,6 +88,7 @@ systemctl --user status openclaw-agent-rs.service
 - Supports extended `sessions.patch` parity fields (`thinkingLevel`, `verboseLevel`, `reasoningLevel`, `responseUsage`, `elevatedLevel`, `execHost`, `execSecurity`, `execAsk`, `execNode`, `model`, `spawnDepth`) with explicit `null` clear semantics.
 - Supports provider-defined catalog ingestion from `models.providers.*.models` and OpenAI-compatible provider resolution (including Cerebras-compatible chat completion payload formatting) for runtime agent execution.
 - Supports nested provider runtime options (`models.providers.<id>.options`) for OpenAI-compatible endpoints, including custom auth header names/prefixes, custom request defaults, and full `chat/completions` URLs with query strings; local provider defaults (`ollama`, `vllm`, `litellm`, `lmstudio`, `localai`) can run without API keys.
+- Supports website bridge API modes (`website-openai-bridge`, `website-bridge`, `official-website-bridge`) with candidate endpoint failover for official web-model fallback paths and keyless provider startup flows.
 - Includes built-in setup-ready model choices for OpenCode Zen free promotions (`glm-5-free`, `kimi-k2.5-free`, `minimax-m2.5-free`) plus ZhipuAI `glm-5`, with provider aliases/defaults for `zhipuai` and `zhipuai-coding`.
 - Enforces parity-oriented patch guards for labels and subagent metadata (`label` uniqueness, `spawnedBy`/`spawnDepth` subagent-only and immutable after first set).
 - Normalizes/validates patch tuning values to parity-friendly canonical sets (thinking, verbose, reasoning, elevated, and exec policy knobs).
@@ -164,8 +165,13 @@ Use `config.patch`/`config.apply` to register OpenAI-compatible providers explic
   "models": {
     "providers": {
       "opencode": {
-        "api": "openai-completions",
+        "api": "website-openai-bridge",
         "baseUrl": "https://opencode.ai/zen/v1",
+        "websiteUrl": "https://opencode.ai",
+        "bridgeBaseUrls": [
+          "https://opencode.ai/zen/v1",
+          "https://api.opencode.ai/v1"
+        ],
         "allowUnauthenticated": true,
         "apiKey": "${OPENCODE_API_KEY}",
         "models": [
@@ -185,7 +191,11 @@ Use `config.patch`/`config.apply` to register OpenAI-compatible providers explic
 }
 ```
 
+`apiKey` is optional for providers that expose public/free tiers. When omitted, OpenClaw Rust attempts keyless bridge candidates in priority order.
+
 For Zhipu coding-plan models, use provider `zhipuai-coding` or override `baseUrl` with `https://open.bigmodel.cn/api/coding/paas/v4`.
+
+For additional official website bridges (for example Kimi/Minimax/Zhipu web surfaces), keep `api` in website-bridge mode and configure provider-specific `websiteUrl` plus `bridgeBaseUrls` endpoints exposed by that provider.
 
 ## Signed policy bundles
 

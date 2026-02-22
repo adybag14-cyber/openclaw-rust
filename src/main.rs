@@ -12,6 +12,7 @@ mod session_key;
 mod state;
 mod tool_runtime;
 mod types;
+mod website_bridge;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

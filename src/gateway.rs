@@ -27,6 +27,7 @@ use crate::protocol::{MethodFamily, RpcRequestFrame};
 use crate::session_key::{parse_session_key, SessionKind};
 use crate::tool_runtime::{ToolRuntimeHost, ToolRuntimeRequest};
 use crate::types::{ActionRequest, Decision, DecisionAction};
+use crate::website_bridge::{invoke_openai_compatible, WebsiteBridgeRequest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MethodSpec {
@@ -2450,16 +2451,7 @@ impl RpcDispatcher {
             runtime_payload.reason = None;
             if provider_runtime.api_key.is_none() && !provider_runtime.allow_missing_api_key {
                 runtime_payload.reason = Some("provider credentials not configured".to_owned());
-            } else if !provider_runtime
-                .api_mode
-                .eq_ignore_ascii_case("openai-completions")
-                && !provider_runtime
-                    .api_mode
-                    .eq_ignore_ascii_case("openai-compatible")
-                && !provider_runtime
-                    .api_mode
-                    .eq_ignore_ascii_case("openai-chat")
-            {
+            } else if !provider_api_mode_supported(&provider_runtime.api_mode) {
                 runtime_payload.reason = Some(format!(
                     "provider api mode {} is not supported",
                     provider_runtime.api_mode
@@ -8918,6 +8910,8 @@ struct ProviderRuntimeConfig {
     base_url: String,
     api_key: Option<String>,
     allow_missing_api_key: bool,
+    website_url: Option<String>,
+    bridge_candidates: Vec<String>,
     auth_header_name: String,
     auth_header_prefix: String,
     timeout_ms: u64,
@@ -25007,6 +25001,21 @@ fn provider_runtime_defaults(provider: &str) -> Option<ProviderRuntimeDefaults> 
     }
 }
 
+fn provider_runtime_bridge_defaults(
+    provider: &str,
+) -> (Option<&'static str>, &'static [&'static str]) {
+    match normalize_provider_id(provider).as_str() {
+        "opencode" => (
+            Some("https://opencode.ai"),
+            &["https://opencode.ai/zen/v1", "https://api.opencode.ai/v1"],
+        ),
+        "zhipuai" | "zhipuai-coding" | "zai" => (Some("https://chat.z.ai"), &[]),
+        "kimi-coding" => (Some("https://www.kimi.com"), &[]),
+        "minimax-portal" => (Some("https://chat.minimax.io"), &[]),
+        _ => (None, &[]),
+    }
+}
+
 fn resolve_provider_runtime_config(
     config: &Value,
     provider: &str,
@@ -25044,7 +25053,6 @@ fn resolve_provider_runtime_config(
         2_048,
     )
     .or_else(|| defaults.map(|value| value.base_url.to_owned()));
-    let base_url = base_url?;
     let api_key = resolve_provider_runtime_api_key(
         provider_entry,
         provider_options,
@@ -25106,6 +25114,64 @@ fn resolve_provider_runtime_config(
         }
     });
     let request_overrides = resolve_provider_request_overrides(provider_entry, provider_options);
+    let (default_website_url, default_bridge_candidates) =
+        provider_runtime_bridge_defaults(&normalized_provider);
+    let website_url = read_provider_config_string(
+        provider_entry,
+        provider_options,
+        &[
+            "websiteUrl",
+            "website_url",
+            "siteUrl",
+            "site_url",
+            "homepage",
+            "homepageUrl",
+            "homepage_url",
+        ],
+        2_048,
+    )
+    .or_else(|| default_website_url.map(ToOwned::to_owned));
+    let mut bridge_candidates = read_provider_config_string_list(
+        provider_entry,
+        provider_options,
+        &[
+            "bridgeCandidates",
+            "bridge_candidates",
+            "bridgeBaseUrls",
+            "bridge_base_urls",
+            "websiteBridgeCandidates",
+            "website_bridge_candidates",
+            "fallbackBaseUrls",
+            "fallback_base_urls",
+        ],
+        16,
+        2_048,
+    )
+    .unwrap_or_default();
+    if let Some(single_candidate) = read_provider_config_string(
+        provider_entry,
+        provider_options,
+        &[
+            "bridgeBaseUrl",
+            "bridge_base_url",
+            "websiteBridgeBaseUrl",
+            "website_bridge_base_url",
+        ],
+        2_048,
+    ) {
+        bridge_candidates.push(single_candidate);
+    }
+    if bridge_candidates.is_empty() {
+        bridge_candidates.extend(
+            default_bridge_candidates
+                .iter()
+                .map(|candidate| (*candidate).to_owned()),
+        );
+    }
+    sort_and_dedup_strings(&mut bridge_candidates);
+    let base_url = base_url
+        .or_else(|| bridge_candidates.first().cloned())
+        .and_then(|value| normalize_optional_text(Some(value), 2_048))?;
 
     if normalized_provider.eq_ignore_ascii_case("openrouter") {
         upsert_provider_header(
@@ -25136,6 +25202,8 @@ fn resolve_provider_runtime_config(
         base_url,
         api_key,
         allow_missing_api_key,
+        website_url,
+        bridge_candidates,
         auth_header_name,
         auth_header_prefix,
         timeout_ms,
@@ -25179,6 +25247,21 @@ fn read_provider_config_bool(
     provider_entry
         .and_then(|entry| read_config_bool(entry, keys))
         .or_else(|| provider_options.and_then(|entry| read_config_bool(entry, keys)))
+}
+
+fn read_provider_config_string_list(
+    provider_entry: Option<&serde_json::Map<String, Value>>,
+    provider_options: Option<&serde_json::Map<String, Value>>,
+    keys: &[&str],
+    max_items: usize,
+    max_len: usize,
+) -> Option<Vec<String>> {
+    provider_entry
+        .and_then(|entry| read_config_string_list(entry, keys, max_items, max_len))
+        .or_else(|| {
+            provider_options
+                .and_then(|entry| read_config_string_list(entry, keys, max_items, max_len))
+        })
 }
 
 fn collect_provider_headers(
@@ -25439,6 +25522,25 @@ fn resolve_tool_workspace_root_path(workspace: &str, agent_id: &str) -> PathBuf 
     PathBuf::from(workspace)
 }
 
+fn provider_api_mode_supported(api_mode: &str) -> bool {
+    matches!(
+        normalize(api_mode).as_str(),
+        "openai-completions"
+            | "openai-compatible"
+            | "openai-chat"
+            | "website-openai-bridge"
+            | "website-bridge"
+            | "official-website-bridge"
+    )
+}
+
+fn provider_api_mode_uses_website_bridge(api_mode: &str) -> bool {
+    matches!(
+        normalize(api_mode).as_str(),
+        "website-openai-bridge" | "website-bridge" | "official-website-bridge"
+    )
+}
+
 fn provider_chat_completions_url(base_url: &str) -> String {
     let trimmed = base_url.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -25460,6 +25562,73 @@ async fn invoke_openai_chat_completion(
     messages: &[Value],
     tools: &[Value],
 ) -> Result<OpenAiChatCompletionResponse, String> {
+    let mut payload_object = provider_runtime.request_overrides.clone();
+    payload_object.insert("model".to_owned(), Value::String(model.to_owned()));
+    payload_object.insert("messages".to_owned(), Value::Array(messages.to_vec()));
+    payload_object
+        .entry("stream".to_owned())
+        .or_insert(Value::Bool(false));
+    if !tools.is_empty() {
+        payload_object.insert("tools".to_owned(), Value::Array(tools.to_vec()));
+        payload_object
+            .entry("tool_choice".to_owned())
+            .or_insert(Value::String("auto".to_owned()));
+    }
+
+    let should_try_website_bridge =
+        provider_api_mode_uses_website_bridge(&provider_runtime.api_mode)
+            || (!provider_runtime.bridge_candidates.is_empty()
+                && provider_runtime.api_key.is_none()
+                && provider_runtime.allow_missing_api_key);
+    let mut website_bridge_error = None;
+    let website_probe_url = if provider_api_mode_uses_website_bridge(&provider_runtime.api_mode) {
+        provider_runtime.website_url.as_deref()
+    } else {
+        None
+    };
+    if should_try_website_bridge {
+        let mut candidates = provider_runtime.bridge_candidates.clone();
+        if !candidates
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(&provider_runtime.base_url))
+        {
+            candidates.push(provider_runtime.base_url.clone());
+        }
+        match invoke_openai_compatible(WebsiteBridgeRequest {
+            provider: &provider_runtime.provider,
+            model,
+            messages,
+            tools,
+            timeout_ms: provider_runtime.timeout_ms,
+            website_url: website_probe_url,
+            candidate_base_urls: &candidates,
+            headers: &provider_runtime.headers,
+            auth_header_name: &provider_runtime.auth_header_name,
+            auth_header_prefix: &provider_runtime.auth_header_prefix,
+            api_key: provider_runtime.api_key.as_deref(),
+            request_overrides: &payload_object,
+        })
+        .await
+        {
+            Ok(bridge_response) => {
+                let bridge_body = bridge_response.body;
+                let bridge_endpoint = bridge_response.endpoint;
+                return serde_json::from_str::<OpenAiChatCompletionResponse>(&bridge_body).map_err(
+                    |err| {
+                        format!(
+                            "provider response parse failed from {}: {err}; body={}",
+                            bridge_endpoint,
+                            truncate_text(&bridge_body, 1_024)
+                        )
+                    },
+                );
+            }
+            Err(err) => {
+                website_bridge_error = Some(err);
+            }
+        }
+    }
+
     let timeout = Duration::from_millis(provider_runtime.timeout_ms.max(1_000));
     let client = reqwest::Client::builder()
         .timeout(timeout)
@@ -25480,19 +25649,6 @@ async fn invoke_openai_chat_completion(
     for (name, value) in &provider_runtime.headers {
         request = request.header(name, value);
     }
-
-    let mut payload_object = provider_runtime.request_overrides.clone();
-    payload_object.insert("model".to_owned(), Value::String(model.to_owned()));
-    payload_object.insert("messages".to_owned(), Value::Array(messages.to_vec()));
-    payload_object
-        .entry("stream".to_owned())
-        .or_insert(Value::Bool(false));
-    if !tools.is_empty() {
-        payload_object.insert("tools".to_owned(), Value::Array(tools.to_vec()));
-        payload_object
-            .entry("tool_choice".to_owned())
-            .or_insert(Value::String("auto".to_owned()));
-    }
     let payload = Value::Object(payload_object);
 
     let response = request.json(&payload).send().await.map_err(|err| {
@@ -25507,6 +25663,14 @@ async fn invoke_openai_chat_completion(
         .await
         .map_err(|err| format!("provider response body read failed: {err}"))?;
     if !status.is_success() {
+        if let Some(bridge_err) = website_bridge_error {
+            return Err(format!(
+                "provider request failed with status {}: {}; website bridge fallback also failed: {}",
+                status.as_u16(),
+                truncate_text(&body, 1_024),
+                bridge_err
+            ));
+        }
         return Err(format!(
             "provider request failed with status {}: {}",
             status.as_u16(),
@@ -25514,9 +25678,14 @@ async fn invoke_openai_chat_completion(
         ));
     }
     serde_json::from_str::<OpenAiChatCompletionResponse>(&body).map_err(|err| {
+        let bridge_suffix = website_bridge_error
+            .as_ref()
+            .map(|value| format!("; website bridge fallback failed: {value}"))
+            .unwrap_or_default();
         format!(
-            "provider response parse failed: {err}; body={}",
-            truncate_text(&body, 1_024)
+            "provider response parse failed: {err}; body={}{}",
+            truncate_text(&body, 1_024),
+            bridge_suffix
         )
     })
 }
@@ -26797,6 +26966,11 @@ mod tests {
         assert_eq!(resolved.api_mode, "openai-completions");
         assert_eq!(resolved.base_url, "https://opencode.ai/zen/v1");
         assert!(resolved.allow_missing_api_key);
+        assert_eq!(resolved.website_url.as_deref(), Some("https://opencode.ai"));
+        assert!(resolved
+            .bridge_candidates
+            .iter()
+            .any(|candidate| candidate == "https://opencode.ai/zen/v1"));
     }
 
     #[test]
@@ -26853,6 +27027,34 @@ mod tests {
     }
 
     #[test]
+    fn resolve_provider_runtime_config_supports_website_bridge_options() {
+        let config = json!({
+            "models": {
+                "providers": {
+                    "zhipuai": {
+                        "options": {
+                            "apiMode": "website-openai-bridge",
+                            "websiteUrl": "https://chat.z.ai",
+                            "bridgeBaseUrls": [
+                                "https://chat.z.ai/api/paas/v4",
+                                "https://chat.z.ai/api/paas/v4"
+                            ],
+                            "allowUnauthenticated": true
+                        }
+                    }
+                }
+            }
+        });
+        let resolved = super::resolve_provider_runtime_config(&config, "zhipu")
+            .expect("zhipu website bridge config");
+        assert_eq!(resolved.provider, "zhipuai");
+        assert_eq!(resolved.api_mode, "website-openai-bridge");
+        assert_eq!(resolved.website_url.as_deref(), Some("https://chat.z.ai"));
+        assert_eq!(resolved.bridge_candidates.len(), 1);
+        assert!(resolved.allow_missing_api_key);
+    }
+
+    #[test]
     fn resolve_provider_runtime_config_allows_unauthenticated_local_defaults() {
         let config = json!({});
         let resolved = super::resolve_provider_runtime_config(&config, "ollama")
@@ -26867,6 +27069,14 @@ mod tests {
     fn provider_chat_completions_url_preserves_explicit_endpoint_with_query() {
         let endpoint = "https://example.openai.azure.com/openai/deployments/my-deploy/chat/completions?api-version=2024-10-21";
         assert_eq!(super::provider_chat_completions_url(endpoint), endpoint);
+    }
+
+    #[test]
+    fn provider_api_mode_supported_includes_website_bridge_modes() {
+        assert!(super::provider_api_mode_supported("openai-completions"));
+        assert!(super::provider_api_mode_supported("website-openai-bridge"));
+        assert!(super::provider_api_mode_supported("website-bridge"));
+        assert!(!super::provider_api_mode_supported("custom-mode-unknown"));
     }
 
     #[tokio::test]
@@ -26913,6 +27123,8 @@ mod tests {
             base_url: format!("http://{provider_addr}/v1"),
             api_key: Some("custom-token".to_owned()),
             allow_missing_api_key: false,
+            website_url: None,
+            bridge_candidates: Vec::new(),
             auth_header_name: "api-key".to_owned(),
             auth_header_prefix: String::new(),
             timeout_ms: 30_000,
@@ -26993,6 +27205,8 @@ mod tests {
             base_url,
             api_key,
             allow_missing_api_key: true,
+            website_url: Some("https://opencode.ai".to_owned()),
+            bridge_candidates: vec!["https://opencode.ai/zen/v1".to_owned()],
             auth_header_name: "Authorization".to_owned(),
             auth_header_prefix: "Bearer ".to_owned(),
             timeout_ms: 60_000,
@@ -35971,6 +36185,10 @@ mod tests {
                         "opencode": {
                             "api": "openai-completions",
                             "baseUrl": format!("http://{provider_addr}/zen/v1"),
+                            "websiteUrl": format!("http://{provider_addr}"),
+                            "bridgeBaseUrls": [
+                                format!("http://{provider_addr}/zen/v1")
+                            ],
                             "allowUnauthenticated": true,
                             "models": [
                                 { "id": "glm-5-free", "name": "GLM-5-Free" }

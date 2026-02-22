@@ -1,5 +1,5 @@
-﻿check	duration_ms	status
-docker-daemon	630	pass
-docker-smoke	170595	pass
-docker-compose-parity	20500	pass
-docker-compose-chaos-restart	23749	pass
+check	duration_ms	status
+docker-daemon	756	pass
+docker-smoke	204887	pass
+docker-compose-parity	20129	pass
+docker-compose-chaos-restart	23157	pass
