@@ -292,6 +292,42 @@ impl MethodRegistry {
                     min_role: "client",
                 },
                 MethodSpec {
+                    name: "auth.oauth.providers",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "auth.oauth.start",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "auth.oauth.wait",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "auth.oauth.complete",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "auth.oauth.logout",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "auth.oauth.import",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
                     name: "wizard.start",
                     family: MethodFamily::Gateway,
                     requires_auth: true,
@@ -727,6 +763,7 @@ pub struct RpcDispatcher {
     legacy_cron_notify_warned: Mutex<HashSet<String>>,
     config: ConfigRegistry,
     web_login: WebLoginRegistry,
+    oauth: OAuthRegistry,
     wizard: WizardRegistry,
     devices: DeviceRegistry,
     channel_capabilities: Vec<ChannelCapabilities>,
@@ -782,6 +819,7 @@ const DEVICE_PAIR_STORE_PATH: &str = "memory://devices/pairs.json";
 const NODE_PAIR_STORE_PATH: &str = "memory://nodes/pairs.json";
 const CONFIG_STORE_PATH: &str = "memory://config.json";
 const WEB_LOGIN_STORE_PATH: &str = "memory://web-login/sessions.json";
+const OAUTH_STORE_PATH: &str = "memory://auth/oauth/sessions.json";
 const WIZARD_STORE_PATH: &str = "memory://wizard/sessions.json";
 const DEFAULT_SEND_CHANNEL: &str = "whatsapp";
 const TTS_PREFS_PATH: &str = "memory://tts/prefs.json";
@@ -874,6 +912,7 @@ const VOICE_OUTPUT_DEVICE_DEFAULT: &str = "default-speaker";
 static SESSION_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static CRON_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static WEB_LOGIN_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static OAUTH_SESSION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static WIZARD_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static DEVICE_TOKEN_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NODE_PAIR_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -938,6 +977,12 @@ const SUPPORTED_RPC_METHODS: &[&str] = &[
     "update.run",
     "web.login.start",
     "web.login.wait",
+    "auth.oauth.providers",
+    "auth.oauth.start",
+    "auth.oauth.wait",
+    "auth.oauth.complete",
+    "auth.oauth.logout",
+    "auth.oauth.import",
     "wizard.start",
     "wizard.next",
     "wizard.cancel",
@@ -1032,6 +1077,7 @@ impl RpcDispatcher {
             legacy_cron_notify_warned: Mutex::new(HashSet::new()),
             config: ConfigRegistry::new(),
             web_login: WebLoginRegistry::new(),
+            oauth: OAuthRegistry::new(),
             wizard: WizardRegistry::new(),
             devices: DeviceRegistry::new(),
             channel_capabilities,
@@ -1198,6 +1244,11 @@ impl RpcDispatcher {
         self.web_login.apply_runtime_config(runtime).await
     }
 
+    async fn sync_oauth_runtime_from_config(&self) -> Result<(), String> {
+        let runtime = self.config.oauth_runtime_config().await;
+        self.oauth.apply_runtime_config(runtime).await
+    }
+
     async fn sync_wizard_runtime_from_config(&self) -> Result<(), String> {
         let runtime = self.config.wizard_runtime_config().await;
         self.wizard.apply_runtime_config(runtime).await
@@ -1252,6 +1303,12 @@ impl RpcDispatcher {
             "update.run" => self.handle_update_run(req).await,
             "web.login.start" => self.handle_web_login_start(req).await,
             "web.login.wait" => self.handle_web_login_wait(req).await,
+            "auth.oauth.providers" => self.handle_auth_oauth_providers(req).await,
+            "auth.oauth.start" => self.handle_auth_oauth_start(req).await,
+            "auth.oauth.wait" => self.handle_auth_oauth_wait(req).await,
+            "auth.oauth.complete" => self.handle_auth_oauth_complete(req).await,
+            "auth.oauth.logout" => self.handle_auth_oauth_logout(req).await,
+            "auth.oauth.import" => self.handle_auth_oauth_import(req).await,
             "wizard.start" => self.handle_wizard_start(req).await,
             "wizard.next" => self.handle_wizard_next(req).await,
             "wizard.cancel" => self.handle_wizard_cancel(req).await,
@@ -3130,6 +3187,209 @@ impl RpcDispatcher {
             ))
             .await;
         RpcDispatchOutcome::Handled(json!(wait))
+    }
+
+    async fn handle_auth_oauth_providers(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_oauth_runtime_from_config().await {
+            self.system
+                .log_line(format!("oauth.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("oauth runtime unavailable");
+        }
+        if let Err(err) = decode_params::<AuthOAuthProvidersParams>(&req.params) {
+            return RpcDispatchOutcome::bad_request(format!(
+                "invalid auth.oauth.providers params: {err}"
+            ));
+        }
+        RpcDispatchOutcome::Handled(json!(self.oauth.providers().await))
+    }
+
+    async fn handle_auth_oauth_start(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_oauth_runtime_from_config().await {
+            self.system
+                .log_line(format!("oauth.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("oauth runtime unavailable");
+        }
+        let params = match decode_params::<AuthOAuthStartParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid auth.oauth.start params: {err}"
+                ));
+            }
+        };
+        let Some(provider_id) = resolve_oauth_provider_param(params.provider_id, params.provider)
+        else {
+            return RpcDispatchOutcome::bad_request(
+                "invalid auth.oauth.start params: provider required",
+            );
+        };
+        let result = match self
+            .oauth
+            .start(OAuthStartInput {
+                provider_id,
+                account_id: normalize_optional_text(params.account_id, 128)
+                    .unwrap_or_else(|| "default".to_owned()),
+                timeout_ms: params.timeout_ms.unwrap_or(300_000),
+                force: params.force.unwrap_or(false),
+            })
+            .await
+        {
+            Ok(v) => v,
+            Err(err) => return RpcDispatchOutcome::bad_request(err),
+        };
+        self.system
+            .log_line(format!(
+                "auth.oauth.start provider={} account={}",
+                result.provider_id, result.account_id
+            ))
+            .await;
+        RpcDispatchOutcome::Handled(json!(result))
+    }
+
+    async fn handle_auth_oauth_wait(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_oauth_runtime_from_config().await {
+            self.system
+                .log_line(format!("oauth.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("oauth runtime unavailable");
+        }
+        let params = match decode_params::<AuthOAuthWaitParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid auth.oauth.wait params: {err}"
+                ));
+            }
+        };
+        let provider_id = resolve_oauth_provider_param(params.provider_id, params.provider);
+        let result = match self
+            .oauth
+            .wait(OAuthWaitInput {
+                provider_id,
+                account_id: normalize_optional_text(params.account_id, 128),
+                session_id: normalize_optional_text(params.session_id, 128),
+                timeout_ms: params.timeout_ms.unwrap_or(30_000),
+            })
+            .await
+        {
+            Ok(v) => v,
+            Err(err) => return RpcDispatchOutcome::bad_request(err),
+        };
+        self.system
+            .log_line(format!(
+                "auth.oauth.wait provider={} account={} connected={}",
+                result.provider_id, result.account_id, result.connected
+            ))
+            .await;
+        RpcDispatchOutcome::Handled(json!(result))
+    }
+
+    async fn handle_auth_oauth_complete(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_oauth_runtime_from_config().await {
+            self.system
+                .log_line(format!("oauth.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("oauth runtime unavailable");
+        }
+        let params = match decode_params::<AuthOAuthCompleteParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid auth.oauth.complete params: {err}"
+                ));
+            }
+        };
+        let result = match self
+            .oauth
+            .complete(OAuthCompleteInput {
+                session_id: params.session_id,
+                account_id: normalize_optional_text(params.account_id, 128),
+                access_token: normalize_optional_text(params.access_token, 8_192),
+                refresh_token: normalize_optional_text(params.refresh_token, 8_192),
+                token_type: normalize_optional_text(params.token_type, 64),
+                expires_at_ms: params.expires_at_ms,
+                scopes: normalize_string_list(params.scopes, 32, 128),
+                source: normalize_optional_text(params.source, 128),
+            })
+            .await
+        {
+            Ok(v) => v,
+            Err(err) => return RpcDispatchOutcome::bad_request(err),
+        };
+        self.system
+            .log_line(format!(
+                "auth.oauth.complete provider={} account={}",
+                result.provider_id, result.account_id
+            ))
+            .await;
+        RpcDispatchOutcome::Handled(json!(result))
+    }
+
+    async fn handle_auth_oauth_logout(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_oauth_runtime_from_config().await {
+            self.system
+                .log_line(format!("oauth.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("oauth runtime unavailable");
+        }
+        let params = match decode_params::<AuthOAuthLogoutParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid auth.oauth.logout params: {err}"
+                ));
+            }
+        };
+        let result = self
+            .oauth
+            .logout(OAuthLogoutInput {
+                provider_id: resolve_oauth_provider_param(params.provider_id, params.provider),
+                account_id: normalize_optional_text(params.account_id, 128),
+                all: params.all.unwrap_or(false),
+            })
+            .await;
+        self.system
+            .log_line(format!(
+                "auth.oauth.logout removed={} provider={}",
+                result.removed, result.provider_id
+            ))
+            .await;
+        RpcDispatchOutcome::Handled(json!(result))
+    }
+
+    async fn handle_auth_oauth_import(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = self.sync_oauth_runtime_from_config().await {
+            self.system
+                .log_line(format!("oauth.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("oauth runtime unavailable");
+        }
+        let params = match decode_params::<AuthOAuthImportParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid auth.oauth.import params: {err}"
+                ));
+            }
+        };
+        let result = self
+            .oauth
+            .import(OAuthImportInput {
+                providers: normalize_string_list(params.providers, 32, 128),
+                home_dir: normalize_optional_text(params.home_dir, 2048),
+                codex_home: normalize_optional_text(params.codex_home, 2048),
+                overwrite: params.overwrite.unwrap_or(false),
+            })
+            .await;
+        self.system
+            .log_line(format!(
+                "auth.oauth.import imported={} requested={}",
+                result.imported_count, result.requested_count
+            ))
+            .await;
+        RpcDispatchOutcome::Handled(json!(result))
     }
 
     async fn handle_wizard_start(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
@@ -9672,6 +9932,11 @@ struct ConfigRuntimeConfig {
 
 #[derive(Debug, Clone, Default)]
 struct WebLoginRuntimeConfig {
+    store_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OAuthRuntimeConfig {
     store_path: Option<String>,
 }
 
@@ -16363,6 +16628,1189 @@ fn persist_web_login_store_disk_state(path: &str, state: &WebLoginState) -> Resu
     })
 }
 
+struct OAuthRegistry {
+    state: Mutex<OAuthState>,
+    runtime: Mutex<OAuthRuntimeState>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct OAuthState {
+    sessions: HashMap<String, OAuthSession>,
+    credentials: HashMap<String, OAuthCredential>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct OAuthSession {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "providerId")]
+    provider_id: String,
+    #[serde(rename = "accountId")]
+    account_id: String,
+    #[serde(rename = "profileId")]
+    profile_id: String,
+    #[serde(rename = "startedAtMs")]
+    started_at_ms: u64,
+    #[serde(rename = "readyAtMs")]
+    ready_at_ms: u64,
+    #[serde(rename = "expiresAtMs")]
+    expires_at_ms: u64,
+    #[serde(rename = "verificationUrl")]
+    verification_url: String,
+    #[serde(rename = "userCode")]
+    user_code: String,
+    #[serde(rename = "completedAtMs", skip_serializing_if = "Option::is_none")]
+    completed_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct OAuthCredential {
+    #[serde(rename = "providerId")]
+    provider_id: String,
+    #[serde(rename = "accountId")]
+    account_id: String,
+    #[serde(rename = "profileId")]
+    profile_id: String,
+    #[serde(rename = "accessToken", skip_serializing_if = "Option::is_none")]
+    access_token: Option<String>,
+    #[serde(rename = "refreshToken", skip_serializing_if = "Option::is_none")]
+    refresh_token: Option<String>,
+    #[serde(rename = "tokenType", skip_serializing_if = "Option::is_none")]
+    token_type: Option<String>,
+    #[serde(rename = "expiresAtMs", skip_serializing_if = "Option::is_none")]
+    expires_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    scopes: Vec<String>,
+    source: String,
+    #[serde(rename = "updatedAtMs")]
+    updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct OAuthRuntimeState {
+    store_path: String,
+}
+
+#[derive(Debug, Clone)]
+struct OAuthStartInput {
+    provider_id: String,
+    account_id: String,
+    timeout_ms: u64,
+    force: bool,
+}
+
+#[derive(Debug, Clone)]
+struct OAuthWaitInput {
+    provider_id: Option<String>,
+    account_id: Option<String>,
+    session_id: Option<String>,
+    timeout_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct OAuthCompleteInput {
+    session_id: String,
+    account_id: Option<String>,
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    token_type: Option<String>,
+    expires_at_ms: Option<u64>,
+    scopes: Vec<String>,
+    source: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct OAuthLogoutInput {
+    provider_id: Option<String>,
+    account_id: Option<String>,
+    all: bool,
+}
+
+#[derive(Debug, Clone)]
+struct OAuthImportInput {
+    providers: Vec<String>,
+    home_dir: Option<String>,
+    codex_home: Option<String>,
+    overwrite: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct OAuthCredentialView {
+    #[serde(rename = "accountId")]
+    account_id: String,
+    #[serde(rename = "profileId")]
+    profile_id: String,
+    source: String,
+    #[serde(rename = "updatedAtMs")]
+    updated_at_ms: u64,
+    #[serde(rename = "expiresAtMs", skip_serializing_if = "Option::is_none")]
+    expires_at_ms: Option<u64>,
+    #[serde(rename = "accessTokenPreview", skip_serializing_if = "Option::is_none")]
+    access_token_preview: Option<String>,
+    #[serde(rename = "refreshTokenPresent")]
+    refresh_token_present: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct AuthOAuthProvidersResult {
+    #[serde(rename = "generatedAtMs")]
+    generated_at_ms: u64,
+    providers: Vec<OAuthProviderView>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct OAuthProviderView {
+    #[serde(rename = "providerId")]
+    provider_id: String,
+    #[serde(rename = "displayName")]
+    display_name: String,
+    #[serde(rename = "verificationUrl")]
+    verification_url: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    aliases: Vec<String>,
+    #[serde(rename = "connectedAccounts")]
+    connected_accounts: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    accounts: Vec<OAuthCredentialView>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct OAuthStartResult {
+    #[serde(rename = "providerId")]
+    provider_id: String,
+    #[serde(rename = "accountId")]
+    account_id: String,
+    #[serde(rename = "profileId")]
+    profile_id: String,
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "startedAtMs")]
+    started_at_ms: u64,
+    #[serde(rename = "expiresAtMs")]
+    expires_at_ms: u64,
+    #[serde(rename = "verificationUrl")]
+    verification_url: String,
+    #[serde(rename = "userCode")]
+    user_code: String,
+    #[serde(rename = "pollIntervalMs")]
+    poll_interval_ms: u64,
+    message: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct OAuthWaitResult {
+    #[serde(rename = "providerId")]
+    provider_id: String,
+    #[serde(rename = "accountId")]
+    account_id: String,
+    #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    connected: bool,
+    #[serde(rename = "profileId", skip_serializing_if = "Option::is_none")]
+    profile_id: Option<String>,
+    status: String,
+    message: String,
+    #[serde(rename = "retryAfterMs", skip_serializing_if = "Option::is_none")]
+    retry_after_ms: Option<u64>,
+    #[serde(rename = "expiresAtMs", skip_serializing_if = "Option::is_none")]
+    expires_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct OAuthCompleteResult {
+    #[serde(rename = "providerId")]
+    provider_id: String,
+    #[serde(rename = "accountId")]
+    account_id: String,
+    #[serde(rename = "profileId")]
+    profile_id: String,
+    connected: bool,
+    source: String,
+    #[serde(rename = "updatedAtMs")]
+    updated_at_ms: u64,
+    #[serde(rename = "expiresAtMs", skip_serializing_if = "Option::is_none")]
+    expires_at_ms: Option<u64>,
+    #[serde(rename = "accessTokenPreview", skip_serializing_if = "Option::is_none")]
+    access_token_preview: Option<String>,
+    #[serde(rename = "refreshTokenPresent")]
+    refresh_token_present: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct OAuthLogoutResult {
+    #[serde(rename = "providerId")]
+    provider_id: String,
+    #[serde(rename = "accountId", skip_serializing_if = "Option::is_none")]
+    account_id: Option<String>,
+    removed: usize,
+    #[serde(rename = "revokedSessions")]
+    revoked_sessions: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct OAuthImportResult {
+    #[serde(rename = "requestedCount")]
+    requested_count: usize,
+    #[serde(rename = "importedCount")]
+    imported_count: usize,
+    #[serde(rename = "skippedCount")]
+    skipped_count: usize,
+    results: Vec<OAuthImportProviderResult>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct OAuthImportProviderResult {
+    #[serde(rename = "providerId")]
+    provider_id: String,
+    imported: bool,
+    #[serde(rename = "accountId", skip_serializing_if = "Option::is_none")]
+    account_id: Option<String>,
+    #[serde(rename = "profileId", skip_serializing_if = "Option::is_none")]
+    profile_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct OAuthImportedCredential {
+    provider_id: String,
+    account_id: String,
+    profile_id: String,
+    source: String,
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    token_type: Option<String>,
+    expires_at_ms: Option<u64>,
+    scopes: Vec<String>,
+}
+
+impl OAuthRegistry {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(OAuthState {
+                sessions: HashMap::new(),
+                credentials: HashMap::new(),
+            }),
+            runtime: Mutex::new(OAuthRuntimeState {
+                store_path: OAUTH_STORE_PATH.to_owned(),
+            }),
+        }
+    }
+
+    async fn apply_runtime_config(&self, runtime: OAuthRuntimeConfig) -> Result<(), String> {
+        let target_store_path = runtime
+            .store_path
+            .and_then(|value| normalize_optional_text(Some(value), 2048))
+            .unwrap_or_else(|| OAUTH_STORE_PATH.to_owned());
+
+        let current_store_path = { self.runtime.lock().await.store_path.clone() };
+        if current_store_path == target_store_path {
+            return Ok(());
+        }
+
+        let mut loaded = load_oauth_store_disk_state(&target_store_path)?;
+        prune_oldest_oauth_sessions(&mut loaded.sessions, 128);
+        prune_oldest_oauth_credentials(&mut loaded.credentials, 256);
+        {
+            let mut guard = self.state.lock().await;
+            *guard = loaded.clone();
+        }
+        {
+            let mut runtime_guard = self.runtime.lock().await;
+            runtime_guard.store_path = target_store_path.clone();
+        }
+        persist_oauth_store_disk_state(&target_store_path, &loaded)?;
+        Ok(())
+    }
+
+    async fn persist_state_snapshot(&self, state: OAuthState) -> Result<(), String> {
+        let store_path = { self.runtime.lock().await.store_path.clone() };
+        persist_oauth_store_disk_state(&store_path, &state)
+    }
+
+    async fn providers(&self) -> AuthOAuthProvidersResult {
+        let guard = self.state.lock().await;
+        let mut provider_ids = OAUTH_PROVIDER_CATALOG
+            .iter()
+            .map(|entry| entry.id.to_owned())
+            .collect::<Vec<_>>();
+        provider_ids.extend(
+            guard
+                .credentials
+                .values()
+                .map(|credential| credential.provider_id.clone()),
+        );
+        sort_and_dedup_strings(&mut provider_ids);
+
+        let mut providers = Vec::new();
+        for provider_id in provider_ids {
+            let mut accounts = guard
+                .credentials
+                .values()
+                .filter(|credential| credential.provider_id.eq_ignore_ascii_case(&provider_id))
+                .map(oauth_credential_view_from_entry)
+                .collect::<Vec<_>>();
+            accounts.sort_by(|a, b| {
+                let account = a.account_id.cmp(&b.account_id);
+                if account != std::cmp::Ordering::Equal {
+                    return account;
+                }
+                a.profile_id.cmp(&b.profile_id)
+            });
+
+            providers.push(OAuthProviderView {
+                provider_id: provider_id.clone(),
+                display_name: oauth_provider_display_name(&provider_id),
+                verification_url: oauth_provider_verification_url(&provider_id),
+                aliases: oauth_provider_aliases(&provider_id),
+                connected_accounts: accounts.len(),
+                accounts,
+            });
+        }
+        providers.sort_by(|a, b| a.provider_id.cmp(&b.provider_id));
+
+        AuthOAuthProvidersResult {
+            generated_at_ms: now_ms(),
+            providers,
+        }
+    }
+
+    async fn start(&self, input: OAuthStartInput) -> Result<OAuthStartResult, String> {
+        let provider_id = normalize_oauth_provider_id(&input.provider_id)
+            .ok_or_else(|| "provider must be a non-empty string".to_owned())?;
+        let account_id = normalize_optional_text(Some(input.account_id), 128)
+            .ok_or_else(|| "accountId must be a non-empty string".to_owned())?;
+        let key = oauth_state_key(&provider_id, &account_id);
+        let now = now_ms();
+        let timeout_ms = input.timeout_ms.clamp(15_000, 900_000);
+
+        let (result, snapshot) = {
+            let mut guard = self.state.lock().await;
+            if !input.force {
+                if let Some(existing) = guard.sessions.get(&key) {
+                    if now <= existing.expires_at_ms {
+                        return Ok(OAuthStartResult {
+                            provider_id: existing.provider_id.clone(),
+                            account_id: existing.account_id.clone(),
+                            profile_id: existing.profile_id.clone(),
+                            session_id: existing.session_id.clone(),
+                            started_at_ms: existing.started_at_ms,
+                            expires_at_ms: existing.expires_at_ms,
+                            verification_url: existing.verification_url.clone(),
+                            user_code: existing.user_code.clone(),
+                            poll_interval_ms: 2_000,
+                            message: "OAuth session already in progress.".to_owned(),
+                        });
+                    }
+                }
+            }
+
+            let session_id = next_oauth_session_id();
+            let profile_id = oauth_default_profile_id(&provider_id, &account_id);
+            let started_at_ms = now;
+            let ready_at_ms = now.saturating_add(timeout_ms.min(2_000));
+            let expires_at_ms = now.saturating_add(timeout_ms);
+            let verification_url = oauth_provider_verification_url(&provider_id);
+            let session = OAuthSession {
+                session_id: session_id.clone(),
+                provider_id: provider_id.clone(),
+                account_id: account_id.clone(),
+                profile_id: profile_id.clone(),
+                started_at_ms,
+                ready_at_ms,
+                expires_at_ms,
+                verification_url: verification_url.clone(),
+                user_code: oauth_user_code(&provider_id, &session_id),
+                completed_at_ms: None,
+            };
+            let user_code = session.user_code.clone();
+            guard.sessions.insert(key, session);
+            prune_oldest_oauth_sessions(&mut guard.sessions, 128);
+            (
+                OAuthStartResult {
+                    provider_id,
+                    account_id,
+                    profile_id,
+                    session_id,
+                    started_at_ms,
+                    expires_at_ms,
+                    verification_url,
+                    user_code,
+                    poll_interval_ms: 2_000,
+                    message: "Open the verification URL and approve the device code.".to_owned(),
+                },
+                guard.clone(),
+            )
+        };
+        let _ = self.persist_state_snapshot(snapshot).await;
+        Ok(result)
+    }
+
+    async fn wait(&self, input: OAuthWaitInput) -> Result<OAuthWaitResult, String> {
+        let now = now_ms();
+        let timeout_ms = input.timeout_ms.max(1_000);
+        let requested_provider = input
+            .provider_id
+            .and_then(|provider| normalize_oauth_provider_id(&provider));
+        let requested_account = normalize_optional_text(input.account_id, 128);
+        let requested_session_id = normalize_optional_text(input.session_id, 128);
+
+        let (result, snapshot) = {
+            let mut guard = self.state.lock().await;
+            let (provider_id, account_id, session_id, session_key, session) =
+                if let Some(session_id) = requested_session_id.clone() {
+                    match guard
+                        .sessions
+                        .iter()
+                        .find(|(_, session)| session.session_id.eq_ignore_ascii_case(&session_id))
+                        .map(|(key, session)| (key.clone(), session.clone()))
+                    {
+                        Some((key, session)) => (
+                            session.provider_id.clone(),
+                            session.account_id.clone(),
+                            Some(session.session_id.clone()),
+                            Some(key),
+                            Some(session),
+                        ),
+                        None => {
+                            if let Some(provider_id) = requested_provider.clone() {
+                                let account_id = requested_account
+                                    .clone()
+                                    .unwrap_or_else(|| "default".to_owned());
+                                (provider_id, account_id, Some(session_id), None, None)
+                            } else {
+                                return Err(
+                                    "invalid auth.oauth.wait params: unknown sessionId".to_owned()
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    let Some(provider_id) = requested_provider.clone() else {
+                        return Err(
+                            "invalid auth.oauth.wait params: provider or sessionId required"
+                                .to_owned(),
+                        );
+                    };
+                    let account_id = requested_account
+                        .clone()
+                        .unwrap_or_else(|| "default".to_owned());
+                    let key = oauth_state_key(&provider_id, &account_id);
+                    let session = guard.sessions.get(&key).cloned();
+                    let session_id = session.as_ref().map(|entry| entry.session_id.clone());
+                    (provider_id, account_id, session_id, Some(key), session)
+                };
+
+            let credential_key = oauth_state_key(&provider_id, &account_id);
+            let credential = guard.credentials.get(&credential_key).cloned();
+            if let Some(credential) = credential {
+                if let Some(key) = session_key {
+                    let _ = guard.sessions.remove(&key);
+                }
+                (
+                    OAuthWaitResult {
+                        provider_id,
+                        account_id,
+                        session_id,
+                        connected: true,
+                        profile_id: Some(credential.profile_id),
+                        status: "connected".to_owned(),
+                        message: "OAuth credential is available.".to_owned(),
+                        retry_after_ms: None,
+                        expires_at_ms: credential.expires_at_ms,
+                    },
+                    Some(guard.clone()),
+                )
+            } else if let Some(session) = session {
+                if now > session.expires_at_ms {
+                    if let Some(key) = session_key {
+                        let _ = guard.sessions.remove(&key);
+                    }
+                    (
+                        OAuthWaitResult {
+                            provider_id,
+                            account_id,
+                            session_id: Some(session.session_id),
+                            connected: false,
+                            profile_id: None,
+                            status: "expired".to_owned(),
+                            message: "OAuth session expired. Start a new login flow.".to_owned(),
+                            retry_after_ms: None,
+                            expires_at_ms: Some(session.expires_at_ms),
+                        },
+                        Some(guard.clone()),
+                    )
+                } else {
+                    let retry_after_ms = if now.saturating_add(timeout_ms) >= session.ready_at_ms {
+                        Some(1_000)
+                    } else {
+                        Some(session.ready_at_ms.saturating_sub(now).clamp(1_000, timeout_ms))
+                    };
+                    (
+                        OAuthWaitResult {
+                            provider_id,
+                            account_id,
+                            session_id: Some(session.session_id),
+                            connected: false,
+                            profile_id: None,
+                            status: "pending".to_owned(),
+                            message: "OAuth session still waiting for completion.".to_owned(),
+                            retry_after_ms,
+                            expires_at_ms: Some(session.expires_at_ms),
+                        },
+                        None,
+                    )
+                }
+            } else {
+                (
+                    OAuthWaitResult {
+                        provider_id,
+                        account_id,
+                        session_id,
+                        connected: false,
+                        profile_id: None,
+                        status: "missing".to_owned(),
+                        message: "No active OAuth session for provider/account.".to_owned(),
+                        retry_after_ms: None,
+                        expires_at_ms: None,
+                    },
+                    None,
+                )
+            }
+        };
+
+        if let Some(snapshot) = snapshot {
+            let _ = self.persist_state_snapshot(snapshot).await;
+        }
+        Ok(result)
+    }
+
+    async fn complete(&self, input: OAuthCompleteInput) -> Result<OAuthCompleteResult, String> {
+        let session_id = normalize_optional_text(Some(input.session_id), 128)
+            .ok_or_else(|| "sessionId must be a non-empty string".to_owned())?;
+        let now = now_ms();
+        let (result, snapshot) = {
+            let mut guard = self.state.lock().await;
+            let Some((session_key, session)) = guard
+                .sessions
+                .iter()
+                .find(|(_, session)| session.session_id.eq_ignore_ascii_case(&session_id))
+                .map(|(key, session)| (key.clone(), session.clone()))
+            else {
+                return Err("unknown oauth session".to_owned());
+            };
+            if now > session.expires_at_ms {
+                let _ = guard.sessions.remove(&session_key);
+                return Err("oauth session expired".to_owned());
+            }
+
+            let account_id = input
+                .account_id
+                .and_then(|value| normalize_optional_text(Some(value), 128))
+                .unwrap_or_else(|| session.account_id.clone());
+            let provider_id = session.provider_id.clone();
+            let profile_id = oauth_default_profile_id(&provider_id, &account_id);
+            let source = input
+                .source
+                .unwrap_or_else(|| "oauth-device-flow".to_owned());
+            let credential = OAuthCredential {
+                provider_id: provider_id.clone(),
+                account_id: account_id.clone(),
+                profile_id: profile_id.clone(),
+                access_token: input
+                    .access_token
+                    .or_else(|| Some(format!("oauth-session-{session_id}"))),
+                refresh_token: input.refresh_token,
+                token_type: input.token_type,
+                expires_at_ms: input.expires_at_ms,
+                scopes: input.scopes,
+                source: source.clone(),
+                updated_at_ms: now,
+            };
+            guard
+                .credentials
+                .insert(oauth_state_key(&provider_id, &account_id), credential.clone());
+            if let Some(entry) = guard.sessions.get_mut(&session_key) {
+                entry.completed_at_ms = Some(now);
+                entry.account_id = account_id.clone();
+                entry.profile_id = profile_id.clone();
+            }
+            prune_oldest_oauth_credentials(&mut guard.credentials, 256);
+            (
+                OAuthCompleteResult {
+                    provider_id,
+                    account_id,
+                    profile_id,
+                    connected: true,
+                    source,
+                    updated_at_ms: now,
+                    expires_at_ms: credential.expires_at_ms,
+                    access_token_preview: oauth_token_preview(credential.access_token.as_ref()),
+                    refresh_token_present: credential.refresh_token.is_some(),
+                },
+                guard.clone(),
+            )
+        };
+        let _ = self.persist_state_snapshot(snapshot).await;
+        Ok(result)
+    }
+
+    async fn logout(&self, input: OAuthLogoutInput) -> OAuthLogoutResult {
+        let provider_id = input
+            .provider_id
+            .and_then(|provider| normalize_oauth_provider_id(&provider));
+        let account_id = input
+            .account_id
+            .and_then(|account| normalize_optional_text(Some(account), 128));
+        let (result, snapshot) = {
+            let mut guard = self.state.lock().await;
+            let mut removed = 0usize;
+            let mut revoked_sessions = 0usize;
+
+            if input.all || provider_id.is_none() {
+                removed = guard.credentials.len();
+                revoked_sessions = guard.sessions.len();
+                guard.credentials.clear();
+                guard.sessions.clear();
+            } else if let Some(provider_id) = provider_id.clone() {
+                if let Some(account_id) = account_id.clone() {
+                    let key = oauth_state_key(&provider_id, &account_id);
+                    if guard.credentials.remove(&key).is_some() {
+                        removed = removed.saturating_add(1);
+                    }
+                    if guard.sessions.remove(&key).is_some() {
+                        revoked_sessions = revoked_sessions.saturating_add(1);
+                    }
+                } else {
+                    let credential_keys = guard
+                        .credentials
+                        .iter()
+                        .filter(|(_, credential)| {
+                            credential.provider_id.eq_ignore_ascii_case(&provider_id)
+                        })
+                        .map(|(key, _)| key.clone())
+                        .collect::<Vec<_>>();
+                    for key in credential_keys {
+                        let _ = guard.credentials.remove(&key);
+                        removed = removed.saturating_add(1);
+                    }
+
+                    let session_keys = guard
+                        .sessions
+                        .iter()
+                        .filter(|(_, session)| session.provider_id.eq_ignore_ascii_case(&provider_id))
+                        .map(|(key, _)| key.clone())
+                        .collect::<Vec<_>>();
+                    for key in session_keys {
+                        let _ = guard.sessions.remove(&key);
+                        revoked_sessions = revoked_sessions.saturating_add(1);
+                    }
+                }
+            }
+
+            (
+                OAuthLogoutResult {
+                    provider_id: provider_id.unwrap_or_else(|| "all".to_owned()),
+                    account_id,
+                    removed,
+                    revoked_sessions,
+                },
+                guard.clone(),
+            )
+        };
+        let _ = self.persist_state_snapshot(snapshot).await;
+        result
+    }
+
+    async fn import(&self, input: OAuthImportInput) -> OAuthImportResult {
+        let mut requested = input
+            .providers
+            .iter()
+            .filter_map(|provider| normalize_oauth_provider_id(provider))
+            .collect::<Vec<_>>();
+        if requested.is_empty() {
+            requested = vec![
+                "openai-codex".to_owned(),
+                "anthropic".to_owned(),
+                "google-gemini-cli".to_owned(),
+                "qwen-portal".to_owned(),
+                "minimax-portal".to_owned(),
+            ];
+        }
+        sort_and_dedup_strings(&mut requested);
+
+        let mut candidates: Vec<(String, Result<Option<OAuthImportedCredential>, String>)> =
+            Vec::new();
+        for provider_id in &requested {
+            let candidate = match provider_id.as_str() {
+                "openai-codex" => read_codex_cli_oauth_credential(
+                    input.home_dir.as_deref(),
+                    input.codex_home.as_deref(),
+                ),
+                "anthropic" => read_claude_cli_oauth_credential(input.home_dir.as_deref()),
+                "google-gemini-cli" => read_gemini_cli_oauth_credential(input.home_dir.as_deref()),
+                "qwen-portal" => read_portal_cli_oauth_credential(
+                    input.home_dir.as_deref(),
+                    ".qwen/oauth_creds.json",
+                    "qwen-portal",
+                    "qwen-cli",
+                ),
+                "minimax-portal" => read_portal_cli_oauth_credential(
+                    input.home_dir.as_deref(),
+                    ".minimax/oauth_creds.json",
+                    "minimax-portal",
+                    "minimax-cli",
+                ),
+                _ => Err("no CLI import source is defined for this provider".to_owned()),
+            };
+            candidates.push((provider_id.clone(), candidate));
+        }
+
+        let mut results = Vec::new();
+        let mut imported_count = 0usize;
+        let mut skipped_count = 0usize;
+
+        let snapshot = {
+            let mut guard = self.state.lock().await;
+            for (provider_id, candidate) in candidates {
+                match candidate {
+                    Ok(Some(credential)) => {
+                        let state_key =
+                            oauth_state_key(&credential.provider_id, &credential.account_id);
+                        if !input.overwrite && guard.credentials.contains_key(&state_key) {
+                            skipped_count = skipped_count.saturating_add(1);
+                            results.push(OAuthImportProviderResult {
+                                provider_id,
+                                imported: false,
+                                account_id: Some(credential.account_id),
+                                profile_id: Some(credential.profile_id),
+                                source: Some(credential.source),
+                                reason: Some(
+                                    "credential already exists (set overwrite=true to replace)"
+                                        .to_owned(),
+                                ),
+                            });
+                            continue;
+                        }
+                        let stored = OAuthCredential {
+                            provider_id: credential.provider_id.clone(),
+                            account_id: credential.account_id.clone(),
+                            profile_id: credential.profile_id.clone(),
+                            access_token: credential.access_token,
+                            refresh_token: credential.refresh_token,
+                            token_type: credential.token_type,
+                            expires_at_ms: credential.expires_at_ms,
+                            scopes: credential.scopes,
+                            source: credential.source.clone(),
+                            updated_at_ms: now_ms(),
+                        };
+                        guard.credentials.insert(state_key, stored);
+                        prune_oldest_oauth_credentials(&mut guard.credentials, 256);
+                        imported_count = imported_count.saturating_add(1);
+                        results.push(OAuthImportProviderResult {
+                            provider_id,
+                            imported: true,
+                            account_id: Some(credential.account_id),
+                            profile_id: Some(credential.profile_id),
+                            source: Some(credential.source),
+                            reason: None,
+                        });
+                    }
+                    Ok(None) => {
+                        skipped_count = skipped_count.saturating_add(1);
+                        results.push(OAuthImportProviderResult {
+                            provider_id,
+                            imported: false,
+                            account_id: None,
+                            profile_id: None,
+                            source: None,
+                            reason: Some("no credential file found".to_owned()),
+                        });
+                    }
+                    Err(reason) => {
+                        skipped_count = skipped_count.saturating_add(1);
+                        results.push(OAuthImportProviderResult {
+                            provider_id,
+                            imported: false,
+                            account_id: None,
+                            profile_id: None,
+                            source: None,
+                            reason: Some(reason),
+                        });
+                    }
+                }
+            }
+            guard.clone()
+        };
+
+        if imported_count > 0 {
+            let _ = self.persist_state_snapshot(snapshot).await;
+        }
+
+        OAuthImportResult {
+            requested_count: requested.len(),
+            imported_count,
+            skipped_count,
+            results,
+        }
+    }
+}
+
+fn oauth_credential_view_from_entry(entry: &OAuthCredential) -> OAuthCredentialView {
+    OAuthCredentialView {
+        account_id: entry.account_id.clone(),
+        profile_id: entry.profile_id.clone(),
+        source: entry.source.clone(),
+        updated_at_ms: entry.updated_at_ms,
+        expires_at_ms: entry.expires_at_ms,
+        access_token_preview: oauth_token_preview(entry.access_token.as_ref()),
+        refresh_token_present: entry.refresh_token.is_some(),
+        scopes: entry.scopes.clone(),
+    }
+}
+
+fn oauth_state_key(provider_id: &str, account_id: &str) -> String {
+    format!("{}:{}", normalize(provider_id), normalize(account_id))
+}
+
+fn oauth_user_code(provider_id: &str, session_id: &str) -> String {
+    let provider = normalize(provider_id)
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .take(4)
+        .collect::<String>()
+        .to_ascii_uppercase();
+    let suffix = session_id
+        .chars()
+        .rev()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .take(6)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>()
+        .to_ascii_uppercase();
+    format!(
+        "{}-{}",
+        if provider.is_empty() {
+            "OAUTH"
+        } else {
+            provider.as_str()
+        },
+        if suffix.is_empty() { "000000" } else { suffix.as_str() }
+    )
+}
+
+fn prune_oldest_oauth_sessions(sessions: &mut HashMap<String, OAuthSession>, max_sessions: usize) {
+    while sessions.len() > max_sessions {
+        let Some(oldest_key) = sessions
+            .iter()
+            .min_by_key(|(_, entry)| entry.started_at_ms)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        let _ = sessions.remove(&oldest_key);
+    }
+}
+
+fn prune_oldest_oauth_credentials(
+    credentials: &mut HashMap<String, OAuthCredential>,
+    max_credentials: usize,
+) {
+    while credentials.len() > max_credentials {
+        let Some(oldest_key) = credentials
+            .iter()
+            .min_by_key(|(_, entry)| entry.updated_at_ms)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        let _ = credentials.remove(&oldest_key);
+    }
+}
+
+fn oauth_store_path_is_memory(path: &str) -> bool {
+    normalize(path).starts_with("memory://")
+}
+
+fn load_oauth_store_disk_state(path: &str) -> Result<OAuthState, String> {
+    if oauth_store_path_is_memory(path) {
+        return Ok(OAuthState::default());
+    }
+    let store_path = PathBuf::from(path);
+    if !store_path.exists() {
+        return Ok(OAuthState::default());
+    }
+    let raw = std::fs::read_to_string(&store_path)
+        .map_err(|err| format!("failed reading oauth store {}: {err}", store_path.display()))?;
+    serde_json::from_str::<OAuthState>(&raw)
+        .map_err(|err| format!("failed parsing oauth store {}: {err}", store_path.display()))
+}
+
+fn persist_oauth_store_disk_state(path: &str, state: &OAuthState) -> Result<(), String> {
+    if oauth_store_path_is_memory(path) {
+        return Ok(());
+    }
+    let payload = serde_json::to_string_pretty(state)
+        .map_err(|err| format!("failed serializing oauth store: {err}"))?;
+    let store_path = PathBuf::from(path);
+    if let Some(parent) = store_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "failed creating oauth store directory {}: {err}",
+                parent.display()
+            )
+        })?;
+    }
+    let mut temp_path = store_path.clone();
+    let temp_name = format!(
+        ".{}.tmp",
+        store_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("oauth-store")
+    );
+    temp_path.set_file_name(temp_name);
+    std::fs::write(&temp_path, payload)
+        .map_err(|err| format!("failed writing oauth temp store {}: {err}", temp_path.display()))?;
+    if store_path.exists() {
+        let _ = std::fs::remove_file(&store_path);
+    }
+    std::fs::rename(&temp_path, &store_path)
+        .map_err(|err| format!("failed replacing oauth store {}: {err}", store_path.display()))
+}
+
+fn resolve_home_path(home_override: Option<&str>) -> Option<PathBuf> {
+    if let Some(raw) = home_override
+        .and_then(|value| normalize_optional_text(Some(value.to_owned()), 2048))
+    {
+        return Some(PathBuf::from(raw));
+    }
+    env::var("HOME")
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 2048))
+        .map(PathBuf::from)
+        .or_else(|| {
+            env::var("USERPROFILE")
+                .ok()
+                .and_then(|value| normalize_optional_text(Some(value), 2048))
+                .map(PathBuf::from)
+        })
+}
+
+fn expand_home_relative_path(path: &str, home: Option<&Path>) -> PathBuf {
+    if path == "~" {
+        if let Some(home) = home {
+            return home.to_path_buf();
+        }
+        return PathBuf::from(path);
+    }
+    if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
+        if let Some(home) = home {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
+
+fn resolve_codex_home_path(home_dir: Option<&str>, codex_home: Option<&str>) -> Option<PathBuf> {
+    let home = resolve_home_path(home_dir);
+    if let Some(raw) = codex_home
+        .and_then(|value| normalize_optional_text(Some(value.to_owned()), 2048))
+    {
+        return Some(expand_home_relative_path(&raw, home.as_deref()));
+    }
+    if let Some(raw) = env::var("CODEX_HOME")
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 2048))
+    {
+        return Some(expand_home_relative_path(&raw, home.as_deref()));
+    }
+    home.map(|path| path.join(".codex"))
+}
+
+fn parse_u64_from_json(value: Option<&Value>) -> Option<u64> {
+    let value = value?;
+    if let Some(raw) = value.as_u64() {
+        return Some(raw);
+    }
+    if let Some(raw) = value.as_i64() {
+        return (raw > 0).then_some(raw as u64);
+    }
+    value
+        .as_str()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+}
+
+fn file_modified_ms(path: &Path) -> Option<u64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let duration = modified.duration_since(UNIX_EPOCH).ok()?;
+    Some(duration.as_millis() as u64)
+}
+
+fn read_json_file_value(path: &Path) -> Result<Option<Value>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(path)
+        .map_err(|err| format!("failed reading {}: {err}", path.display()))?;
+    let parsed = serde_json::from_str::<Value>(&raw)
+        .map_err(|err| format!("failed parsing {}: {err}", path.display()))?;
+    Ok(Some(parsed))
+}
+
+fn read_codex_cli_oauth_credential(
+    home_dir: Option<&str>,
+    codex_home: Option<&str>,
+) -> Result<Option<OAuthImportedCredential>, String> {
+    let Some(codex_home) = resolve_codex_home_path(home_dir, codex_home) else {
+        return Ok(None);
+    };
+    let auth_path = codex_home.join("auth.json");
+    let Some(raw) = read_json_file_value(&auth_path)? else {
+        return Ok(None);
+    };
+    let Some(tokens) = raw.get("tokens").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    let access_token = tokens
+        .get("access_token")
+        .and_then(Value::as_str)
+        .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 8_192));
+    if access_token.is_none() {
+        return Ok(None);
+    }
+    let refresh_token = tokens
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 8_192));
+    let account_id = tokens
+        .get("account_id")
+        .and_then(Value::as_str)
+        .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 256))
+        .unwrap_or_else(|| "codex-cli".to_owned());
+    let expires_at_ms = file_modified_ms(&auth_path).map(|value| value.saturating_add(3_600_000));
+    Ok(Some(OAuthImportedCredential {
+        provider_id: "openai-codex".to_owned(),
+        account_id: account_id.clone(),
+        profile_id: oauth_default_profile_id("openai-codex", &account_id),
+        source: auth_path.to_string_lossy().to_string(),
+        access_token,
+        refresh_token,
+        token_type: Some("Bearer".to_owned()),
+        expires_at_ms,
+        scopes: Vec::new(),
+    }))
+}
+
+fn read_claude_cli_oauth_credential(
+    home_dir: Option<&str>,
+) -> Result<Option<OAuthImportedCredential>, String> {
+    let Some(home) = resolve_home_path(home_dir) else {
+        return Ok(None);
+    };
+    let credentials_path = home.join(".claude").join(".credentials.json");
+    let Some(raw) = read_json_file_value(&credentials_path)? else {
+        return Ok(None);
+    };
+    let Some(oauth) = raw.get("claudeAiOauth").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    let access_token = oauth
+        .get("accessToken")
+        .and_then(Value::as_str)
+        .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 8_192));
+    if access_token.is_none() {
+        return Ok(None);
+    }
+    let refresh_token = oauth
+        .get("refreshToken")
+        .and_then(Value::as_str)
+        .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 8_192));
+    let expires_at_ms = parse_u64_from_json(oauth.get("expiresAt"));
+    let account_id = oauth
+        .get("email")
+        .or_else(|| oauth.get("emailAddress"))
+        .and_then(Value::as_str)
+        .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 256))
+        .unwrap_or_else(|| "claude-cli".to_owned());
+    Ok(Some(OAuthImportedCredential {
+        provider_id: "anthropic".to_owned(),
+        account_id: account_id.clone(),
+        profile_id: oauth_default_profile_id("anthropic", &account_id),
+        source: credentials_path.to_string_lossy().to_string(),
+        access_token,
+        refresh_token,
+        token_type: Some("Bearer".to_owned()),
+        expires_at_ms,
+        scopes: Vec::new(),
+    }))
+}
+
+fn read_gemini_cli_oauth_credential(
+    home_dir: Option<&str>,
+) -> Result<Option<OAuthImportedCredential>, String> {
+    read_portal_cli_oauth_credential(
+        home_dir,
+        ".gemini/oauth_creds.json",
+        "google-gemini-cli",
+        "gemini-cli",
+    )
+}
+
+fn read_portal_cli_oauth_credential(
+    home_dir: Option<&str>,
+    relative_path: &str,
+    provider_id: &str,
+    account_id: &str,
+) -> Result<Option<OAuthImportedCredential>, String> {
+    let Some(home) = resolve_home_path(home_dir) else {
+        return Ok(None);
+    };
+    let credentials_path = home.join(PathBuf::from(relative_path));
+    let Some(raw) = read_json_file_value(&credentials_path)? else {
+        return Ok(None);
+    };
+    let access_token = raw
+        .get("access_token")
+        .and_then(Value::as_str)
+        .and_then(|value| normalize_optional_text(Some(value.to_owned()), 8_192));
+    if access_token.is_none() {
+        return Ok(None);
+    }
+    let refresh_token = raw
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .and_then(|value| normalize_optional_text(Some(value.to_owned()), 8_192));
+    let expires_at_ms = parse_u64_from_json(raw.get("expiry_date"));
+    let scope_value = raw
+        .get("scope")
+        .and_then(Value::as_str)
+        .and_then(|scope| normalize_optional_text(Some(scope.to_owned()), 2_048))
+        .unwrap_or_default();
+    let scopes = scope_value
+        .split_whitespace()
+        .filter_map(|scope| normalize_optional_text(Some(scope.to_owned()), 128))
+        .collect::<Vec<_>>();
+
+    Ok(Some(OAuthImportedCredential {
+        provider_id: provider_id.to_owned(),
+        account_id: account_id.to_owned(),
+        profile_id: oauth_default_profile_id(provider_id, account_id),
+        source: credentials_path.to_string_lossy().to_string(),
+        access_token,
+        refresh_token,
+        token_type: Some("Bearer".to_owned()),
+        expires_at_ms,
+        scopes,
+    }))
+}
+
 struct WizardRegistry {
     state: Mutex<WizardState>,
     runtime: Mutex<WizardRuntimeState>,
@@ -16740,6 +18188,137 @@ fn resolve_web_login_provider(channel_capabilities: &[ChannelCapabilities]) -> O
         }
     }
     None
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OAuthProviderCatalogEntry {
+    id: &'static str,
+    display_name: &'static str,
+    aliases: &'static [&'static str],
+    verification_url: &'static str,
+}
+
+const OAUTH_PROVIDER_CATALOG: &[OAuthProviderCatalogEntry] = &[
+    OAuthProviderCatalogEntry {
+        id: "openai",
+        display_name: "ChatGPT",
+        aliases: &["chatgpt", "openai-chatgpt"],
+        verification_url: "https://chatgpt.com",
+    },
+    OAuthProviderCatalogEntry {
+        id: "openai-codex",
+        display_name: "Codex",
+        aliases: &["codex", "codex-cli", "openai-codex-cli"],
+        verification_url: "https://platform.openai.com",
+    },
+    OAuthProviderCatalogEntry {
+        id: "anthropic",
+        display_name: "Claude",
+        aliases: &["claude", "claude-cli"],
+        verification_url: "https://claude.ai",
+    },
+    OAuthProviderCatalogEntry {
+        id: "google-gemini-cli",
+        display_name: "Gemini",
+        aliases: &["gemini", "gemini-cli", "google-gemini"],
+        verification_url: "https://aistudio.google.com",
+    },
+    OAuthProviderCatalogEntry {
+        id: "qwen-portal",
+        display_name: "Qwen",
+        aliases: &["qwen", "qwen-cli"],
+        verification_url: "https://chat.qwen.ai",
+    },
+    OAuthProviderCatalogEntry {
+        id: "minimax-portal",
+        display_name: "MiniMax",
+        aliases: &["minimax", "minimax-cli"],
+        verification_url: "https://chat.minimax.io",
+    },
+    OAuthProviderCatalogEntry {
+        id: "kimi-coding",
+        display_name: "Kimi",
+        aliases: &["kimi", "kimi-code"],
+        verification_url: "https://www.kimi.com",
+    },
+];
+
+fn oauth_provider_catalog_entry(provider: &str) -> Option<&'static OAuthProviderCatalogEntry> {
+    let normalized = normalize(provider);
+    OAUTH_PROVIDER_CATALOG.iter().find(|entry| {
+        normalize(entry.id) == normalized
+            || entry
+                .aliases
+                .iter()
+                .any(|alias| normalize(alias) == normalized)
+    })
+}
+
+fn normalize_oauth_provider_id(provider: &str) -> Option<String> {
+    let candidate = normalize_optional_text(Some(provider.to_owned()), 128)?;
+    if let Some(entry) = oauth_provider_catalog_entry(&candidate) {
+        return Some(entry.id.to_owned());
+    }
+    let normalized = normalize_provider_id(&candidate);
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn resolve_oauth_provider_param(
+    provider_id: Option<String>,
+    provider: Option<String>,
+) -> Option<String> {
+    let raw = provider_id.or(provider)?;
+    normalize_oauth_provider_id(&raw)
+}
+
+fn oauth_provider_display_name(provider: &str) -> String {
+    oauth_provider_catalog_entry(provider)
+        .map(|entry| entry.display_name.to_owned())
+        .unwrap_or_else(|| provider.to_owned())
+}
+
+fn oauth_provider_verification_url(provider: &str) -> String {
+    oauth_provider_catalog_entry(provider)
+        .map(|entry| entry.verification_url.to_owned())
+        .unwrap_or_else(|| "https://example.com/oauth".to_owned())
+}
+
+fn oauth_provider_aliases(provider: &str) -> Vec<String> {
+    oauth_provider_catalog_entry(provider)
+        .map(|entry| {
+            let mut aliases = entry
+                .aliases
+                .iter()
+                .map(|alias| alias.to_string())
+                .collect::<Vec<_>>();
+            sort_and_dedup_strings(&mut aliases);
+            aliases
+        })
+        .unwrap_or_default()
+}
+
+fn oauth_default_profile_id(provider: &str, account_id: &str) -> String {
+    match provider {
+        "anthropic" => "anthropic:claude-cli".to_owned(),
+        "openai-codex" => "openai-codex:codex-cli".to_owned(),
+        "google-gemini-cli" => "google-gemini-cli:gemini-cli".to_owned(),
+        "qwen-portal" => "qwen-portal:qwen-cli".to_owned(),
+        "minimax-portal" => "minimax-portal:minimax-cli".to_owned(),
+        _ => format!("{provider}:{account_id}"),
+    }
+}
+
+fn oauth_token_preview(token: Option<&String>) -> Option<String> {
+    let token = token?;
+    if token.len() <= 8 {
+        return Some("********".to_owned());
+    }
+    let prefix = &token[..4];
+    let suffix = &token[token.len().saturating_sub(4)..];
+    Some(format!("{prefix}...{suffix}"))
 }
 
 fn extract_update_delivery_info(session_key: Option<&str>) -> (Option<Value>, Option<String>) {
@@ -17324,6 +18903,11 @@ impl ConfigRegistry {
         web_login_runtime_config_from_config(&guard.config)
     }
 
+    async fn oauth_runtime_config(&self) -> OAuthRuntimeConfig {
+        let guard = self.state.lock().await;
+        oauth_runtime_config_from_config(&guard.config)
+    }
+
     async fn wizard_runtime_config(&self) -> WizardRuntimeConfig {
         let guard = self.state.lock().await;
         wizard_runtime_config_from_config(&guard.config)
@@ -17784,6 +19368,29 @@ fn web_login_runtime_config_from_config(config: &Value) -> WebLoginRuntimeConfig
             })
         });
     WebLoginRuntimeConfig { store_path }
+}
+
+fn oauth_runtime_config_from_config(config: &Value) -> OAuthRuntimeConfig {
+    let runtime = config.get("runtime").and_then(Value::as_object);
+    let auth_oauth = config
+        .get("auth")
+        .and_then(Value::as_object)
+        .and_then(|auth| auth.get("oauth").and_then(Value::as_object))
+        .or_else(|| config.get("oauth").and_then(Value::as_object));
+    let store_path = auth_oauth
+        .and_then(|obj| {
+            read_config_string(
+                obj,
+                &["storePath", "store_path", "statePath", "state_path"],
+                2048,
+            )
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string(obj, &["oauthStorePath", "oauth_store_path"], 2048)
+            })
+        });
+    OAuthRuntimeConfig { store_path }
 }
 
 fn wizard_runtime_config_from_config(config: &Value) -> WizardRuntimeConfig {
@@ -21283,6 +22890,78 @@ struct WebLoginWaitParams {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+struct AuthOAuthProvidersParams {}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct AuthOAuthStartParams {
+    provider: Option<String>,
+    #[serde(rename = "providerId", alias = "provider_id")]
+    provider_id: Option<String>,
+    #[serde(rename = "accountId", alias = "account_id")]
+    account_id: Option<String>,
+    #[serde(rename = "timeoutMs", alias = "timeout_ms")]
+    timeout_ms: Option<u64>,
+    force: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct AuthOAuthWaitParams {
+    provider: Option<String>,
+    #[serde(rename = "providerId", alias = "provider_id")]
+    provider_id: Option<String>,
+    #[serde(rename = "accountId", alias = "account_id")]
+    account_id: Option<String>,
+    #[serde(rename = "sessionId", alias = "session_id")]
+    session_id: Option<String>,
+    #[serde(rename = "timeoutMs", alias = "timeout_ms")]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthOAuthCompleteParams {
+    #[serde(rename = "sessionId", alias = "session_id")]
+    session_id: String,
+    #[serde(rename = "accountId", alias = "account_id")]
+    account_id: Option<String>,
+    #[serde(rename = "accessToken", alias = "access_token")]
+    access_token: Option<String>,
+    #[serde(rename = "refreshToken", alias = "refresh_token")]
+    refresh_token: Option<String>,
+    #[serde(rename = "tokenType", alias = "token_type")]
+    token_type: Option<String>,
+    #[serde(rename = "expiresAtMs", alias = "expires_at_ms")]
+    expires_at_ms: Option<u64>,
+    scopes: Option<Vec<String>>,
+    source: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct AuthOAuthLogoutParams {
+    provider: Option<String>,
+    #[serde(rename = "providerId", alias = "provider_id")]
+    provider_id: Option<String>,
+    #[serde(rename = "accountId", alias = "account_id")]
+    account_id: Option<String>,
+    all: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct AuthOAuthImportParams {
+    providers: Option<Vec<String>>,
+    #[serde(rename = "homeDir", alias = "home_dir")]
+    home_dir: Option<String>,
+    #[serde(rename = "codexHome", alias = "codex_home")]
+    codex_home: Option<String>,
+    overwrite: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 struct WizardStartParams {
     mode: Option<String>,
     workspace: Option<String>,
@@ -22936,6 +24615,11 @@ fn next_web_login_session_id() -> String {
     format!("web-login-{}-{sequence}", now_ms())
 }
 
+fn next_oauth_session_id() -> String {
+    let sequence = OAUTH_SESSION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("oauth-{}-{sequence}", now_ms())
+}
+
 fn next_wizard_session_id() -> String {
     let sequence = WIZARD_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     format!("wizard-{}-{sequence}", now_ms())
@@ -23220,6 +24904,12 @@ mod tests {
         let voicewake_spec = voicewake.spec.expect("voicewake spec");
         assert_eq!(voicewake_spec.family, MethodFamily::Gateway);
         assert!(voicewake_spec.requires_auth);
+
+        let oauth = registry.resolve("auth.oauth.providers");
+        assert!(oauth.known);
+        let oauth_spec = oauth.spec.expect("oauth spec");
+        assert_eq!(oauth_spec.family, MethodFamily::Gateway);
+        assert!(oauth_spec.requires_auth);
     }
 
     #[test]
@@ -23577,6 +25267,30 @@ mod tests {
             vec!["openai".to_owned()]
         );
         assert!(super::model_provider_failover_chain("unknown-provider").is_empty());
+    }
+
+    #[test]
+    fn oauth_provider_aliases_normalize_major_providers() {
+        assert_eq!(
+            super::normalize_oauth_provider_id("chatgpt"),
+            Some("openai".to_owned())
+        );
+        assert_eq!(
+            super::normalize_oauth_provider_id("codex-cli"),
+            Some("openai-codex".to_owned())
+        );
+        assert_eq!(
+            super::normalize_oauth_provider_id("claude"),
+            Some("anthropic".to_owned())
+        );
+        assert_eq!(
+            super::normalize_oauth_provider_id("gemini"),
+            Some("google-gemini-cli".to_owned())
+        );
+        assert_eq!(
+            super::normalize_oauth_provider_id("kimi"),
+            Some("kimi-coding".to_owned())
+        );
     }
 
     #[tokio::test]
@@ -32626,6 +34340,132 @@ mod tests {
             }
             _ => panic!("expected web.login.wait handled"),
         }
+
+        let oauth_start = RpcRequestFrame {
+            id: "req-oauth-start".to_owned(),
+            method: "auth.oauth.start".to_owned(),
+            params: serde_json::json!({
+                "provider": "chatgpt",
+                "accountId": "default",
+                "timeoutMs": 120000
+            }),
+        };
+        let oauth_session_id = match dispatcher.handle_request(&oauth_start).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/providerId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("openai")
+                );
+                payload
+                    .pointer("/sessionId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .expect("oauth session id")
+            }
+            _ => panic!("expected auth.oauth.start handled"),
+        };
+
+        let oauth_wait_pending = RpcRequestFrame {
+            id: "req-oauth-wait-pending".to_owned(),
+            method: "auth.oauth.wait".to_owned(),
+            params: serde_json::json!({
+                "sessionId": oauth_session_id
+            }),
+        };
+        match dispatcher.handle_request(&oauth_wait_pending).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(false)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/status")
+                        .and_then(serde_json::Value::as_str),
+                    Some("pending")
+                );
+            }
+            _ => panic!("expected auth.oauth.wait handled"),
+        }
+
+        let oauth_complete = RpcRequestFrame {
+            id: "req-oauth-complete".to_owned(),
+            method: "auth.oauth.complete".to_owned(),
+            params: serde_json::json!({
+                "sessionId": oauth_session_id,
+                "accessToken": "tok_test_openai_access",
+                "refreshToken": "tok_test_openai_refresh",
+                "expiresAtMs": now_ms() + 60_000
+            }),
+        };
+        match dispatcher.handle_request(&oauth_complete).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/providerId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("openai")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected auth.oauth.complete handled"),
+        }
+
+        let oauth_wait_connected = RpcRequestFrame {
+            id: "req-oauth-wait-connected".to_owned(),
+            method: "auth.oauth.wait".to_owned(),
+            params: serde_json::json!({
+                "provider": "openai",
+                "accountId": "default",
+                "timeoutMs": 1000
+            }),
+        };
+        match dispatcher.handle_request(&oauth_wait_connected).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected auth.oauth.wait handled"),
+        }
+
+        let oauth_logout = RpcRequestFrame {
+            id: "req-oauth-logout".to_owned(),
+            method: "auth.oauth.logout".to_owned(),
+            params: serde_json::json!({
+                "provider": "openai",
+                "accountId": "default"
+            }),
+        };
+        match dispatcher.handle_request(&oauth_logout).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/providerId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("openai")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/removed")
+                        .and_then(serde_json::Value::as_u64),
+                    Some(1)
+                );
+            }
+            _ => panic!("expected auth.oauth.logout handled"),
+        }
     }
 
     #[tokio::test]
@@ -32684,6 +34524,155 @@ mod tests {
             _ => panic!("expected web.login.start handled"),
         };
         assert_eq!(recovered_session_id, first_session_id);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_oauth_imports_cli_credentials_and_persists_store() {
+        let root = std::env::temp_dir().join(format!("openclaw-rs-oauth-import-{}", now_ms()));
+        fs::create_dir_all(&root).expect("create temp oauth root");
+        let home_dir = root.join("home");
+        let codex_home = root.join("codex-home");
+        let oauth_store_path = root.join("oauth").join("state.json");
+
+        fs::create_dir_all(home_dir.join(".claude")).expect("create claude dir");
+        fs::create_dir_all(home_dir.join(".gemini")).expect("create gemini dir");
+        fs::create_dir_all(&codex_home).expect("create codex home");
+
+        fs::write(
+            home_dir.join(".claude").join(".credentials.json"),
+            serde_json::to_string_pretty(&json!({
+                "claudeAiOauth": {
+                    "accessToken": "claude-access-token",
+                    "refreshToken": "claude-refresh-token",
+                    "expiresAt": now_ms() + 120_000
+                }
+            }))
+            .expect("serialize claude credential"),
+        )
+        .expect("write claude credential");
+        fs::write(
+            home_dir.join(".gemini").join("oauth_creds.json"),
+            serde_json::to_string_pretty(&json!({
+                "access_token": "gemini-access-token",
+                "refresh_token": "gemini-refresh-token",
+                "expiry_date": now_ms() + 180_000,
+                "scope": "profile email"
+            }))
+            .expect("serialize gemini credential"),
+        )
+        .expect("write gemini credential");
+        fs::write(
+            codex_home.join("auth.json"),
+            serde_json::to_string_pretty(&json!({
+                "tokens": {
+                    "access_token": "codex-access-token",
+                    "refresh_token": "codex-refresh-token",
+                    "account_id": "codex-cli"
+                }
+            }))
+            .expect("serialize codex credential"),
+        )
+        .expect("write codex credential");
+
+        let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "auth": {
+                    "oauth": {
+                        "storePath": oauth_store_path.to_string_lossy().to_string()
+                    }
+                }
+            }),
+        )
+        .await;
+
+        let import = RpcRequestFrame {
+            id: "req-oauth-import-cli".to_owned(),
+            method: "auth.oauth.import".to_owned(),
+            params: json!({
+                "providers": ["codex", "claude", "gemini"],
+                "homeDir": home_dir.to_string_lossy().to_string(),
+                "codexHome": codex_home.to_string_lossy().to_string(),
+                "overwrite": true
+            }),
+        };
+        match dispatcher.handle_request(&import).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/importedCount")
+                        .and_then(serde_json::Value::as_u64),
+                    Some(3)
+                );
+            }
+            _ => panic!("expected auth.oauth.import handled"),
+        }
+        assert!(oauth_store_path.exists(), "oauth store should be persisted");
+
+        let providers = RpcRequestFrame {
+            id: "req-oauth-providers".to_owned(),
+            method: "auth.oauth.providers".to_owned(),
+            params: json!({}),
+        };
+        match dispatcher.handle_request(&providers).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                let list = payload
+                    .pointer("/providers")
+                    .and_then(serde_json::Value::as_array)
+                    .expect("providers array");
+                let codex = list.iter().find(|entry| {
+                    entry
+                        .pointer("/providerId")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("openai-codex")
+                });
+                assert!(
+                    codex
+                        .and_then(|entry| entry.pointer("/connectedAccounts"))
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        >= 1
+                );
+            }
+            _ => panic!("expected auth.oauth.providers handled"),
+        }
+
+        let restarted = RpcDispatcher::new();
+        patch_config(
+            &restarted,
+            json!({
+                "auth": {
+                    "oauth": {
+                        "storePath": oauth_store_path.to_string_lossy().to_string()
+                    }
+                }
+            }),
+        )
+        .await;
+
+        let wait_after_restart = RpcRequestFrame {
+            id: "req-oauth-wait-after-restart".to_owned(),
+            method: "auth.oauth.wait".to_owned(),
+            params: json!({
+                "provider": "codex",
+                "accountId": "codex-cli",
+                "timeoutMs": 1000
+            }),
+        };
+        match restarted.handle_request(&wait_after_restart).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected auth.oauth.wait handled"),
+        }
 
         let _ = fs::remove_dir_all(&root);
     }

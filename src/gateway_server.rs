@@ -85,6 +85,7 @@ const READ_METHODS: &[&str] = &[
     "config.get",
     "config.schema",
     "talk.config",
+    "auth.oauth.providers",
 ];
 const WRITE_METHODS: &[&str] = &[
     "send",
@@ -105,6 +106,11 @@ const WRITE_METHODS: &[&str] = &[
     "canvas.present",
     "web.login.start",
     "web.login.wait",
+    "auth.oauth.start",
+    "auth.oauth.wait",
+    "auth.oauth.complete",
+    "auth.oauth.logout",
+    "auth.oauth.import",
     "wizard.start",
     "wizard.next",
     "wizard.cancel",
@@ -1866,6 +1872,8 @@ mod tests {
             "browser.open",
             "canvas.present",
             "web.login.start",
+            "auth.oauth.start",
+            "auth.oauth.import",
             "wizard.start",
             "config.patch",
             "config.apply",
