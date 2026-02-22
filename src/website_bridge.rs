@@ -1,7 +1,15 @@
-use std::time::Duration;
+use std::fmt::Write as _;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use reqwest::Client;
-use serde_json::Value;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
+use hmac::{Hmac, Mac};
+use reqwest::{Client, Url};
+use serde::Deserialize;
+use serde_json::{json, Value};
+use sha2::Sha256;
+use url::form_urlencoded;
 
 #[derive(Debug, Clone)]
 pub struct WebsiteBridgeRequest<'a> {
@@ -25,6 +33,25 @@ pub struct WebsiteBridgeResponse {
     pub endpoint: String,
 }
 
+const ZAI_SIGNING_KEY: &str = "key-@@@@)))()((9))-xxxx&&&%%%%%";
+const ZAI_FE_VERSION: &str = "prod-fe-1.0.241";
+static ZAI_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+type HmacSha256 = Hmac<Sha256>;
+
+#[derive(Debug, Clone, Deserialize)]
+struct ZaiGuestAuthResponse {
+    id: String,
+    token: String,
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ZaiChatCreateResponse {
+    id: String,
+}
+
 pub async fn invoke_openai_compatible(
     request: WebsiteBridgeRequest<'_>,
 ) -> Result<WebsiteBridgeResponse, String> {
@@ -36,6 +63,14 @@ pub async fn invoke_openai_compatible(
 
     let website_online = probe_website_status(&client, request.website_url).await;
 
+    let mut attempts = Vec::new();
+    if should_use_zai_guest_bridge(&request) {
+        match invoke_zai_guest_bridge(&client, &request).await {
+            Ok(response) => return Ok(response),
+            Err(err) => attempts.push(format!("official_zai_bridge_error: {err}")),
+        }
+    }
+
     let mut candidate_endpoints = request
         .candidate_base_urls
         .iter()
@@ -43,11 +78,10 @@ pub async fn invoke_openai_compatible(
         .map(|base| resolve_chat_completion_endpoint(&base))
         .collect::<Vec<_>>();
     candidate_endpoints.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
-    if candidate_endpoints.is_empty() {
-        return Err("website bridge has no candidate endpoints configured".to_owned());
+    if candidate_endpoints.is_empty() && attempts.is_empty() {
+        attempts.push("website bridge has no candidate endpoints configured".to_owned());
     }
 
-    let mut attempts = Vec::new();
     for endpoint in candidate_endpoints {
         let mut request_builder = client
             .post(&endpoint)
@@ -186,6 +220,428 @@ fn truncate_text(value: &str, max_len: usize) -> String {
     let mut out = value[..end].to_owned();
     out.push_str("...");
     out
+}
+
+fn should_use_zai_guest_bridge(request: &WebsiteBridgeRequest<'_>) -> bool {
+    if request
+        .api_key
+        .and_then(|value| normalize_optional_text(value, 4_096))
+        .is_some()
+    {
+        return false;
+    }
+    let provider = request.provider.trim().to_ascii_lowercase();
+    if provider.contains("zai") || provider.contains("zhipu") {
+        return true;
+    }
+    request
+        .website_url
+        .map(|url| url.to_ascii_lowercase().contains("chat.z.ai"))
+        .unwrap_or(false)
+        || request
+            .candidate_base_urls
+            .iter()
+            .any(|url| url.to_ascii_lowercase().contains("chat.z.ai"))
+}
+
+async fn invoke_zai_guest_bridge(
+    client: &Client,
+    request: &WebsiteBridgeRequest<'_>,
+) -> Result<WebsiteBridgeResponse, String> {
+    let origin = resolve_zai_origin(request)
+        .ok_or_else(|| "zai guest bridge origin could not be resolved".to_owned())?;
+
+    let auth_endpoint = format!("{origin}/api/v1/auths/");
+    let auth_response = client
+        .get(&auth_endpoint)
+        .send()
+        .await
+        .map_err(|err| format!("zai auth request failed: {err}"))?;
+    let auth_status = auth_response.status();
+    let auth_body = auth_response
+        .text()
+        .await
+        .map_err(|err| format!("zai auth body read failed: {err}"))?;
+    if !auth_status.is_success() {
+        return Err(format!(
+            "zai auth request failed with status {}: {}",
+            auth_status.as_u16(),
+            truncate_text(&auth_body, 320)
+        ));
+    }
+    let auth: ZaiGuestAuthResponse =
+        serde_json::from_str(&auth_body).map_err(|err| format!("zai auth parse failed: {err}"))?;
+    if auth.token.trim().is_empty() {
+        return Err("zai auth response missing token".to_owned());
+    }
+    if auth.id.trim().is_empty() {
+        return Err("zai auth response missing user id".to_owned());
+    }
+
+    let signature_prompt = extract_signature_prompt(request.messages)
+        .ok_or_else(|| "zai guest bridge could not extract user prompt".to_owned())?;
+    let user_message_id = zai_next_id("msg-user");
+    let assistant_message_id = zai_next_id("msg-assistant");
+
+    let create_chat_endpoint = format!("{origin}/api/v1/chats/new");
+    let chat_payload = json!({
+        "chat": {
+            "title": "OpenClaw Rust",
+            "models": [request.model],
+            "params": request
+                .request_overrides
+                .get("params")
+                .cloned()
+                .unwrap_or_else(|| json!({}))
+        },
+        "messages": [
+            {
+                "id": user_message_id,
+                "role": "user",
+                "content": signature_prompt
+            }
+        ]
+    });
+    let create_chat_response = client
+        .post(&create_chat_endpoint)
+        .header("Authorization", format!("Bearer {}", auth.token))
+        .header("Content-Type", "application/json")
+        .json(&chat_payload)
+        .send()
+        .await
+        .map_err(|err| format!("zai chat create request failed: {err}"))?;
+    let create_chat_status = create_chat_response.status();
+    let create_chat_body = create_chat_response
+        .text()
+        .await
+        .map_err(|err| format!("zai chat create body read failed: {err}"))?;
+    if !create_chat_status.is_success() {
+        return Err(format!(
+            "zai chat create failed with status {}: {}",
+            create_chat_status.as_u16(),
+            truncate_text(&create_chat_body, 320)
+        ));
+    }
+    let chat: ZaiChatCreateResponse = serde_json::from_str(&create_chat_body)
+        .map_err(|err| format!("zai chat create parse failed: {err}"))?;
+    if chat.id.trim().is_empty() {
+        return Err("zai chat create response missing chat id".to_owned());
+    }
+
+    let timestamp_ms = zai_now_ms().to_string();
+    let request_id = zai_next_id("request");
+    let signature = zai_compute_signature(&request_id, &auth.id, &signature_prompt, &timestamp_ms);
+    let query = form_urlencoded::Serializer::new(String::new())
+        .append_pair("timestamp", &timestamp_ms)
+        .append_pair("requestId", &request_id)
+        .append_pair("user_id", &auth.id)
+        .append_pair("version", "0.0.1")
+        .append_pair("platform", "web")
+        .append_pair("token", &auth.token)
+        .append_pair("signature_timestamp", &timestamp_ms)
+        .finish();
+    let completion_endpoint = format!("{origin}/api/v2/chat/completions?{query}");
+
+    let completion_payload = json!({
+        "stream": false,
+        "model": request.model,
+        "messages": request.messages,
+        "signature_prompt": signature_prompt,
+        "params": request
+            .request_overrides
+            .get("params")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "extra": request
+            .request_overrides
+            .get("extra")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "features": request
+            .request_overrides
+            .get("features")
+            .cloned()
+            .unwrap_or_else(|| {
+                json!({
+                    "image_generation": false,
+                    "web_search": false,
+                    "auto_web_search": false,
+                    "preview_mode": true,
+                    "flags": [],
+                    "enable_thinking": true
+                })
+            }),
+        "variables": {
+            "{{USER_NAME}}": normalize_optional_text(&auth.name, 128).unwrap_or_else(|| "Guest".to_owned()),
+            "{{USER_LOCATION}}": "Unknown",
+            "{{CURRENT_DATETIME}}": "1970-01-01 00:00:00",
+            "{{CURRENT_DATE}}": "1970-01-01",
+            "{{CURRENT_TIME}}": "00:00:00",
+            "{{CURRENT_WEEKDAY}}": "Thursday",
+            "{{CURRENT_TIMEZONE}}": "UTC",
+            "{{USER_LANGUAGE}}": "en-US"
+        },
+        "chat_id": chat.id,
+        "id": assistant_message_id,
+        "current_user_message_id": user_message_id,
+        "current_user_message_parent_id": Value::Null,
+        "background_tasks": request
+            .request_overrides
+            .get("background_tasks")
+            .cloned()
+            .unwrap_or_else(|| {
+                json!({
+                    "title_generation": true,
+                    "tags_generation": true
+                })
+            })
+    });
+
+    let mut completion_request = client
+        .post(&completion_endpoint)
+        .header("Authorization", format!("Bearer {}", auth.token))
+        .header("Content-Type", "application/json")
+        .header("Accept-Language", "en-US")
+        .header("X-FE-Version", ZAI_FE_VERSION)
+        .header("X-Signature", signature);
+    for (name, value) in request.headers {
+        completion_request = completion_request.header(name, value);
+    }
+    let completion_response = completion_request
+        .json(&completion_payload)
+        .send()
+        .await
+        .map_err(|err| format!("zai completion request failed: {err}"))?;
+    let completion_status = completion_response.status();
+    let completion_body = completion_response
+        .text()
+        .await
+        .map_err(|err| format!("zai completion body read failed: {err}"))?;
+    if !completion_status.is_success() {
+        return Err(format!(
+            "zai completion request failed with status {}: {}",
+            completion_status.as_u16(),
+            truncate_text(&completion_body, 640)
+        ));
+    }
+
+    let openai_body = parse_zai_sse_to_openai_body(&completion_body).ok_or_else(|| {
+        format!(
+            "zai completion stream did not yield assistant content: {}",
+            truncate_text(&completion_body, 640)
+        )
+    })?;
+    Ok(WebsiteBridgeResponse {
+        body: openai_body,
+        endpoint: completion_endpoint,
+    })
+}
+
+fn resolve_zai_origin(request: &WebsiteBridgeRequest<'_>) -> Option<String> {
+    request
+        .website_url
+        .and_then(normalize_origin_url)
+        .or_else(|| {
+            request
+                .candidate_base_urls
+                .iter()
+                .find_map(|candidate| normalize_origin_url(candidate))
+        })
+}
+
+fn normalize_origin_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = Url::parse(trimmed)
+        .or_else(|_| Url::parse(&format!("https://{trimmed}")))
+        .ok()?;
+    let host = parsed.host_str()?;
+    let mut origin = format!("{}://{host}", parsed.scheme());
+    if let Some(port) = parsed.port() {
+        origin.push(':');
+        origin.push_str(&port.to_string());
+    }
+    Some(origin)
+}
+
+fn extract_signature_prompt(messages: &[Value]) -> Option<String> {
+    for message in messages.iter().rev() {
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if role.eq_ignore_ascii_case("user") {
+            if let Some(text) = extract_message_content_text(message.get("content")) {
+                return normalize_optional_text(&text, 12_000);
+            }
+        }
+    }
+    for message in messages.iter().rev() {
+        if let Some(text) = extract_message_content_text(message.get("content")) {
+            return normalize_optional_text(&text, 12_000);
+        }
+    }
+    None
+}
+
+fn extract_message_content_text(content: Option<&Value>) -> Option<String> {
+    let content = content?;
+    match content {
+        Value::String(raw) => normalize_optional_text(raw, 12_000),
+        Value::Array(items) => {
+            let mut out = String::new();
+            for item in items {
+                let text = item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| item.pointer("/text/value").and_then(Value::as_str))
+                    .or_else(|| item.pointer("/content").and_then(Value::as_str));
+                if let Some(text) = text {
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(text.trim());
+                }
+            }
+            normalize_optional_text(&out, 12_000)
+        }
+        Value::Object(object) => object
+            .get("text")
+            .and_then(Value::as_str)
+            .and_then(|raw| normalize_optional_text(raw, 12_000))
+            .or_else(|| {
+                object
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .and_then(|raw| normalize_optional_text(raw, 12_000))
+            }),
+        Value::Null => None,
+        _ => normalize_optional_text(&content.to_string(), 12_000),
+    }
+}
+
+fn zai_compute_signature(
+    request_id: &str,
+    user_id: &str,
+    signature_prompt: &str,
+    timestamp_ms: &str,
+) -> String {
+    let mut payload_entries = vec![
+        ("timestamp", timestamp_ms.to_owned()),
+        ("requestId", request_id.to_owned()),
+        ("user_id", user_id.to_owned()),
+    ];
+    payload_entries.sort_by(|a, b| a.0.cmp(b.0));
+    let sorted_payload = payload_entries
+        .into_iter()
+        .map(|(name, value)| format!("{name},{value}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let base64_prompt = BASE64_STANDARD.encode(signature_prompt.as_bytes());
+    let bucket = timestamp_ms
+        .parse::<u128>()
+        .map(|value| value / 300_000)
+        .unwrap_or(0);
+    let rolling_key = zai_hmac_hex(ZAI_SIGNING_KEY.as_bytes(), bucket.to_string().as_bytes());
+    let signed = format!("{sorted_payload}|{base64_prompt}|{timestamp_ms}");
+    zai_hmac_hex(rolling_key.as_bytes(), signed.as_bytes())
+}
+
+fn zai_hmac_hex(key: &[u8], payload: &[u8]) -> String {
+    let mut mac = HmacSha256::new_from_slice(key)
+        .expect("HMAC-SHA256 supports arbitrary key sizes for zai bridge");
+    mac.update(payload);
+    let bytes = mac.finalize().into_bytes();
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
+}
+
+fn zai_next_id(prefix: &str) -> String {
+    let seq = ZAI_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{}-{seq}", zai_now_ms())
+}
+
+fn zai_now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0)
+}
+
+fn parse_zai_sse_to_openai_body(raw: &str) -> Option<String> {
+    let mut deltas = String::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("data:") {
+            continue;
+        }
+        let payload = trimmed.trim_start_matches("data:").trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            continue;
+        }
+        let parsed: Value = match serde_json::from_str(payload) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if parsed
+            .pointer("/type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            != "chat:completion"
+        {
+            continue;
+        }
+        if let Some(delta) = parsed
+            .pointer("/data/delta_content")
+            .and_then(Value::as_str)
+        {
+            deltas.push_str(delta);
+        } else if let Some(delta) = parsed.pointer("/data/content").and_then(Value::as_str) {
+            deltas.push_str(delta);
+        }
+    }
+    let cleaned = cleanup_zai_completion_text(&deltas);
+    let content = normalize_optional_text(&cleaned, 12_000)?;
+    Some(
+        json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": content
+                    }
+                }
+            ]
+        })
+        .to_string(),
+    )
+}
+
+fn cleanup_zai_completion_text(raw: &str) -> String {
+    let normalized = raw.replace('\r', "");
+    if let Some(idx) = normalized.rfind("</details>") {
+        let tail = normalized[idx + "</details>".len()..].trim();
+        if !tail.is_empty() {
+            return tail.to_owned();
+        }
+    }
+    let stripped = normalized
+        .replace("<details type=\"reasoning\" done=\"false\">", "")
+        .replace("</details>", "");
+    let filtered = stripped
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('>'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if filtered.trim().is_empty() {
+        stripped.trim().to_owned()
+    } else {
+        filtered.trim().to_owned()
+    }
 }
 
 #[cfg(test)]
@@ -409,5 +865,162 @@ mod tests {
             task.await.expect("join stress task");
         }
         server.join().expect("join stress server");
+    }
+
+    #[test]
+    fn zai_signature_matches_known_browser_vector() {
+        let signature = zai_compute_signature(
+            "d9fb3ca8-676f-46c3-90c7-ddc70a74e46d",
+            "d0d30815-b85a-4270-af63-b5346a9f3b13",
+            "Reply with exactly: ok",
+            "1771762969397",
+        );
+        assert_eq!(
+            signature,
+            "26be53ded6069ead38e6d4d596e54b020aaa2e17f75a4fa29325ead00484b214"
+        );
+    }
+
+    #[test]
+    fn zai_sse_payload_converts_to_openai_shape() {
+        let sse = r#"data: {"type":"chat:completion","data":{"delta_content":"<details type=\"reasoning\" done=\"false\">debug</details>","phase":"thinking"}}
+
+data: {"type":"chat:completion","data":{"delta_content":"ok","phase":"done"}}"#;
+        let parsed = parse_zai_sse_to_openai_body(sse).expect("parse zai sse");
+        let json: Value = serde_json::from_str(&parsed).expect("openai json");
+        assert_eq!(
+            json.pointer("/choices/0/message/content")
+                .and_then(Value::as_str),
+            Some("ok")
+        );
+    }
+
+    #[tokio::test]
+    async fn official_zai_guest_bridge_path_generates_openai_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let captured_completion = Arc::new(Mutex::new(String::new()));
+        let captured_completion_server = Arc::clone(&captured_completion);
+
+        let server = std::thread::spawn(move || {
+            let mut completion_handled = false;
+            while !completion_handled {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                let mut buffer = vec![0_u8; 128 * 1024];
+                let read = stream.read(&mut buffer).expect("read request");
+                let request_text = String::from_utf8_lossy(&buffer[..read]).to_string();
+                let request_line = request_text.lines().next().unwrap_or_default().to_owned();
+                if request_line.starts_with("GET / HTTP/1.1")
+                    || request_line.starts_with("GET / HTTP/1.0")
+                {
+                    let body = "ok";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write root response");
+                    continue;
+                }
+                if request_line.contains("/api/v1/auths/") {
+                    let body = json!({
+                        "id": "guest-123",
+                        "name": "Guest-123",
+                        "token": "guest-token-123"
+                    })
+                    .to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write auth response");
+                    continue;
+                }
+                if request_line.contains("/api/v1/chats/new") {
+                    let body = json!({
+                        "id": "chat-123"
+                    })
+                    .to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write chat response");
+                    continue;
+                }
+                if request_line.contains("/api/v2/chat/completions") {
+                    if let Ok(mut guard) = captured_completion_server.lock() {
+                        *guard = request_text.clone();
+                    }
+                    let body = "data: {\"type\":\"chat:completion\",\"data\":{\"delta_content\":\"<details type=\\\"reasoning\\\" done=\\\"false\\\">trace</details>\",\"phase\":\"thinking\"}}\n\ndata: {\"type\":\"chat:completion\",\"data\":{\"delta_content\":\"ok\",\"phase\":\"done\"}}\n\n";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write completion response");
+                    completion_handled = true;
+                    continue;
+                }
+                let body = "{\"detail\":\"not found\"}";
+                let response = format!(
+                    "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write not found response");
+            }
+        });
+
+        let base = format!("http://{addr}");
+        let candidates: Vec<String> = Vec::new();
+        let messages = vec![json!({
+            "role": "user",
+            "content": "Reply with exactly: ok"
+        })];
+        let request_overrides = serde_json::Map::new();
+        let request = WebsiteBridgeRequest {
+            provider: "zhipuai",
+            model: "glm-5",
+            messages: &messages,
+            tools: &[],
+            timeout_ms: 30_000,
+            website_url: Some(&base),
+            candidate_base_urls: &candidates,
+            headers: &[],
+            auth_header_name: "Authorization",
+            auth_header_prefix: "Bearer ",
+            api_key: None,
+            request_overrides: &request_overrides,
+        };
+        let response = invoke_openai_compatible(request)
+            .await
+            .expect("official zai bridge response");
+        let response_json: Value = serde_json::from_str(&response.body).expect("response json");
+        assert_eq!(
+            response_json
+                .pointer("/choices/0/message/content")
+                .and_then(Value::as_str),
+            Some("ok")
+        );
+        assert!(response.endpoint.contains("/api/v2/chat/completions?"));
+
+        let completion_request = captured_completion.lock().expect("lock completion").clone();
+        assert!(completion_request.contains("\r\nx-signature:"));
+        assert!(completion_request.contains("\r\nauthorization: Bearer guest-token-123"));
+
+        server.join().expect("join server");
     }
 }
