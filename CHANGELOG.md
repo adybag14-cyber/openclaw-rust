@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.0.1 - 2026-02-22
+
+### Highlights
+- Added official `chat.z.ai` guest-bridge flow support in the website bridge runtime path.
+- Expanded OpenAI-compatible provider presets and alias normalization coverage for local runtimes, cloud providers, and router-style endpoints.
+- Kept keyless OpenCode Zen free-model runtime defaults (`glm-5-free`, `kimi-k2.5-free`, `minimax-m2.5-free`) available for first-run onboarding.
+
+### Validation
+- `cargo +1.83.0-x86_64-pc-windows-gnu fmt --all -- --check`
+- `cargo +1.83.0-x86_64-pc-windows-gnu test`
+- `cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings`
+- `cargo +1.83.0-x86_64-pc-windows-gnu build --release`
+- `.\scripts\with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"`
+- `.\scripts\with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets --features sqlite-state -- -D warnings"`
+- `.\scripts\with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu build --release --features sqlite-state"`
+- `wsl -d Ubuntu-20.04 ./scripts/build-ubuntu20.sh`
+
 ## v1.0.0 - 2026-02-22
 
 ### Highlights
@@ -30,4 +47,3 @@
   - `gateway::tests::live_openai_compatible_opencode_smoke_when_credentials_are_configured` with `glm-5-free`
   - Same test with `kimi-k2.5-free`
   - Same test with `minimax-m2.5-free`
-
