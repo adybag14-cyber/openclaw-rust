@@ -8494,6 +8494,22 @@ impl ModelRegistry {
                 fallback_providers: model_provider_failover_chain("opencode"),
             },
             ModelChoice {
+                id: "kimi-k2.5-free".to_owned(),
+                name: "Kimi K2.5 Free".to_owned(),
+                provider: "opencode".to_owned(),
+                context_window: Some(128_000),
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("opencode"),
+            },
+            ModelChoice {
+                id: "minimax-m2.5-free".to_owned(),
+                name: "MiniMax M2.5 Free".to_owned(),
+                provider: "opencode".to_owned(),
+                context_window: Some(128_000),
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("opencode"),
+            },
+            ModelChoice {
                 id: "glm-5".to_owned(),
                 name: "GLM-5".to_owned(),
                 provider: "zhipuai".to_owned(),
@@ -24929,9 +24945,9 @@ fn provider_runtime_defaults(provider: &str) -> Option<ProviderRuntimeDefaults> 
         }),
         "opencode" => Some(ProviderRuntimeDefaults {
             api_mode: "openai-completions",
-            base_url: "https://api.opencode.ai/v1",
+            base_url: "https://opencode.ai/zen/v1",
             env_vars: &["OPENCODE_API_KEY", "OPENCODE_ZEN_API_KEY"],
-            allow_missing_api_key: false,
+            allow_missing_api_key: true,
         }),
         "kimi-coding" => Some(ProviderRuntimeDefaults {
             api_mode: "openai-completions",
@@ -26689,6 +26705,14 @@ mod tests {
                 && entry.id.eq_ignore_ascii_case("glm-5-free")
         }));
         assert!(models.iter().any(|entry| {
+            entry.provider.eq_ignore_ascii_case("opencode")
+                && entry.id.eq_ignore_ascii_case("kimi-k2.5-free")
+        }));
+        assert!(models.iter().any(|entry| {
+            entry.provider.eq_ignore_ascii_case("opencode")
+                && entry.id.eq_ignore_ascii_case("minimax-m2.5-free")
+        }));
+        assert!(models.iter().any(|entry| {
             entry.provider.eq_ignore_ascii_case("zhipuai") && entry.id.eq_ignore_ascii_case("glm-5")
         }));
     }
@@ -26762,6 +26786,17 @@ mod tests {
         assert_eq!(resolved.api_mode, "openai-completions");
         assert_eq!(resolved.base_url, "https://open.bigmodel.cn/api/paas/v4");
         assert!(!resolved.allow_missing_api_key);
+    }
+
+    #[test]
+    fn resolve_provider_runtime_config_supports_opencode_zen_keyless_defaults() {
+        let config = json!({});
+        let resolved = super::resolve_provider_runtime_config(&config, "opencode")
+            .expect("opencode runtime config");
+        assert_eq!(resolved.provider, "opencode");
+        assert_eq!(resolved.api_mode, "openai-completions");
+        assert_eq!(resolved.base_url, "https://opencode.ai/zen/v1");
+        assert!(resolved.allow_missing_api_key);
     }
 
     #[test]
@@ -26938,30 +26973,26 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires OPENCODE_API_KEY (or OPENAI_API_KEY) for live network smoke"]
+    #[ignore = "live network smoke against OpenCode Zen free tier"]
     async fn live_openai_compatible_opencode_smoke_when_credentials_are_configured() {
         let api_key = std::env::var("OPENCODE_API_KEY")
             .ok()
             .or_else(|| std::env::var("OPENAI_API_KEY").ok())
             .and_then(|value| super::normalize_optional_text(Some(value), 4_096));
-        if api_key.is_none() {
-            eprintln!("skipping live smoke: OPENCODE_API_KEY/OPENAI_API_KEY is not set");
-            return;
-        }
         let model = std::env::var("OPENCODE_SMOKE_MODEL")
             .ok()
             .and_then(|value| super::normalize_optional_text(Some(value), 256))
-            .unwrap_or_else(|| "opencode:default".to_owned());
+            .unwrap_or_else(|| "glm-5-free".to_owned());
         let base_url = std::env::var("OPENCODE_BASE_URL")
             .ok()
             .and_then(|value| super::normalize_optional_text(Some(value), 2_048))
-            .unwrap_or_else(|| "https://api.opencode.ai/v1".to_owned());
+            .unwrap_or_else(|| "https://opencode.ai/zen/v1".to_owned());
         let runtime = super::ProviderRuntimeConfig {
             provider: "opencode".to_owned(),
             api_mode: "openai-completions".to_owned(),
             base_url,
             api_key,
-            allow_missing_api_key: false,
+            allow_missing_api_key: true,
             auth_header_name: "Authorization".to_owned(),
             auth_header_prefix: "Bearer ".to_owned(),
             timeout_ms: 60_000,
@@ -35891,6 +35922,140 @@ mod tests {
             .unwrap_or(false));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_agent_runtime_executes_opencode_without_api_key_when_enabled() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind provider listener");
+        let provider_addr = listener.local_addr().expect("provider addr");
+        let captured_request: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let captured_request_server = Arc::clone(&captured_request);
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept provider request");
+            let mut buffer = vec![0_u8; 64 * 1024];
+            let read = stream.read(&mut buffer).expect("read provider request");
+            let request_text = String::from_utf8_lossy(&buffer[..read]).to_string();
+            if let Ok(mut guard) = captured_request_server.lock() {
+                *guard = Some(request_text);
+            }
+            let payload = json!({
+                "id": "cmpl-opencode-keyless-1",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "ok"
+                        }
+                    }
+                ]
+            });
+            let body = payload.to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write provider response");
+        });
+
+        let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "models": {
+                    "providers": {
+                        "opencode": {
+                            "api": "openai-completions",
+                            "baseUrl": format!("http://{provider_addr}/zen/v1"),
+                            "allowUnauthenticated": true,
+                            "models": [
+                                { "id": "glm-5-free", "name": "GLM-5-Free" }
+                            ]
+                        }
+                    }
+                }
+            }),
+        )
+        .await;
+
+        let session_key = "agent:main:discord:group:g-agent-runtime-opencode-keyless";
+        let patch_model = RpcRequestFrame {
+            id: "req-agent-opencode-keyless-patch".to_owned(),
+            method: "sessions.patch".to_owned(),
+            params: json!({
+                "key": session_key,
+                "model": "opencode/glm-5-free"
+            }),
+        };
+        assert!(matches!(
+            dispatcher.handle_request(&patch_model).await,
+            RpcDispatchOutcome::Handled(_)
+        ));
+
+        let run_agent = RpcRequestFrame {
+            id: "req-agent-opencode-keyless-run".to_owned(),
+            method: "agent".to_owned(),
+            params: json!({
+                "sessionKey": session_key,
+                "idempotencyKey": "agent-opencode-keyless-run",
+                "message": "Reply with ok"
+            }),
+        };
+        match dispatcher.handle_request(&run_agent).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/status").and_then(Value::as_str),
+                    Some("started")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/resolved/modelProvider")
+                        .and_then(Value::as_str),
+                    Some("opencode")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/runtime/executed")
+                        .and_then(Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected runtime agent request to be handled"),
+        }
+
+        let wait = RpcRequestFrame {
+            id: "req-agent-opencode-keyless-wait".to_owned(),
+            method: "agent.wait".to_owned(),
+            params: json!({
+                "runId": "agent-opencode-keyless-run",
+                "timeoutMs": 0
+            }),
+        };
+        match dispatcher.handle_request(&wait).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/status").and_then(Value::as_str),
+                    Some("ok")
+                );
+            }
+            _ => panic!("expected agent.wait handled"),
+        }
+
+        server.join().expect("join provider server");
+        let request_text = captured_request
+            .lock()
+            .expect("lock captured request")
+            .clone()
+            .expect("captured request text");
+        let request_lower = request_text.to_ascii_lowercase();
+        assert!(
+            !request_lower.contains("\r\nauthorization:"),
+            "keyless opencode path must not send authorization header"
+        );
     }
 
     #[tokio::test]
