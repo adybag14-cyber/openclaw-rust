@@ -4,14 +4,14 @@ This directory contains the Rust rewrite foundation for the OpenClaw runtime.
 
 Minimum supported Rust version: `1.83`.
 
-## Current parity status (February 21, 2026)
+## Current parity status (February 22, 2026)
 
 - End-to-end Rust parity program status: **complete**.
 - Feature audit scoreboard: `22 implemented`, `0 partial`, `0 deferred`.
 - RPC method-surface parity: `103` Rust methods, `100%` coverage vs upstream base + handlers.
 - Latest full validation matrix:
-  - `cargo +1.83.0-x86_64-pc-windows-gnu test` -> `313` passed
-  - `cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state` -> `317` passed
+  - `cargo +1.83.0-x86_64-pc-windows-gnu test` -> `327` passed
+  - `cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state` -> `331` passed
   - `clippy -D warnings` + `release` builds pass for default and `sqlite-state`
 
 ## Implemented runtime coverage
@@ -24,6 +24,7 @@ Minimum supported Rust version: `1.83`.
 - Host integrity baseline checks for key runtime files.
 - Bounded concurrency and queue limits to reduce memory spikes.
 - Session FIFO scheduling + decision state tracking + idempotency cache.
+- Live OpenAI-compatible agent runtime path with multi-provider endpoint/auth resolution and tool-calling loop execution through the Rust tool runtime.
 - Typed session-key parsing (`main`, `direct`, `group`, `channel`, `cron`, `hook`, `node`).
 - Typed protocol frame foundation (`req`/`resp`/`event` classification).
 - Gateway RPC parity scaffold for `sessions.list`, `sessions.preview`, `sessions.patch`, `sessions.resolve`, `sessions.reset`, `sessions.delete`, `sessions.compact`, `sessions.usage`, `sessions.usage.timeseries`, `sessions.usage.logs`, `sessions.history`, `sessions.send`, and `session.status`.
@@ -85,6 +86,8 @@ systemctl --user status openclaw-agent-rs.service
 - Supports list filtering knobs on `sessions.list` (`includeGlobal`, `includeUnknown`, `agentId`, `search`, `label`, `spawnedBy`) plus optional hint fields (`displayName`, `derivedTitle`, `lastMessagePreview`) when `includeDerivedTitles`/`includeLastMessage` are set.
 - Supports `sessions.patch` via either `key` or `sessionKey` and returns parity-style envelope fields (`ok`, `path`, `key`, `entry`).
 - Supports extended `sessions.patch` parity fields (`thinkingLevel`, `verboseLevel`, `reasoningLevel`, `responseUsage`, `elevatedLevel`, `execHost`, `execSecurity`, `execAsk`, `execNode`, `model`, `spawnDepth`) with explicit `null` clear semantics.
+- Supports provider-defined catalog ingestion from `models.providers.*.models` and OpenAI-compatible provider resolution (including Cerebras-compatible chat completion payload formatting) for runtime agent execution.
+- Supports nested provider runtime options (`models.providers.<id>.options`) for OpenAI-compatible endpoints, including custom auth header names/prefixes, custom request defaults, and full `chat/completions` URLs with query strings; local provider defaults (`ollama`, `vllm`, `litellm`, `lmstudio`, `localai`) can run without API keys.
 - Enforces parity-oriented patch guards for labels and subagent metadata (`label` uniqueness, `spawnedBy`/`spawnDepth` subagent-only and immutable after first set).
 - Normalizes/validates patch tuning values to parity-friendly canonical sets (thinking, verbose, reasoning, elevated, and exec policy knobs).
 - Supports `sessions.delete` parity envelope fields (`path`, `archived`) and honors `deleteTranscript` to skip transcript archive hints.

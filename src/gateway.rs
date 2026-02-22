@@ -22,9 +22,10 @@ use crate::channels::{
     default_chunk_mode, default_text_chunk_limit, normalize_channel_id, ChannelCapabilities,
     ChannelMessageAction, DriverRegistry,
 };
-use crate::config::{GroupActivationMode, SessionQueueMode};
+use crate::config::{GroupActivationMode, SessionQueueMode, ToolRuntimePolicyConfig};
 use crate::protocol::{MethodFamily, RpcRequestFrame};
 use crate::session_key::{parse_session_key, SessionKind};
+use crate::tool_runtime::{ToolRuntimeHost, ToolRuntimeRequest};
 use crate::types::{ActionRequest, Decision, DecisionAction};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -809,6 +810,10 @@ const DEFAULT_EXEC_APPROVAL_TIMEOUT_MS: u64 = 120_000;
 const MAX_EXEC_APPROVAL_PENDING: usize = 4_096;
 const EXEC_APPROVAL_RESOLVED_GRACE_MS: u64 = 15_000;
 const AGENT_RUN_COMPLETE_DELAY_MS: u64 = 25;
+const AGENT_LLM_TURN_MAX_HISTORY: usize = 64;
+const AGENT_LLM_TOOL_LOOP_MAX_STEPS: usize = 8;
+const AGENT_TOOL_OUTPUT_MAX_CHARS: usize = 8_192;
+const AGENT_PROVIDER_HTTP_TIMEOUT_MS: u64 = 60_000;
 const MAX_CHAT_RUNS: usize = 4_096;
 const CHAT_RUN_COMPLETE_DELAY_MS: u64 = 25;
 const MAX_SEND_CACHE_ENTRIES: usize = 4_096;
@@ -2388,6 +2393,7 @@ impl RpcDispatcher {
         let to = normalize_optional_text(params.reply_to.or(params.to), 256);
         let account_id =
             normalize_optional_text(params.reply_account_id.or(params.account_id), 128);
+        let thread_id = normalize_optional_text(params.thread_id, 128);
         let mut reset_payload = None;
         let stored_message = if let Some((reason, followup_message)) = reset_command {
             let reset = self.sessions.reset(&session_key, reason.to_owned()).await;
@@ -2417,7 +2423,7 @@ impl RpcDispatcher {
                     channel,
                     to,
                     account_id,
-                    thread_id: normalize_optional_text(params.thread_id, 128),
+                    thread_id,
                     reply_back: None,
                 })
                 .await;
@@ -2425,16 +2431,118 @@ impl RpcDispatcher {
         let resolved = self
             .resolve_session_model_failover(&resolved_session_key)
             .await;
-        let agent_runs = self.agent_runs.clone();
-        let complete_run_id = run_id.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(AGENT_RUN_COMPLETE_DELAY_MS)).await;
-            agent_runs.complete_ok(complete_run_id).await;
-        });
+        let mut runtime_payload = AgentRuntimeExecutionView {
+            executed: false,
+            provider: resolved.model_provider.clone(),
+            model: resolved.model.clone(),
+            api_mode: None,
+            tool_calls: None,
+            loop_steps: None,
+            reason: Some("provider credentials not configured".to_owned()),
+        };
+        let mut run_completed = false;
+
+        let config_snapshot = self.config.get_snapshot().await;
+        let provider_runtime =
+            resolve_provider_runtime_config(&config_snapshot.config, &resolved.model_provider);
+        if let Some(provider_runtime) = provider_runtime {
+            runtime_payload.api_mode = Some(provider_runtime.api_mode.clone());
+            runtime_payload.reason = None;
+            if provider_runtime.api_key.is_none() && !provider_runtime.allow_missing_api_key {
+                runtime_payload.reason = Some("provider credentials not configured".to_owned());
+            } else if !provider_runtime
+                .api_mode
+                .eq_ignore_ascii_case("openai-completions")
+                && !provider_runtime
+                    .api_mode
+                    .eq_ignore_ascii_case("openai-compatible")
+                && !provider_runtime
+                    .api_mode
+                    .eq_ignore_ascii_case("openai-chat")
+            {
+                runtime_payload.reason = Some(format!(
+                    "provider api mode {} is not supported",
+                    provider_runtime.api_mode
+                ));
+            } else {
+                let agent_id_for_runtime = params
+                    .agent_id
+                    .as_deref()
+                    .and_then(|value| normalize_optional_text(Some(value.to_owned()), 64))
+                    .map(|value| normalize_agent_id(&value))
+                    .or_else(|| resolve_agent_id_from_session_key_input(&resolved_session_key).ok())
+                    .unwrap_or_else(|| DEFAULT_AGENT_ID.to_owned());
+                let workspace_root = self
+                    .agents
+                    .workspace_for(&agent_id_for_runtime)
+                    .await
+                    .map(|workspace| {
+                        resolve_tool_workspace_root_path(&workspace, &agent_id_for_runtime)
+                    })
+                    .unwrap_or_else(|| {
+                        resolve_tool_workspace_root_path(
+                            DEFAULT_AGENT_WORKSPACE,
+                            &agent_id_for_runtime,
+                        )
+                    });
+                match self
+                    .execute_agent_runtime_turn(AgentRuntimeTurnRequest {
+                        session_key: resolved_session_key.clone(),
+                        run_id: run_id.clone(),
+                        resolved: resolved.clone(),
+                        provider_runtime: provider_runtime.clone(),
+                        extra_system_prompt: params.extra_system_prompt.clone(),
+                        workspace_root,
+                        config: config_snapshot.config.clone(),
+                    })
+                    .await
+                {
+                    Ok(outcome) => {
+                        runtime_payload = outcome.execution;
+                        if let Some(assistant_text) = outcome.assistant_text {
+                            let _ = self
+                                .sessions
+                                .record_send(SessionSend {
+                                    session_key: resolved_session_key.clone(),
+                                    request_id: Some(run_id.clone()),
+                                    message: Some(assistant_text),
+                                    command: None,
+                                    source: "agent.assistant".to_owned(),
+                                    channel: Some("webchat".to_owned()),
+                                    to: None,
+                                    account_id: None,
+                                    thread_id: None,
+                                    reply_back: None,
+                                })
+                                .await;
+                        }
+                        self.agent_runs.complete_ok(run_id.clone()).await;
+                        run_completed = true;
+                    }
+                    Err(err) => {
+                        runtime_payload.reason = Some(err.clone());
+                        self.agent_runs.complete_error(run_id.clone(), err).await;
+                        run_completed = true;
+                    }
+                }
+            }
+        } else {
+            runtime_payload.reason = Some("provider is not configured".to_owned());
+        }
+
+        if !run_completed {
+            let agent_runs = self.agent_runs.clone();
+            let complete_run_id = run_id.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(AGENT_RUN_COMPLETE_DELAY_MS)).await;
+                agent_runs.complete_ok(complete_run_id).await;
+            });
+        }
         let mut payload = json!({
             "runId": run_id,
             "status": "started",
-            "resolved": resolved
+            "resolved": resolved,
+            "runtime": runtime_payload
         });
         if let Some(reset) = reset_payload {
             payload["reset"] = reset;
@@ -7463,6 +7571,152 @@ impl RpcDispatcher {
             attempts,
         }
     }
+
+    async fn execute_agent_runtime_turn(
+        &self,
+        input: AgentRuntimeTurnRequest,
+    ) -> Result<AgentRuntimeOutcome, String> {
+        let AgentRuntimeTurnRequest {
+            session_key,
+            run_id,
+            resolved,
+            provider_runtime,
+            extra_system_prompt,
+            workspace_root,
+            config,
+        } = input;
+        let history = self
+            .sessions
+            .history(Some(&session_key), Some(AGENT_LLM_TURN_MAX_HISTORY))
+            .await;
+        let mut messages = build_openai_messages_from_session_history(&history);
+        if let Some(system_prompt) = normalize_optional_text(extra_system_prompt, 8_192) {
+            messages.insert(
+                0,
+                json!({
+                    "role": "system",
+                    "content": system_prompt
+                }),
+            );
+        }
+        if messages.is_empty() {
+            return Err("no prompt content available for agent runtime".to_owned());
+        }
+
+        let tool_policy = resolve_tool_runtime_policy_config(&config);
+        let sandbox_root = workspace_root.join(".sandbox");
+        let tool_runtime = ToolRuntimeHost::new(workspace_root, sandbox_root, tool_policy)
+            .await
+            .map_err(|err| err.message)?;
+
+        let tools = openai_agent_tool_definitions();
+        let mut tool_calls_total = 0usize;
+
+        for step in 0..AGENT_LLM_TOOL_LOOP_MAX_STEPS {
+            let step_count = step.saturating_add(1);
+            let completion = invoke_openai_chat_completion(
+                &provider_runtime,
+                &resolved.model,
+                &messages,
+                &tools,
+            )
+            .await?;
+            let choice = completion
+                .choices
+                .into_iter()
+                .next()
+                .ok_or_else(|| "provider response missing choices".to_owned())?;
+            let assistant_message = choice.message;
+            let assistant_text = extract_openai_message_text(assistant_message.content.as_ref());
+            if assistant_message.tool_calls.is_empty() {
+                return Ok(AgentRuntimeOutcome {
+                    assistant_text,
+                    execution: AgentRuntimeExecutionView {
+                        executed: true,
+                        provider: resolved.model_provider.clone(),
+                        model: resolved.model.clone(),
+                        api_mode: Some(provider_runtime.api_mode.clone()),
+                        tool_calls: Some(tool_calls_total),
+                        loop_steps: Some(step_count),
+                        reason: None,
+                    },
+                });
+            }
+
+            messages.push(build_openai_assistant_tool_call_message(
+                assistant_text.as_deref(),
+                &assistant_message.tool_calls,
+            ));
+
+            for (tool_index, tool_call) in assistant_message.tool_calls.iter().enumerate() {
+                let tool_call_id = tool_call
+                    .id
+                    .clone()
+                    .unwrap_or_else(|| format!("tool-{run_id}-{step}-{tool_index}"));
+                let tool_name = normalize_optional_text(Some(tool_call.function.name.clone()), 64)
+                    .ok_or_else(|| "tool call name is required".to_owned())?;
+                let args = parse_tool_call_arguments(&tool_call.function.arguments)?;
+                let request = ToolRuntimeRequest {
+                    request_id: format!("{run_id}:{step}:{tool_index}"),
+                    session_id: session_key.clone(),
+                    tool_name: tool_name.clone(),
+                    args,
+                    sandboxed: false,
+                    model_provider: Some(resolved.model_provider.clone()),
+                    model_id: Some(resolved.model.clone()),
+                };
+                let tool_payload = match tool_runtime.execute(request).await {
+                    Ok(result) => {
+                        json!({
+                            "ok": true,
+                            "result": result.result,
+                            "warnings": result.warnings
+                        })
+                    }
+                    Err(err) => {
+                        json!({
+                            "ok": false,
+                            "error": {
+                                "code": err.code.as_str(),
+                                "message": err.message
+                            }
+                        })
+                    }
+                };
+                let tool_payload_text = serde_json::to_string(&tool_payload).unwrap_or_else(|_| {
+                    "{\"ok\":false,\"error\":\"serialization_failed\"}".to_owned()
+                });
+                let _ = self
+                    .sessions
+                    .record_send(SessionSend {
+                        session_key: session_key.clone(),
+                        request_id: Some(run_id.clone()),
+                        message: Some(truncate_text(
+                            &tool_payload_text,
+                            AGENT_TOOL_OUTPUT_MAX_CHARS,
+                        )),
+                        command: None,
+                        source: format!("agent.tool.{tool_name}"),
+                        channel: Some("webchat".to_owned()),
+                        to: None,
+                        account_id: None,
+                        thread_id: None,
+                        reply_back: None,
+                    })
+                    .await;
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": tool_payload_text
+                }));
+                tool_calls_total = tool_calls_total.saturating_add(1);
+            }
+        }
+
+        Err(format!(
+            "tool loop exceeded max steps ({AGENT_LLM_TOOL_LOOP_MAX_STEPS})"
+        ))
+    }
 }
 
 impl Default for RpcDispatcher {
@@ -8291,7 +8545,6 @@ impl ModelRegistry {
                 fallback_providers: model_provider_failover_chain(DEFAULT_MODEL_PROVIDER),
             })
     }
-
 }
 
 fn model_catalog_from_config(config: &Value) -> Vec<ModelChoice> {
@@ -8303,14 +8556,111 @@ fn model_catalog_from_config(config: &Value) -> Vec<ModelChoice> {
             .and_then(Value::as_array),
         config.pointer("/gateway/models").and_then(Value::as_array),
     ];
-    let Some(entries) = arrays.into_iter().flatten().find(|value| !value.is_empty()) else {
-        return Vec::new();
-    };
+    let mut models = Vec::new();
+    for entries in arrays.into_iter().flatten() {
+        if entries.is_empty() {
+            continue;
+        }
+        models.extend(entries.iter().filter_map(model_choice_from_config_entry));
+    }
+    models.extend(model_catalog_from_provider_entries(config));
+    models
+}
 
-    entries
-        .iter()
-        .filter_map(model_choice_from_config_entry)
-        .collect()
+fn model_catalog_from_provider_entries(config: &Value) -> Vec<ModelChoice> {
+    let provider_maps = [
+        config
+            .pointer("/models/providers")
+            .and_then(Value::as_object),
+        config
+            .pointer("/gateway/models/providers")
+            .and_then(Value::as_object),
+    ];
+    let mut models = Vec::new();
+    for provider_map in provider_maps.into_iter().flatten() {
+        for (provider_key, provider_value) in provider_map {
+            let Some(provider_object) = provider_value.as_object() else {
+                continue;
+            };
+            let provider = normalize_provider_id(provider_key);
+            let Some(entries) = provider_object
+                .get("models")
+                .or_else(|| provider_object.get("catalog"))
+                .and_then(Value::as_array)
+            else {
+                continue;
+            };
+            for entry in entries {
+                if let Some(choice) = model_choice_from_provider_model_entry(&provider, entry) {
+                    models.push(choice);
+                }
+            }
+        }
+    }
+    models
+}
+
+fn model_choice_from_provider_model_entry(provider: &str, value: &Value) -> Option<ModelChoice> {
+    match value {
+        Value::String(raw) => {
+            let id = normalize_optional_text(Some(raw.clone()), 256)?;
+            let (normalized_provider, normalized_model) = normalize_model_ref(provider, &id);
+            Some(ModelChoice {
+                id: normalized_model.clone(),
+                name: normalized_model,
+                provider: normalized_provider.clone(),
+                context_window: None,
+                reasoning: None,
+                fallback_providers: model_provider_failover_chain(&normalized_provider),
+            })
+        }
+        Value::Object(object) => {
+            let id = object
+                .get("id")
+                .or_else(|| object.get("model"))
+                .and_then(Value::as_str)
+                .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 256))?;
+            let (normalized_provider, normalized_model) = normalize_model_ref(provider, &id);
+            let name = object
+                .get("name")
+                .and_then(Value::as_str)
+                .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 256))
+                .unwrap_or_else(|| normalized_model.clone());
+            let context_window = object
+                .get("contextWindow")
+                .or_else(|| object.get("context_window"))
+                .and_then(parse_u32_from_config_value);
+            let reasoning = object.get("reasoning").and_then(Value::as_bool);
+            let mut fallback_providers = object
+                .get("fallbackProviders")
+                .or_else(|| object.get("fallback_providers"))
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|entry| entry.as_str())
+                        .filter_map(|raw| normalize_optional_text(Some(raw.to_owned()), 128))
+                        .map(|raw| normalize_provider_id(&raw))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if fallback_providers.is_empty() {
+                fallback_providers = model_provider_failover_chain(&normalized_provider);
+            } else {
+                sort_and_dedup_strings(&mut fallback_providers);
+                fallback_providers.retain(|raw| !raw.eq_ignore_ascii_case(&normalized_provider));
+            }
+            Some(ModelChoice {
+                id: normalized_model,
+                name,
+                provider: normalized_provider,
+                context_window,
+                reasoning,
+                fallback_providers,
+            })
+        }
+        _ => None,
+    }
 }
 
 fn model_choice_from_config_entry(value: &Value) -> Option<ModelChoice> {
@@ -8525,6 +8875,81 @@ struct ModelFailoverResolutionView {
     )]
     fallback_providers: Vec<String>,
     attempts: Vec<ModelFailoverAttemptView>,
+}
+
+#[derive(Debug, Clone)]
+struct ProviderRuntimeConfig {
+    provider: String,
+    api_mode: String,
+    base_url: String,
+    api_key: Option<String>,
+    allow_missing_api_key: bool,
+    auth_header_name: String,
+    auth_header_prefix: String,
+    timeout_ms: u64,
+    headers: Vec<(String, String)>,
+    request_overrides: serde_json::Map<String, Value>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct AgentRuntimeExecutionView {
+    executed: bool,
+    provider: String,
+    model: String,
+    #[serde(rename = "apiMode", skip_serializing_if = "Option::is_none")]
+    api_mode: Option<String>,
+    #[serde(rename = "toolCalls", skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<usize>,
+    #[serde(rename = "loopSteps", skip_serializing_if = "Option::is_none")]
+    loop_steps: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AgentRuntimeOutcome {
+    assistant_text: Option<String>,
+    execution: AgentRuntimeExecutionView,
+}
+
+#[derive(Debug, Clone)]
+struct AgentRuntimeTurnRequest {
+    session_key: String,
+    run_id: String,
+    resolved: ModelFailoverResolutionView,
+    provider_runtime: ProviderRuntimeConfig,
+    extra_system_prompt: Option<String>,
+    workspace_root: PathBuf,
+    config: Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OpenAiChatCompletionResponse {
+    choices: Vec<OpenAiChatCompletionChoice>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OpenAiChatCompletionChoice {
+    message: OpenAiChatCompletionMessage,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OpenAiChatCompletionMessage {
+    content: Option<Value>,
+    #[serde(default, rename = "tool_calls")]
+    tool_calls: Vec<OpenAiChatToolCall>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OpenAiChatToolCall {
+    id: Option<String>,
+    function: OpenAiChatToolFunction,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OpenAiChatToolFunction {
+    name: String,
+    arguments: String,
 }
 
 struct AgentRegistry {
@@ -9045,7 +9470,10 @@ fn agent_workspace_file_path(workspace: &str, name: &str) -> String {
         }
         return format!("{trimmed}/{name}");
     }
-    Path::new(workspace).join(name).to_string_lossy().to_string()
+    Path::new(workspace)
+        .join(name)
+        .to_string_lossy()
+        .to_string()
 }
 
 fn agent_file_view_for_entry(
@@ -9078,7 +9506,11 @@ fn read_agent_workspace_file(
     let metadata = match std::fs::metadata(&path) {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(format!("failed reading agent file metadata {path_text}: {err}")),
+        Err(err) => {
+            return Err(format!(
+                "failed reading agent file metadata {path_text}: {err}"
+            ))
+        }
     };
     if !metadata.is_file() {
         return Ok(None);
@@ -9389,7 +9821,11 @@ fn parse_agent_identity_state_from_config(value: &Value) -> Option<AgentIdentity
         .or_else(|| object.get("avatar_url"))
         .and_then(Value::as_str)
         .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 1024));
-    if name.is_none() && theme.is_none() && emoji.is_none() && avatar.is_none() && avatar_url.is_none()
+    if name.is_none()
+        && theme.is_none()
+        && emoji.is_none()
+        && avatar.is_none()
+        && avatar_url.is_none()
     {
         return None;
     }
@@ -9447,7 +9883,10 @@ fn apply_agent_create_to_config(
     list.push(entry);
 }
 
-fn apply_agent_update_to_config(config: &mut Value, params: &AgentsUpdateParams) -> Result<(), String> {
+fn apply_agent_update_to_config(
+    config: &mut Value,
+    params: &AgentsUpdateParams,
+) -> Result<(), String> {
     let root = ensure_value_object(config);
     let agents = ensure_object_field(root, "agents");
     let list = ensure_array_field(agents, "list");
@@ -9562,9 +10001,7 @@ fn ensure_object_field<'a>(
     if !entry.is_object() {
         *entry = Value::Object(serde_json::Map::new());
     }
-    entry
-        .as_object_mut()
-        .expect("field should be object")
+    entry.as_object_mut().expect("field should be object")
 }
 
 fn ensure_array_field<'a>(
@@ -9777,23 +10214,32 @@ impl AgentRunRegistry {
     }
 
     async fn complete_ok(&self, run_id: String) {
+        self.complete_with_status(run_id, "ok", None).await;
+    }
+
+    async fn complete_error(&self, run_id: String, error: String) {
+        self.complete_with_status(run_id, "error", Some(error))
+            .await;
+    }
+
+    async fn complete_with_status(&self, run_id: String, status: &str, error: Option<String>) {
         let now = now_ms();
         let mut guard = self.state.lock().await;
         if let Some(entry) = guard.entries.get_mut(&run_id) {
-            entry.status = "ok".to_owned();
+            entry.status = status.to_owned();
             if entry.started_at == 0 {
                 entry.started_at = now;
             }
             entry.ended_at = now;
-            entry.error = None;
+            entry.error = error.clone();
         } else {
             guard.entries.insert(
                 run_id,
                 AgentRunSnapshot {
-                    status: "ok".to_owned(),
+                    status: status.to_owned(),
                     started_at: now,
                     ended_at: now,
-                    error: None,
+                    error,
                 },
             );
         }
@@ -17148,7 +17594,12 @@ impl OAuthRegistry {
                     let retry_after_ms = if now.saturating_add(timeout_ms) >= session.ready_at_ms {
                         Some(1_000)
                     } else {
-                        Some(session.ready_at_ms.saturating_sub(now).clamp(1_000, timeout_ms))
+                        Some(
+                            session
+                                .ready_at_ms
+                                .saturating_sub(now)
+                                .clamp(1_000, timeout_ms),
+                        )
                     };
                     (
                         OAuthWaitResult {
@@ -17231,9 +17682,10 @@ impl OAuthRegistry {
                 source: source.clone(),
                 updated_at_ms: now,
             };
-            guard
-                .credentials
-                .insert(oauth_state_key(&provider_id, &account_id), credential.clone());
+            guard.credentials.insert(
+                oauth_state_key(&provider_id, &account_id),
+                credential.clone(),
+            );
             if let Some(entry) = guard.sessions.get_mut(&session_key) {
                 entry.completed_at_ms = Some(now);
                 entry.account_id = account_id.clone();
@@ -17302,7 +17754,9 @@ impl OAuthRegistry {
                     let session_keys = guard
                         .sessions
                         .iter()
-                        .filter(|(_, session)| session.provider_id.eq_ignore_ascii_case(&provider_id))
+                        .filter(|(_, session)| {
+                            session.provider_id.eq_ignore_ascii_case(&provider_id)
+                        })
                         .map(|(key, _)| key.clone())
                         .collect::<Vec<_>>();
                     for key in session_keys {
@@ -17501,7 +17955,11 @@ fn oauth_user_code(provider_id: &str, session_id: &str) -> String {
         } else {
             provider.as_str()
         },
-        if suffix.is_empty() { "000000" } else { suffix.as_str() }
+        if suffix.is_empty() {
+            "000000"
+        } else {
+            suffix.as_str()
+        }
     )
 }
 
@@ -17576,18 +18034,26 @@ fn persist_oauth_store_disk_state(path: &str, state: &OAuthState) -> Result<(), 
             .unwrap_or("oauth-store")
     );
     temp_path.set_file_name(temp_name);
-    std::fs::write(&temp_path, payload)
-        .map_err(|err| format!("failed writing oauth temp store {}: {err}", temp_path.display()))?;
+    std::fs::write(&temp_path, payload).map_err(|err| {
+        format!(
+            "failed writing oauth temp store {}: {err}",
+            temp_path.display()
+        )
+    })?;
     if store_path.exists() {
         let _ = std::fs::remove_file(&store_path);
     }
-    std::fs::rename(&temp_path, &store_path)
-        .map_err(|err| format!("failed replacing oauth store {}: {err}", store_path.display()))
+    std::fs::rename(&temp_path, &store_path).map_err(|err| {
+        format!(
+            "failed replacing oauth store {}: {err}",
+            store_path.display()
+        )
+    })
 }
 
 fn resolve_home_path(home_override: Option<&str>) -> Option<PathBuf> {
-    if let Some(raw) = home_override
-        .and_then(|value| normalize_optional_text(Some(value.to_owned()), 2048))
+    if let Some(raw) =
+        home_override.and_then(|value| normalize_optional_text(Some(value.to_owned()), 2048))
     {
         return Some(PathBuf::from(raw));
     }
@@ -17620,8 +18086,8 @@ fn expand_home_relative_path(path: &str, home: Option<&Path>) -> PathBuf {
 
 fn resolve_codex_home_path(home_dir: Option<&str>, codex_home: Option<&str>) -> Option<PathBuf> {
     let home = resolve_home_path(home_dir);
-    if let Some(raw) = codex_home
-        .and_then(|value| normalize_optional_text(Some(value.to_owned()), 2048))
+    if let Some(raw) =
+        codex_home.and_then(|value| normalize_optional_text(Some(value.to_owned()), 2048))
     {
         return Some(expand_home_relative_path(&raw, home.as_deref()));
     }
@@ -24224,6 +24690,15 @@ fn normalize_provider_id(provider: &str) -> String {
         "opencode-zen" => "opencode".to_owned(),
         "qwen" => "qwen-portal".to_owned(),
         "kimi-code" => "kimi-coding".to_owned(),
+        "gemini" | "google-gemini-cli" => "google".to_owned(),
+        "bytedance" | "doubao" => "volcengine".to_owned(),
+        "claude" | "claude-code" | "claude-code-cli" | "claude-desktop" => "anthropic".to_owned(),
+        "lm-studio" => "lmstudio".to_owned(),
+        "local-ai" => "localai".to_owned(),
+        "cerebras-cloud" => "cerebras".to_owned(),
+        "chatgpt" => "openai".to_owned(),
+        "codex" | "codex-cli" => "openai-codex".to_owned(),
+        "claude-cli" => "anthropic".to_owned(),
         normalized => normalized.to_owned(),
     }
 }
@@ -24267,9 +24742,861 @@ fn model_provider_failover_chain(provider: &str) -> Vec<String> {
         "openai-codex" => vec!["openai".to_owned(), "anthropic".to_owned()],
         "openai" => vec!["openai-codex".to_owned(), "anthropic".to_owned()],
         "anthropic" => vec!["openai".to_owned()],
-        "qwen-portal" => vec!["openai".to_owned()],
-        "zai" => vec!["openai".to_owned()],
+        "google" | "qwen-portal" | "zai" | "opencode" | "kimi-coding" | "groq" | "cerebras"
+        | "xai" | "openrouter" | "deepseek" | "perplexity" | "fireworks" | "mistral"
+        | "together" | "moonshot" | "nvidia" | "qianfan" | "volcengine" | "byteplus"
+        | "sambanova" | "ollama" | "vllm" | "litellm" | "lmstudio" | "localai" => {
+            vec!["openai".to_owned()]
+        }
         _ => Vec::new(),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProviderRuntimeDefaults {
+    api_mode: &'static str,
+    base_url: &'static str,
+    env_vars: &'static [&'static str],
+    allow_missing_api_key: bool,
+}
+
+fn provider_runtime_defaults(provider: &str) -> Option<ProviderRuntimeDefaults> {
+    match normalize_provider_id(provider).as_str() {
+        "openai" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.openai.com/v1",
+            env_vars: &["OPENAI_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "openai-codex" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.openai.com/v1",
+            env_vars: &["OPENAI_API_KEY", "CODEX_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "google" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+            env_vars: &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "groq" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.groq.com/openai/v1",
+            env_vars: &["GROQ_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "cerebras" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.cerebras.ai/v1",
+            env_vars: &["CEREBRAS_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "xai" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.x.ai/v1",
+            env_vars: &["XAI_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "openrouter" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://openrouter.ai/api/v1",
+            env_vars: &["OPENROUTER_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "deepseek" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.deepseek.com/v1",
+            env_vars: &["DEEPSEEK_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "perplexity" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.perplexity.ai",
+            env_vars: &["PERPLEXITY_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "fireworks" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.fireworks.ai/inference/v1",
+            env_vars: &["FIREWORKS_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "sambanova" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.sambanova.ai/v1",
+            env_vars: &["SAMBANOVA_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "mistral" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.mistral.ai/v1",
+            env_vars: &["MISTRAL_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "together" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.together.xyz/v1",
+            env_vars: &["TOGETHER_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "moonshot" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.moonshot.ai/v1",
+            env_vars: &["MOONSHOT_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "nvidia" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://integrate.api.nvidia.com/v1",
+            env_vars: &["NVIDIA_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "qianfan" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://qianfan.baidubce.com/v2",
+            env_vars: &["QIANFAN_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "qwen-portal" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://portal.qwen.ai/v1",
+            env_vars: &["QWEN_PORTAL_API_KEY", "QWEN_OAUTH_TOKEN"],
+            allow_missing_api_key: false,
+        }),
+        "zai" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.z.ai/v1",
+            env_vars: &["ZAI_API_KEY", "Z_AI_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "opencode" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.opencode.ai/v1",
+            env_vars: &["OPENCODE_API_KEY", "OPENCODE_ZEN_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "kimi-coding" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.kimi.com/coding",
+            env_vars: &["KIMI_API_KEY", "KIMICODE_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "volcengine" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://ark.cn-beijing.volces.com/api/v3",
+            env_vars: &["VOLCANO_ENGINE_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "byteplus" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.byteplus.com/v1",
+            env_vars: &["BYTEPLUS_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "ollama" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "http://127.0.0.1:11434/v1",
+            env_vars: &["OLLAMA_API_KEY"],
+            allow_missing_api_key: true,
+        }),
+        "vllm" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "http://127.0.0.1:8000/v1",
+            env_vars: &["VLLM_API_KEY"],
+            allow_missing_api_key: true,
+        }),
+        "huggingface" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api-inference.huggingface.co/v1",
+            env_vars: &["HUGGINGFACE_HUB_TOKEN", "HF_TOKEN"],
+            allow_missing_api_key: false,
+        }),
+        "litellm" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "http://127.0.0.1:4000/v1",
+            env_vars: &["LITELLM_API_KEY"],
+            allow_missing_api_key: true,
+        }),
+        "lmstudio" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "http://127.0.0.1:1234/v1",
+            env_vars: &["LMSTUDIO_API_KEY", "LM_STUDIO_API_KEY"],
+            allow_missing_api_key: true,
+        }),
+        "localai" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "http://127.0.0.1:8080/v1",
+            env_vars: &["LOCALAI_API_KEY", "LOCAL_AI_API_KEY"],
+            allow_missing_api_key: true,
+        }),
+        _ => None,
+    }
+}
+
+fn resolve_provider_runtime_config(
+    config: &Value,
+    provider: &str,
+) -> Option<ProviderRuntimeConfig> {
+    let normalized_provider = normalize_provider_id(provider);
+    let defaults = provider_runtime_defaults(&normalized_provider);
+    let provider_entry = resolve_provider_entry_config(config, &normalized_provider);
+    let provider_options = provider_entry.and_then(provider_config_options_object);
+    let mut headers = Vec::new();
+    collect_provider_headers(&mut headers, provider_entry);
+    collect_provider_headers(&mut headers, provider_options);
+
+    let api_mode = read_provider_config_string(
+        provider_entry,
+        provider_options,
+        &["api", "apiMode", "api_mode", "mode"],
+        128,
+    )
+    .or_else(|| defaults.map(|value| value.api_mode.to_owned()))
+    .unwrap_or_else(|| "openai-completions".to_owned());
+    let base_url = read_provider_config_string(
+        provider_entry,
+        provider_options,
+        &[
+            "chatCompletionsUrl",
+            "chat_completions_url",
+            "chatEndpoint",
+            "chat_endpoint",
+            "baseUrl",
+            "baseURL",
+            "base_url",
+            "url",
+            "endpoint",
+        ],
+        2_048,
+    )
+    .or_else(|| defaults.map(|value| value.base_url.to_owned()));
+    let base_url = base_url?;
+    let api_key = resolve_provider_runtime_api_key(
+        provider_entry,
+        provider_options,
+        &normalized_provider,
+        defaults,
+    );
+    let timeout_ms = resolve_provider_runtime_timeout_ms(config, provider_entry, provider_options);
+    let allow_missing_api_key = read_provider_config_bool(
+        provider_entry,
+        provider_options,
+        &[
+            "allowUnauthenticated",
+            "allow_unauthenticated",
+            "allowUnauth",
+            "allow_unauth",
+            "allowAnonymous",
+            "allow_anonymous",
+            "apiKeyOptional",
+            "api_key_optional",
+        ],
+    )
+    .unwrap_or_else(|| {
+        defaults
+            .map(|value| value.allow_missing_api_key)
+            .unwrap_or(false)
+    });
+    let auth_header_name = read_provider_config_string(
+        provider_entry,
+        provider_options,
+        &[
+            "authHeaderName",
+            "auth_header_name",
+            "apiKeyHeader",
+            "api_key_header",
+            "tokenHeader",
+            "token_header",
+        ],
+        128,
+    )
+    .unwrap_or_else(|| "Authorization".to_owned());
+    let auth_header_prefix = read_provider_config_string(
+        provider_entry,
+        provider_options,
+        &[
+            "authHeaderPrefix",
+            "auth_header_prefix",
+            "apiKeyPrefix",
+            "api_key_prefix",
+            "tokenPrefix",
+            "token_prefix",
+        ],
+        64,
+    )
+    .unwrap_or_else(|| {
+        if auth_header_name.eq_ignore_ascii_case("authorization") {
+            "Bearer ".to_owned()
+        } else {
+            String::new()
+        }
+    });
+    let request_overrides = resolve_provider_request_overrides(provider_entry, provider_options);
+
+    if normalized_provider.eq_ignore_ascii_case("openrouter") {
+        upsert_provider_header(
+            &mut headers,
+            "HTTP-Referer".to_owned(),
+            "https://openclaw.ai".to_owned(),
+            false,
+        );
+        upsert_provider_header(
+            &mut headers,
+            "X-Title".to_owned(),
+            "OpenClaw Rust".to_owned(),
+            false,
+        );
+    }
+    if normalized_provider.eq_ignore_ascii_case("cerebras") {
+        upsert_provider_header(
+            &mut headers,
+            "X-Cerebras-3rd-Party-Integration".to_owned(),
+            "openclaw-rust".to_owned(),
+            false,
+        );
+    }
+
+    Some(ProviderRuntimeConfig {
+        provider: normalized_provider,
+        api_mode,
+        base_url,
+        api_key,
+        allow_missing_api_key,
+        auth_header_name,
+        auth_header_prefix,
+        timeout_ms,
+        headers,
+        request_overrides,
+    })
+}
+
+fn provider_config_options_object(
+    object: &serde_json::Map<String, Value>,
+) -> Option<&serde_json::Map<String, Value>> {
+    read_config_object(
+        object,
+        &[
+            "options",
+            "providerOptions",
+            "provider_options",
+            "runtime",
+            "runtimeOptions",
+            "runtime_options",
+        ],
+    )
+}
+
+fn read_provider_config_string(
+    provider_entry: Option<&serde_json::Map<String, Value>>,
+    provider_options: Option<&serde_json::Map<String, Value>>,
+    keys: &[&str],
+    max_len: usize,
+) -> Option<String> {
+    provider_entry
+        .and_then(|entry| read_config_string(entry, keys, max_len))
+        .or_else(|| provider_options.and_then(|entry| read_config_string(entry, keys, max_len)))
+}
+
+fn read_provider_config_bool(
+    provider_entry: Option<&serde_json::Map<String, Value>>,
+    provider_options: Option<&serde_json::Map<String, Value>>,
+    keys: &[&str],
+) -> Option<bool> {
+    provider_entry
+        .and_then(|entry| read_config_bool(entry, keys))
+        .or_else(|| provider_options.and_then(|entry| read_config_bool(entry, keys)))
+}
+
+fn collect_provider_headers(
+    target: &mut Vec<(String, String)>,
+    provider_object: Option<&serde_json::Map<String, Value>>,
+) {
+    let Some(provider_object) = provider_object else {
+        return;
+    };
+    for key in ["headers", "defaultHeaders", "default_headers"] {
+        let Some(header_map) = provider_object.get(key).and_then(Value::as_object) else {
+            continue;
+        };
+        for (header_name_raw, header_value_raw) in header_map {
+            let Some(header_name) = normalize_optional_text(Some(header_name_raw.clone()), 128)
+            else {
+                continue;
+            };
+            let Some(raw_value) = header_value_raw.as_str() else {
+                continue;
+            };
+            let Some(resolved) = resolve_secret_reference(raw_value)
+                .and_then(|value| normalize_optional_text(Some(value), 2_048))
+            else {
+                continue;
+            };
+            upsert_provider_header(target, header_name, resolved, true);
+        }
+    }
+}
+
+fn upsert_provider_header(
+    headers: &mut Vec<(String, String)>,
+    name: String,
+    value: String,
+    overwrite_existing: bool,
+) {
+    if let Some(index) = headers
+        .iter()
+        .position(|(existing_name, _)| existing_name.eq_ignore_ascii_case(&name))
+    {
+        if overwrite_existing {
+            headers[index] = (name, value);
+        }
+    } else {
+        headers.push((name, value));
+    }
+}
+
+fn resolve_provider_request_overrides(
+    provider_entry: Option<&serde_json::Map<String, Value>>,
+    provider_options: Option<&serde_json::Map<String, Value>>,
+) -> serde_json::Map<String, Value> {
+    let mut output = serde_json::Map::new();
+    for object in [provider_entry, provider_options].into_iter().flatten() {
+        for key in [
+            "requestDefaults",
+            "request_defaults",
+            "request",
+            "payloadDefaults",
+            "payload_defaults",
+            "payload",
+            "params",
+        ] {
+            let Some(entries) = object.get(key).and_then(Value::as_object) else {
+                continue;
+            };
+            for (field, value) in entries {
+                output.insert(field.to_owned(), value.clone());
+            }
+        }
+    }
+    output
+}
+
+fn resolve_provider_entry_config<'a>(
+    config: &'a Value,
+    provider: &str,
+) -> Option<&'a serde_json::Map<String, Value>> {
+    let provider_maps = [
+        config
+            .pointer("/models/providers")
+            .and_then(Value::as_object),
+        config
+            .pointer("/gateway/models/providers")
+            .and_then(Value::as_object),
+    ];
+    for provider_map in provider_maps.into_iter().flatten() {
+        for (entry_provider, entry_value) in provider_map {
+            if normalize_provider_id(entry_provider).eq_ignore_ascii_case(provider) {
+                if let Some(entry) = entry_value.as_object() {
+                    return Some(entry);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn resolve_provider_runtime_api_key(
+    provider_entry: Option<&serde_json::Map<String, Value>>,
+    provider_options: Option<&serde_json::Map<String, Value>>,
+    provider: &str,
+    defaults: Option<ProviderRuntimeDefaults>,
+) -> Option<String> {
+    for entry in [provider_entry, provider_options].into_iter().flatten() {
+        if let Some(raw) = read_config_string(
+            entry,
+            &[
+                "apiKey",
+                "api_key",
+                "key",
+                "token",
+                "accessToken",
+                "access_token",
+                "bearerToken",
+                "bearer_token",
+            ],
+            2_048,
+        ) {
+            if let Some(resolved) = resolve_secret_reference(&raw) {
+                return Some(resolved);
+            }
+        }
+    }
+    let mut env_vars = defaults
+        .map(|value| value.env_vars.to_vec())
+        .unwrap_or_default();
+    if provider.eq_ignore_ascii_case("anthropic") {
+        env_vars.push("ANTHROPIC_API_KEY");
+        env_vars.push("ANTHROPIC_OAUTH_TOKEN");
+    }
+    if provider.eq_ignore_ascii_case("google") {
+        env_vars.push("GEMINI_API_KEY");
+    }
+    for env_key in env_vars {
+        if let Ok(value) = env::var(env_key) {
+            if let Some(normalized) = normalize_optional_text(Some(value), 4_096) {
+                return Some(normalized);
+            }
+        }
+    }
+    None
+}
+
+fn resolve_secret_reference(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(value) = trimmed
+        .strip_prefix("${")
+        .and_then(|value| value.strip_suffix('}'))
+    {
+        let env_name = value.trim();
+        if env_name.is_empty() {
+            return None;
+        }
+        return env::var(env_name)
+            .ok()
+            .and_then(|value| normalize_optional_text(Some(value), 4_096));
+    }
+    if let Some(value) = trimmed
+        .strip_prefix("env:")
+        .or_else(|| trimmed.strip_prefix("ENV:"))
+    {
+        let env_name = value.trim();
+        if env_name.is_empty() {
+            return None;
+        }
+        return env::var(env_name)
+            .ok()
+            .and_then(|value| normalize_optional_text(Some(value), 4_096));
+    }
+    if let Some(value) = trimmed
+        .strip_prefix("shell env:")
+        .or_else(|| trimmed.strip_prefix("SHELL ENV:"))
+    {
+        let env_name = value.trim();
+        if env_name.is_empty() {
+            return None;
+        }
+        return env::var(env_name)
+            .ok()
+            .and_then(|value| normalize_optional_text(Some(value), 4_096));
+    }
+    if trimmed
+        .chars()
+        .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+        && trimmed.chars().any(|ch| ch == '_')
+    {
+        return env::var(trimmed)
+            .ok()
+            .and_then(|value| normalize_optional_text(Some(value), 4_096));
+    }
+    normalize_optional_text(Some(trimmed.to_owned()), 4_096)
+}
+
+fn resolve_provider_runtime_timeout_ms(
+    config: &Value,
+    provider_entry: Option<&serde_json::Map<String, Value>>,
+    provider_options: Option<&serde_json::Map<String, Value>>,
+) -> u64 {
+    provider_entry
+        .and_then(|entry| {
+            read_config_u64(
+                entry,
+                &[
+                    "timeoutMs",
+                    "timeout_ms",
+                    "requestTimeoutMs",
+                    "request_timeout_ms",
+                ],
+            )
+        })
+        .or_else(|| {
+            provider_options.and_then(|entry| {
+                read_config_u64(
+                    entry,
+                    &[
+                        "timeoutMs",
+                        "timeout_ms",
+                        "requestTimeoutMs",
+                        "request_timeout_ms",
+                    ],
+                )
+            })
+        })
+        .or_else(|| {
+            config
+                .pointer("/models/requestTimeoutMs")
+                .and_then(config_value_as_u64)
+        })
+        .or_else(|| {
+            config
+                .pointer("/models/request_timeout_ms")
+                .and_then(config_value_as_u64)
+        })
+        .unwrap_or(AGENT_PROVIDER_HTTP_TIMEOUT_MS)
+        .max(1_000)
+}
+
+fn resolve_tool_runtime_policy_config(config: &Value) -> ToolRuntimePolicyConfig {
+    config
+        .pointer("/security/tool_runtime_policy")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<ToolRuntimePolicyConfig>(value).ok())
+        .unwrap_or_default()
+}
+
+fn resolve_tool_workspace_root_path(workspace: &str, agent_id: &str) -> PathBuf {
+    let workspace = normalize_optional_text(Some(workspace.to_owned()), 2_048).unwrap_or_default();
+    if workspace.is_empty() || agent_workspace_is_memory(&workspace) {
+        return PathBuf::from(".openclaw-rs")
+            .join("tool-runtime")
+            .join(normalize_agent_id(agent_id));
+    }
+    PathBuf::from(workspace)
+}
+
+fn provider_chat_completions_url(base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return "/v1/chat/completions".to_owned();
+    }
+    let lower = normalize(trimmed);
+    if lower.contains("/chat/completions") {
+        return trimmed.to_owned();
+    }
+    if lower.ends_with("/v1") {
+        return format!("{trimmed}/chat/completions");
+    }
+    format!("{trimmed}/v1/chat/completions")
+}
+
+async fn invoke_openai_chat_completion(
+    provider_runtime: &ProviderRuntimeConfig,
+    model: &str,
+    messages: &[Value],
+    tools: &[Value],
+) -> Result<OpenAiChatCompletionResponse, String> {
+    let timeout = Duration::from_millis(provider_runtime.timeout_ms.max(1_000));
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|err| format!("failed creating provider client: {err}"))?;
+    let endpoint = provider_chat_completions_url(&provider_runtime.base_url);
+    let mut request = client
+        .post(&endpoint)
+        .header("Content-Type", "application/json");
+    if let Some(api_key) = provider_runtime
+        .api_key
+        .as_ref()
+        .and_then(|value| normalize_optional_text(Some(value.clone()), 4_096))
+    {
+        let header_value = format!("{}{}", provider_runtime.auth_header_prefix, api_key);
+        request = request.header(&provider_runtime.auth_header_name, header_value);
+    }
+    for (name, value) in &provider_runtime.headers {
+        request = request.header(name, value);
+    }
+
+    let mut payload_object = provider_runtime.request_overrides.clone();
+    payload_object.insert("model".to_owned(), Value::String(model.to_owned()));
+    payload_object.insert("messages".to_owned(), Value::Array(messages.to_vec()));
+    payload_object
+        .entry("stream".to_owned())
+        .or_insert(Value::Bool(false));
+    if !tools.is_empty() {
+        payload_object.insert("tools".to_owned(), Value::Array(tools.to_vec()));
+        payload_object
+            .entry("tool_choice".to_owned())
+            .or_insert(Value::String("auto".to_owned()));
+    }
+    let payload = Value::Object(payload_object);
+
+    let response = request.json(&payload).send().await.map_err(|err| {
+        format!(
+            "provider request failed for {}: {err}",
+            provider_runtime.provider
+        )
+    })?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|err| format!("provider response body read failed: {err}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "provider request failed with status {}: {}",
+            status.as_u16(),
+            truncate_text(&body, 1_024)
+        ));
+    }
+    serde_json::from_str::<OpenAiChatCompletionResponse>(&body).map_err(|err| {
+        format!(
+            "provider response parse failed: {err}; body={}",
+            truncate_text(&body, 1_024)
+        )
+    })
+}
+
+fn parse_tool_call_arguments(raw: &str) -> Result<Value, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(json!({}));
+    }
+    let parsed: Value = serde_json::from_str(trimmed)
+        .map_err(|err| format!("invalid tool call arguments JSON: {err}"))?;
+    if parsed.is_object() {
+        Ok(parsed)
+    } else {
+        Ok(json!({
+            "value": parsed
+        }))
+    }
+}
+
+fn openai_agent_tool_definitions() -> Vec<Value> {
+    let definitions = [
+        ("read", "Read a file from the active workspace."),
+        ("write", "Write content to a file in the active workspace."),
+        ("edit", "Apply focused text edits to a file."),
+        (
+            "apply_patch",
+            "Apply a structured patch to one or more files.",
+        ),
+        ("exec", "Run an allowed command in the workspace."),
+        ("process", "Inspect or control tracked runtime processes."),
+        ("gateway", "Invoke gateway RPC methods."),
+        ("sessions", "Inspect and mutate session history/state."),
+        ("message", "Invoke channel/message actions."),
+        ("browser", "Run browser automation actions."),
+        ("canvas", "Render or inspect canvas runtime output."),
+        ("nodes", "Invoke paired-node commands."),
+    ];
+    definitions
+        .iter()
+        .map(|(name, description)| openai_agent_tool_definition(name, description))
+        .collect()
+}
+
+fn openai_agent_tool_definition(name: &str, description: &str) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "additionalProperties": true
+            }
+        }
+    })
+}
+
+fn build_openai_messages_from_session_history(history: &[SessionHistoryRecord]) -> Vec<Value> {
+    let mut messages = Vec::new();
+    for entry in history.iter().rev() {
+        if entry.kind != SessionHistoryKind::Send {
+            continue;
+        }
+        let text = entry
+            .text
+            .as_ref()
+            .and_then(|value| normalize_optional_text(Some(value.clone()), 12_000))
+            .or_else(|| {
+                entry
+                    .command
+                    .as_ref()
+                    .and_then(|value| normalize_optional_text(Some(value.clone()), 12_000))
+            });
+        let Some(text) = text else {
+            continue;
+        };
+        let source = entry.source.as_deref().map(normalize).unwrap_or_default();
+        let role = if source.starts_with("agent.assistant") || source.starts_with("chat.inject") {
+            "assistant"
+        } else {
+            "user"
+        };
+        messages.push(json!({
+            "role": role,
+            "content": text
+        }));
+    }
+    messages
+}
+
+fn build_openai_assistant_tool_call_message(
+    assistant_text: Option<&str>,
+    tool_calls: &[OpenAiChatToolCall],
+) -> Value {
+    let tool_calls_payload = tool_calls
+        .iter()
+        .map(|tool_call| {
+            let id = tool_call
+                .id
+                .as_ref()
+                .and_then(|value| normalize_optional_text(Some(value.clone()), 128))
+                .unwrap_or_else(|| format!("tool-call-{}", now_ms()));
+            json!({
+                "id": id,
+                "type": "function",
+                "function": {
+                    "name": tool_call.function.name,
+                    "arguments": tool_call.function.arguments
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "role": "assistant",
+        "content": assistant_text.unwrap_or(""),
+        "tool_calls": tool_calls_payload
+    })
+}
+
+fn extract_openai_message_text(content: Option<&Value>) -> Option<String> {
+    let content = content?;
+    match content {
+        Value::Null => None,
+        Value::String(raw) => normalize_optional_text(Some(raw.clone()), 12_000),
+        Value::Array(items) => {
+            let mut out = String::new();
+            for item in items {
+                let text = item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| item.pointer("/text/value").and_then(Value::as_str))
+                    .or_else(|| item.pointer("/content").and_then(Value::as_str));
+                if let Some(text) = text {
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(text.trim());
+                }
+            }
+            normalize_optional_text(Some(out), 12_000)
+        }
+        Value::Object(object) => object
+            .get("text")
+            .and_then(Value::as_str)
+            .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 12_000))
+            .or_else(|| {
+                object
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .and_then(|raw| normalize_optional_text(Some(raw.to_owned()), 12_000))
+            }),
+        _ => normalize_optional_text(Some(content.to_string()), 12_000),
     }
 }
 
@@ -25266,7 +26593,307 @@ mod tests {
             super::model_provider_failover_chain("qwen"),
             vec!["openai".to_owned()]
         );
+        assert_eq!(
+            super::model_provider_failover_chain("cerebras"),
+            vec!["openai".to_owned()]
+        );
         assert!(super::model_provider_failover_chain("unknown-provider").is_empty());
+    }
+
+    #[test]
+    fn normalize_provider_id_maps_major_aliases() {
+        assert_eq!(super::normalize_provider_id("z.ai"), "zai");
+        assert_eq!(super::normalize_provider_id("doubao"), "volcengine");
+        assert_eq!(super::normalize_provider_id("Bytedance"), "volcengine");
+        assert_eq!(super::normalize_provider_id("chatgpt"), "openai");
+        assert_eq!(super::normalize_provider_id("codex-cli"), "openai-codex");
+        assert_eq!(super::normalize_provider_id("qwen"), "qwen-portal");
+        assert_eq!(super::normalize_provider_id("gemini"), "google");
+        assert_eq!(super::normalize_provider_id("claude"), "anthropic");
+        assert_eq!(super::normalize_provider_id("lm-studio"), "lmstudio");
+        assert_eq!(super::normalize_provider_id("local-ai"), "localai");
+    }
+
+    #[test]
+    fn model_catalog_from_provider_entries_parses_nested_provider_models() {
+        let config = json!({
+            "models": {
+                "providers": {
+                    "cerebras": {
+                        "api": "openai-completions",
+                        "baseUrl": "https://api.cerebras.ai/v1",
+                        "models": [
+                            {
+                                "id": "llama-4-scout-17b-16e-instruct",
+                                "name": "Cerebras Scout",
+                                "reasoning": true,
+                                "contextWindow": 131072
+                            }
+                        ]
+                    }
+                }
+            }
+        });
+        let mut catalog = super::model_catalog_from_config(&config);
+        super::ModelRegistry::sort_models(&mut catalog);
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog[0].provider, "cerebras");
+        assert_eq!(catalog[0].id, "llama-4-scout-17b-16e-instruct");
+        assert_eq!(catalog[0].name, "Cerebras Scout");
+        assert_eq!(catalog[0].context_window, Some(131072));
+        assert_eq!(catalog[0].reasoning, Some(true));
+    }
+
+    #[test]
+    fn resolve_provider_runtime_config_supports_cerebras_format() {
+        let config = json!({
+            "models": {
+                "providers": {
+                    "cerebras": {
+                        "api": "openai-completions",
+                        "baseUrl": "https://api.cerebras.ai/v1",
+                        "apiKey": "cerebras-test-key",
+                        "timeoutMs": 35000
+                    }
+                }
+            }
+        });
+        let resolved = super::resolve_provider_runtime_config(&config, "cerebras")
+            .expect("cerebras runtime config");
+        assert_eq!(resolved.provider, "cerebras");
+        assert_eq!(resolved.api_mode, "openai-completions");
+        assert_eq!(resolved.base_url, "https://api.cerebras.ai/v1");
+        assert_eq!(resolved.api_key.as_deref(), Some("cerebras-test-key"));
+        assert!(!resolved.allow_missing_api_key);
+        assert_eq!(resolved.auth_header_name, "Authorization");
+        assert_eq!(resolved.auth_header_prefix, "Bearer ");
+        assert!(resolved.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("X-Cerebras-3rd-Party-Integration")
+                && value == "openclaw-rust"
+        }));
+        assert_eq!(resolved.timeout_ms, 35_000);
+    }
+
+    #[test]
+    fn resolve_provider_runtime_config_supports_nested_options_custom_auth_and_payload_defaults() {
+        let config = json!({
+            "models": {
+                "providers": {
+                    "custom-openai": {
+                        "options": {
+                            "baseURL": "https://proxy.example/v1",
+                            "apiKey": "custom-token",
+                            "authHeaderName": "api-key",
+                            "authHeaderPrefix": "",
+                            "headers": {
+                                "X-Workspace": "team-alpha"
+                            },
+                            "requestDefaults": {
+                                "temperature": 0.2,
+                                "reasoning_effort": "medium"
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let resolved = super::resolve_provider_runtime_config(&config, "custom-openai")
+            .expect("custom runtime config");
+        assert_eq!(resolved.provider, "custom-openai");
+        assert_eq!(resolved.base_url, "https://proxy.example/v1");
+        assert_eq!(resolved.api_key.as_deref(), Some("custom-token"));
+        assert_eq!(resolved.auth_header_name, "api-key");
+        assert_eq!(resolved.auth_header_prefix, "");
+        assert!(
+            resolved
+                .headers
+                .iter()
+                .any(|(name, value)| name.eq_ignore_ascii_case("X-Workspace")
+                    && value == "team-alpha")
+        );
+        assert_eq!(
+            resolved
+                .request_overrides
+                .get("temperature")
+                .and_then(Value::as_f64),
+            Some(0.2)
+        );
+        assert_eq!(
+            resolved
+                .request_overrides
+                .get("reasoning_effort")
+                .and_then(Value::as_str),
+            Some("medium")
+        );
+    }
+
+    #[test]
+    fn resolve_provider_runtime_config_allows_unauthenticated_local_defaults() {
+        let config = json!({});
+        let resolved = super::resolve_provider_runtime_config(&config, "ollama")
+            .expect("ollama runtime config");
+        assert_eq!(resolved.provider, "ollama");
+        assert!(resolved.api_key.is_none());
+        assert!(resolved.allow_missing_api_key);
+        assert_eq!(resolved.base_url, "http://127.0.0.1:11434/v1");
+    }
+
+    #[test]
+    fn provider_chat_completions_url_preserves_explicit_endpoint_with_query() {
+        let endpoint = "https://example.openai.azure.com/openai/deployments/my-deploy/chat/completions?api-version=2024-10-21";
+        assert_eq!(super::provider_chat_completions_url(endpoint), endpoint);
+    }
+
+    #[tokio::test]
+    async fn invoke_openai_chat_completion_applies_custom_auth_header_and_payload_defaults() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind provider listener");
+        let provider_addr = listener.local_addr().expect("provider addr");
+        let captured_request: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let captured_request_server = Arc::clone(&captured_request);
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut buffer = vec![0_u8; 64 * 1024];
+            let read = stream.read(&mut buffer).expect("read request");
+            let request_text = String::from_utf8_lossy(&buffer[..read]).to_string();
+            if let Ok(mut guard) = captured_request_server.lock() {
+                *guard = Some(request_text);
+            }
+            let payload = json!({
+                "id": "cmpl-custom-auth",
+                "choices": [
+                    {
+                        "message": {
+                            "content": "ok"
+                        }
+                    }
+                ]
+            });
+            let body = payload.to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+        });
+
+        let mut request_overrides = serde_json::Map::new();
+        request_overrides.insert("temperature".to_owned(), json!(0.3));
+        request_overrides.insert("top_p".to_owned(), json!(0.95));
+        let provider_runtime = super::ProviderRuntimeConfig {
+            provider: "custom-openai".to_owned(),
+            api_mode: "openai-completions".to_owned(),
+            base_url: format!("http://{provider_addr}/v1"),
+            api_key: Some("custom-token".to_owned()),
+            allow_missing_api_key: false,
+            auth_header_name: "api-key".to_owned(),
+            auth_header_prefix: String::new(),
+            timeout_ms: 30_000,
+            headers: vec![("X-Custom".to_owned(), "abc".to_owned())],
+            request_overrides,
+        };
+        let messages = vec![json!({
+            "role": "user",
+            "content": "hello"
+        })];
+        let tools = vec![json!({
+            "type": "function",
+            "function": {
+                "name": "read",
+                "parameters": {
+                    "type": "object"
+                }
+            }
+        })];
+
+        let completion = super::invoke_openai_chat_completion(
+            &provider_runtime,
+            "test-model",
+            &messages,
+            &tools,
+        )
+        .await
+        .expect("completion request");
+        assert_eq!(completion.choices.len(), 1);
+
+        server.join().expect("join provider server");
+        let request_text = captured_request
+            .lock()
+            .expect("lock captured request")
+            .clone()
+            .expect("captured request");
+        let request_lower = request_text.to_ascii_lowercase();
+        assert!(request_lower.contains("\r\napi-key: custom-token\r\n"));
+        assert!(request_lower.contains("\r\nx-custom: abc\r\n"));
+        let body = request_text
+            .split("\r\n\r\n")
+            .nth(1)
+            .unwrap_or_default()
+            .to_owned();
+        let payload: Value = serde_json::from_str(&body).expect("parse request payload");
+        assert_eq!(
+            payload.pointer("/temperature").and_then(Value::as_f64),
+            Some(0.3)
+        );
+        assert_eq!(
+            payload.pointer("/top_p").and_then(Value::as_f64),
+            Some(0.95)
+        );
+        assert_eq!(
+            payload.pointer("/tool_choice").and_then(Value::as_str),
+            Some("auto")
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires OPENCODE_API_KEY (or OPENAI_API_KEY) for live network smoke"]
+    async fn live_openai_compatible_opencode_smoke_when_credentials_are_configured() {
+        let api_key = std::env::var("OPENCODE_API_KEY")
+            .ok()
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+            .and_then(|value| super::normalize_optional_text(Some(value), 4_096));
+        if api_key.is_none() {
+            eprintln!("skipping live smoke: OPENCODE_API_KEY/OPENAI_API_KEY is not set");
+            return;
+        }
+        let model = std::env::var("OPENCODE_SMOKE_MODEL")
+            .ok()
+            .and_then(|value| super::normalize_optional_text(Some(value), 256))
+            .unwrap_or_else(|| "opencode:default".to_owned());
+        let base_url = std::env::var("OPENCODE_BASE_URL")
+            .ok()
+            .and_then(|value| super::normalize_optional_text(Some(value), 2_048))
+            .unwrap_or_else(|| "https://api.opencode.ai/v1".to_owned());
+        let runtime = super::ProviderRuntimeConfig {
+            provider: "opencode".to_owned(),
+            api_mode: "openai-completions".to_owned(),
+            base_url,
+            api_key,
+            allow_missing_api_key: false,
+            auth_header_name: "Authorization".to_owned(),
+            auth_header_prefix: "Bearer ".to_owned(),
+            timeout_ms: 60_000,
+            headers: Vec::new(),
+            request_overrides: serde_json::Map::new(),
+        };
+        let messages = vec![json!({
+            "role": "user",
+            "content": "Reply with exactly: ok"
+        })];
+        let completion =
+            super::invoke_openai_chat_completion(&runtime, &model, &messages, &[]).await;
+        let completion = completion.expect("live completion response");
+        let assistant = completion
+            .choices
+            .first()
+            .and_then(|choice| super::extract_openai_message_text(choice.message.content.as_ref()))
+            .unwrap_or_default();
+        assert!(
+            !assistant.trim().is_empty(),
+            "live provider response should contain assistant text"
+        );
     }
 
     #[test]
@@ -33389,7 +35016,9 @@ mod tests {
                     Some("ops-custom-1")
                 );
                 assert_eq!(
-                    models[0].get("provider").and_then(serde_json::Value::as_str),
+                    models[0]
+                        .get("provider")
+                        .and_then(serde_json::Value::as_str),
                     Some("zai")
                 );
                 assert!(models[0]
@@ -33928,6 +35557,242 @@ mod tests {
             }
             _ => panic!("expected agent.wait handled"),
         }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_agent_runtime_executes_openai_tool_loop_for_cerebras_format() {
+        let root = std::env::temp_dir().join(format!("openclaw-rs-agent-runtime-{}", now_ms()));
+        fs::create_dir_all(&root).expect("create runtime root");
+        fs::write(root.join("README.md"), "openclaw rust parity").expect("write fixture file");
+        let workspace = root.to_string_lossy().to_string();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind provider listener");
+        let provider_addr = listener.local_addr().expect("provider addr");
+        let captured_requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_requests_server = Arc::clone(&captured_requests);
+        let server = std::thread::spawn(move || {
+            for turn in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept provider request");
+                let mut buffer = vec![0_u8; 128 * 1024];
+                let read = stream.read(&mut buffer).expect("read provider request");
+                let request_text = String::from_utf8_lossy(&buffer[..read]).to_string();
+                let body = request_text
+                    .split("\r\n\r\n")
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_owned();
+                if let Ok(parsed) = serde_json::from_str::<Value>(&body) {
+                    if let Ok(mut guard) = captured_requests_server.lock() {
+                        guard.push(parsed);
+                    }
+                }
+
+                let payload = if turn == 0 {
+                    json!({
+                        "id": "cmpl-tool-1",
+                        "object": "chat.completion",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "tool_calls": [
+                                        {
+                                            "id": "call_read_1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "read",
+                                                "arguments": "{\"path\":\"README.md\"}"
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    })
+                } else {
+                    json!({
+                        "id": "cmpl-tool-2",
+                        "object": "chat.completion",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "tool-read-ok"
+                                }
+                            }
+                        ]
+                    })
+                };
+                let body = payload.to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write provider response");
+            }
+        });
+
+        let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "agents": {
+                    "list": [
+                        {
+                            "id": "main",
+                            "workspace": workspace
+                        }
+                    ]
+                },
+                "models": {
+                    "providers": {
+                        "cerebras": {
+                            "api": "openai-completions",
+                            "baseUrl": format!("http://{provider_addr}/v1"),
+                            "apiKey": "cerebras-test-key",
+                            "models": [
+                                {
+                                    "id": "cerebras-free",
+                                    "name": "Cerebras Free Promo"
+                                }
+                            ]
+                        }
+                    }
+                }
+            }),
+        )
+        .await;
+
+        let session_key = "agent:main:discord:group:g-agent-runtime-tool-loop";
+        let patch_model = RpcRequestFrame {
+            id: "req-agent-runtime-tool-patch".to_owned(),
+            method: "sessions.patch".to_owned(),
+            params: json!({
+                "key": session_key,
+                "model": "cerebras/cerebras-free"
+            }),
+        };
+        assert!(matches!(
+            dispatcher.handle_request(&patch_model).await,
+            RpcDispatchOutcome::Handled(_)
+        ));
+
+        let run_agent = RpcRequestFrame {
+            id: "req-agent-runtime-tool-run".to_owned(),
+            method: "agent".to_owned(),
+            params: json!({
+                "sessionKey": session_key,
+                "idempotencyKey": "agent-runtime-tool-run",
+                "message": "Read README.md and reply with tool-read-ok"
+            }),
+        };
+        match dispatcher.handle_request(&run_agent).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/status").and_then(Value::as_str),
+                    Some("started")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/resolved/modelProvider")
+                        .and_then(Value::as_str),
+                    Some("cerebras")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/runtime/executed")
+                        .and_then(Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected runtime agent request to be handled"),
+        }
+
+        let wait = RpcRequestFrame {
+            id: "req-agent-runtime-tool-wait".to_owned(),
+            method: "agent.wait".to_owned(),
+            params: json!({
+                "runId": "agent-runtime-tool-run",
+                "timeoutMs": 0
+            }),
+        };
+        match dispatcher.handle_request(&wait).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/status").and_then(Value::as_str),
+                    Some("ok")
+                );
+            }
+            _ => panic!("expected agent.wait handled"),
+        }
+
+        let history = RpcRequestFrame {
+            id: "req-agent-runtime-tool-history".to_owned(),
+            method: "sessions.history".to_owned(),
+            params: json!({
+                "sessionKey": session_key,
+                "limit": 20
+            }),
+        };
+        match dispatcher.handle_request(&history).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                let items = payload
+                    .pointer("/history")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                assert!(items.iter().any(|item| {
+                    item.pointer("/source")
+                        .and_then(Value::as_str)
+                        .map(|source| source == "agent.assistant")
+                        .unwrap_or(false)
+                        && item
+                            .pointer("/text")
+                            .and_then(Value::as_str)
+                            .map(|text| text.contains("tool-read-ok"))
+                            .unwrap_or(false)
+                }));
+                assert!(items.iter().any(|item| {
+                    item.pointer("/source")
+                        .and_then(Value::as_str)
+                        .map(|source| source == "agent.tool.read")
+                        .unwrap_or(false)
+                }));
+            }
+            _ => panic!("expected sessions.history handled"),
+        }
+
+        server.join().expect("join provider server");
+        let captured = captured_requests
+            .lock()
+            .expect("lock captured requests")
+            .clone();
+        assert_eq!(captured.len(), 2);
+        assert!(captured[0]
+            .pointer("/tools")
+            .and_then(Value::as_array)
+            .map(|items| !items.is_empty())
+            .unwrap_or(false));
+        assert!(captured[1]
+            .pointer("/messages")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items.iter().any(|entry| {
+                    entry
+                        .pointer("/role")
+                        .and_then(Value::as_str)
+                        .map(|role| role == "tool")
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]
