@@ -8485,6 +8485,22 @@ impl ModelRegistry {
                 reasoning: Some(true),
                 fallback_providers: model_provider_failover_chain("openai-codex"),
             },
+            ModelChoice {
+                id: "glm-5-free".to_owned(),
+                name: "GLM-5-Free".to_owned(),
+                provider: "opencode".to_owned(),
+                context_window: Some(131_072),
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("opencode"),
+            },
+            ModelChoice {
+                id: "glm-5".to_owned(),
+                name: "GLM-5".to_owned(),
+                provider: "zhipuai".to_owned(),
+                context_window: Some(128_000),
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("zhipuai"),
+            },
         ];
         Self::sort_models(&mut models);
         Self { models }
@@ -8783,6 +8799,8 @@ impl AuthProfileRegistry {
         insert_profiles("openai-codex", &["openai-codex:default"]);
         insert_profiles("qwen-portal", &["qwen-portal:default"]);
         insert_profiles("zai", &["zai:default"]);
+        insert_profiles("zhipuai", &["zhipuai:default"]);
+        insert_profiles("zhipuai-coding", &["zhipuai-coding:default"]);
         insert_profiles("opencode", &["opencode:default"]);
         insert_profiles("kimi-coding", &["kimi-coding:default"]);
 
@@ -18707,6 +18725,18 @@ const OAUTH_PROVIDER_CATALOG: &[OAuthProviderCatalogEntry] = &[
         aliases: &["kimi", "kimi-code"],
         verification_url: "https://www.kimi.com",
     },
+    OAuthProviderCatalogEntry {
+        id: "opencode",
+        display_name: "OpenCode",
+        aliases: &["opencode-zen", "opencode-ai"],
+        verification_url: "https://opencode.ai",
+    },
+    OAuthProviderCatalogEntry {
+        id: "zhipuai",
+        display_name: "Zhipu AI",
+        aliases: &["zhipu", "zhipu-ai", "bigmodel"],
+        verification_url: "https://open.bigmodel.cn",
+    },
 ];
 
 fn oauth_provider_catalog_entry(provider: &str) -> Option<&'static OAuthProviderCatalogEntry> {
@@ -18773,6 +18803,8 @@ fn oauth_default_profile_id(provider: &str, account_id: &str) -> String {
         "google-gemini-cli" => "google-gemini-cli:gemini-cli".to_owned(),
         "qwen-portal" => "qwen-portal:qwen-cli".to_owned(),
         "minimax-portal" => "minimax-portal:minimax-cli".to_owned(),
+        "opencode" => "opencode:default".to_owned(),
+        "zhipuai" => "zhipuai:default".to_owned(),
         _ => format!("{provider}:{account_id}"),
     }
 }
@@ -24687,6 +24719,8 @@ fn parse_patch_model(
 fn normalize_provider_id(provider: &str) -> String {
     match normalize(provider).as_str() {
         "z.ai" | "z-ai" => "zai".to_owned(),
+        "zhipu-coding" | "zhipuai-coding" | "bigmodel-coding" => "zhipuai-coding".to_owned(),
+        "zhipu" | "zhipu-ai" | "zhipuai" | "bigmodel" | "bigmodel-cn" => "zhipuai".to_owned(),
         "opencode-zen" => "opencode".to_owned(),
         "qwen" => "qwen-portal".to_owned(),
         "kimi-code" => "kimi-coding".to_owned(),
@@ -24742,10 +24776,11 @@ fn model_provider_failover_chain(provider: &str) -> Vec<String> {
         "openai-codex" => vec!["openai".to_owned(), "anthropic".to_owned()],
         "openai" => vec!["openai-codex".to_owned(), "anthropic".to_owned()],
         "anthropic" => vec!["openai".to_owned()],
-        "google" | "qwen-portal" | "zai" | "opencode" | "kimi-coding" | "groq" | "cerebras"
-        | "xai" | "openrouter" | "deepseek" | "perplexity" | "fireworks" | "mistral"
-        | "together" | "moonshot" | "nvidia" | "qianfan" | "volcengine" | "byteplus"
-        | "sambanova" | "ollama" | "vllm" | "litellm" | "lmstudio" | "localai" => {
+        "google" | "qwen-portal" | "zai" | "zhipuai" | "zhipuai-coding" | "opencode"
+        | "kimi-coding" | "groq" | "cerebras" | "xai" | "openrouter" | "deepseek"
+        | "perplexity" | "fireworks" | "mistral" | "together" | "moonshot" | "nvidia"
+        | "qianfan" | "volcengine" | "byteplus" | "sambanova" | "ollama" | "vllm" | "litellm"
+        | "lmstudio" | "localai" => {
             vec!["openai".to_owned()]
         }
         _ => Vec::new(),
@@ -24868,6 +24903,28 @@ fn provider_runtime_defaults(provider: &str) -> Option<ProviderRuntimeDefaults> 
             api_mode: "openai-completions",
             base_url: "https://api.z.ai/v1",
             env_vars: &["ZAI_API_KEY", "Z_AI_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "zhipuai" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://open.bigmodel.cn/api/paas/v4",
+            env_vars: &[
+                "ZHIPUAI_API_KEY",
+                "BIGMODEL_API_KEY",
+                "ZAI_API_KEY",
+                "Z_AI_API_KEY",
+            ],
+            allow_missing_api_key: false,
+        }),
+        "zhipuai-coding" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://open.bigmodel.cn/api/coding/paas/v4",
+            env_vars: &[
+                "ZHIPUAI_API_KEY",
+                "BIGMODEL_API_KEY",
+                "ZAI_API_KEY",
+                "Z_AI_API_KEY",
+            ],
             allow_missing_api_key: false,
         }),
         "opencode" => Some(ProviderRuntimeDefaults {
@@ -26597,6 +26654,10 @@ mod tests {
             super::model_provider_failover_chain("cerebras"),
             vec!["openai".to_owned()]
         );
+        assert_eq!(
+            super::model_provider_failover_chain("zhipu"),
+            vec!["openai".to_owned()]
+        );
         assert!(super::model_provider_failover_chain("unknown-provider").is_empty());
     }
 
@@ -26612,6 +26673,24 @@ mod tests {
         assert_eq!(super::normalize_provider_id("claude"), "anthropic");
         assert_eq!(super::normalize_provider_id("lm-studio"), "lmstudio");
         assert_eq!(super::normalize_provider_id("local-ai"), "localai");
+        assert_eq!(super::normalize_provider_id("zhipu"), "zhipuai");
+        assert_eq!(
+            super::normalize_provider_id("zhipu-coding"),
+            "zhipuai-coding"
+        );
+    }
+
+    #[test]
+    fn model_registry_defaults_include_opencode_and_zhipuai_choices() {
+        let registry = super::ModelRegistry::new();
+        let models = registry.list();
+        assert!(models.iter().any(|entry| {
+            entry.provider.eq_ignore_ascii_case("opencode")
+                && entry.id.eq_ignore_ascii_case("glm-5-free")
+        }));
+        assert!(models.iter().any(|entry| {
+            entry.provider.eq_ignore_ascii_case("zhipuai") && entry.id.eq_ignore_ascii_case("glm-5")
+        }));
     }
 
     #[test]
@@ -26672,6 +26751,17 @@ mod tests {
                 && value == "openclaw-rust"
         }));
         assert_eq!(resolved.timeout_ms, 35_000);
+    }
+
+    #[test]
+    fn resolve_provider_runtime_config_supports_zhipu_openai_defaults() {
+        let config = json!({});
+        let resolved =
+            super::resolve_provider_runtime_config(&config, "zhipu").expect("zhipu runtime config");
+        assert_eq!(resolved.provider, "zhipuai");
+        assert_eq!(resolved.api_mode, "openai-completions");
+        assert_eq!(resolved.base_url, "https://open.bigmodel.cn/api/paas/v4");
+        assert!(!resolved.allow_missing_api_key);
     }
 
     #[test]
@@ -26917,6 +27007,14 @@ mod tests {
         assert_eq!(
             super::normalize_oauth_provider_id("kimi"),
             Some("kimi-coding".to_owned())
+        );
+        assert_eq!(
+            super::normalize_oauth_provider_id("opencode-zen"),
+            Some("opencode".to_owned())
+        );
+        assert_eq!(
+            super::normalize_oauth_provider_id("zhipu"),
+            Some("zhipuai".to_owned())
         );
     }
 
@@ -36488,6 +36586,18 @@ mod tests {
                     .pointer("/providers")
                     .and_then(serde_json::Value::as_array)
                     .expect("providers array");
+                assert!(list.iter().any(|entry| {
+                    entry
+                        .pointer("/providerId")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("opencode")
+                }));
+                assert!(list.iter().any(|entry| {
+                    entry
+                        .pointer("/providerId")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("zhipuai")
+                }));
                 let codex = list.iter().find(|entry| {
                     entry
                         .pointer("/providerId")

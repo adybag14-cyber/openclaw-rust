@@ -10,8 +10,8 @@ Minimum supported Rust version: `1.83`.
 - Feature audit scoreboard: `22 implemented`, `0 partial`, `0 deferred`.
 - RPC method-surface parity: `103` Rust methods, `100%` coverage vs upstream base + handlers.
 - Latest full validation matrix:
-  - `cargo +1.83.0-x86_64-pc-windows-gnu test` -> `327` passed
-  - `cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state` -> `331` passed
+  - `cargo +1.83.0-x86_64-pc-windows-gnu test` -> `329` passed
+  - `cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state` -> `333` passed
   - `clippy -D warnings` + `release` builds pass for default and `sqlite-state`
 
 ## Implemented runtime coverage
@@ -88,6 +88,7 @@ systemctl --user status openclaw-agent-rs.service
 - Supports extended `sessions.patch` parity fields (`thinkingLevel`, `verboseLevel`, `reasoningLevel`, `responseUsage`, `elevatedLevel`, `execHost`, `execSecurity`, `execAsk`, `execNode`, `model`, `spawnDepth`) with explicit `null` clear semantics.
 - Supports provider-defined catalog ingestion from `models.providers.*.models` and OpenAI-compatible provider resolution (including Cerebras-compatible chat completion payload formatting) for runtime agent execution.
 - Supports nested provider runtime options (`models.providers.<id>.options`) for OpenAI-compatible endpoints, including custom auth header names/prefixes, custom request defaults, and full `chat/completions` URLs with query strings; local provider defaults (`ollama`, `vllm`, `litellm`, `lmstudio`, `localai`) can run without API keys.
+- Includes built-in setup-ready model choices for OpenCode Zen `glm-5-free` and ZhipuAI `glm-5`, with provider aliases/defaults for `zhipuai` and `zhipuai-coding`.
 - Enforces parity-oriented patch guards for labels and subagent metadata (`label` uniqueness, `spawnedBy`/`spawnDepth` subagent-only and immutable after first set).
 - Normalizes/validates patch tuning values to parity-friendly canonical sets (thinking, verbose, reasoning, elevated, and exec policy knobs).
 - Supports `sessions.delete` parity envelope fields (`path`, `archived`) and honors `deleteTranscript` to skip transcript archive hints.
@@ -153,6 +154,33 @@ systemctl --user status openclaw-agent-rs.service
 - `gateway.server.event_queue_capacity`: per-connection outbound event queue cap.
 - `gateway.server.tick_interval_ms`: standalone tick-event cadence and advertised `policy.tickIntervalMs`.
 - `gateway.server.reload_interval_secs`: config live-reload polling interval (`0` disables live reload).
+
+## Provider setup examples
+
+Use `config.patch`/`config.apply` to register OpenAI-compatible providers explicitly:
+
+```json
+{
+  "models": {
+    "providers": {
+      "opencode": {
+        "api": "openai-completions",
+        "baseUrl": "https://api.opencode.ai/v1",
+        "apiKey": "${OPENCODE_API_KEY}",
+        "models": [{ "id": "glm-5-free", "name": "GLM-5-Free" }]
+      },
+      "zhipuai": {
+        "api": "openai-completions",
+        "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+        "apiKey": "${ZHIPUAI_API_KEY}",
+        "models": [{ "id": "glm-5", "name": "GLM-5" }]
+      }
+    }
+  }
+}
+```
+
+For Zhipu coding-plan models, use provider `zhipuai-coding` or override `baseUrl` with `https://open.bigmodel.cn/api/coding/paas/v4`.
 
 ## Signed policy bundles
 
