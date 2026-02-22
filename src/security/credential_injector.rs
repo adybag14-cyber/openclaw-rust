@@ -23,6 +23,7 @@ pub struct LeakScan {
 pub struct CredentialInjector {
     enabled: bool,
     env_allowlist: HashSet<String>,
+    secret_names: HashSet<String>,
     patterns: Vec<Regex>,
     leak_action: ToolRuntimeLeakAction,
     redaction_token: String,
@@ -45,6 +46,14 @@ impl CredentialInjector {
             enabled: cfg.enabled,
             env_allowlist: cfg
                 .env_allowlist
+                .iter()
+                .chain(cfg.secret_names.iter())
+                .cloned()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+                .collect(),
+            secret_names: cfg
+                .secret_names
                 .into_iter()
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty())
@@ -96,7 +105,7 @@ impl CredentialInjector {
     }
 
     pub fn scan_text(&self, text: &str) -> LeakScan {
-        if !self.enabled || self.patterns.is_empty() {
+        if !self.enabled || (self.patterns.is_empty() && self.secret_names.is_empty()) {
             return LeakScan {
                 leaked: false,
                 matches: 0,
@@ -114,6 +123,19 @@ impl CredentialInjector {
                 .to_string();
         }
 
+        for secret_name in &self.secret_names {
+            if let Ok(secret_value) = std::env::var(secret_name) {
+                if secret_value.trim().is_empty() {
+                    continue;
+                }
+                let matches = count_substring_matches(&redacted, &secret_value);
+                if matches > 0 {
+                    total_matches = total_matches.saturating_add(matches);
+                    redacted = redacted.replace(&secret_value, self.redaction_token.as_str());
+                }
+            }
+        }
+
         LeakScan {
             leaked: total_matches > 0,
             matches: total_matches,
@@ -121,32 +143,39 @@ impl CredentialInjector {
             action: self.leak_action,
         }
     }
+
+    pub fn scan_value(&self, value: &Value) -> LeakScan {
+        self.scan_text(&value.to_string())
+    }
 }
 
 fn parse_inject_env_names(args: &Value) -> Vec<String> {
     let mut out = Vec::new();
 
-    if let Some(raw) = args.get("injectEnv") {
-        match raw {
-            Value::String(single) => push_key(&mut out, single),
-            Value::Array(items) => {
-                for item in items {
-                    if let Some(raw) = item.as_str() {
-                        push_key(&mut out, raw);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if let Some(raw) = args.get("inject_env") {
-        if let Some(single) = raw.as_str() {
-            push_key(&mut out, single);
-        }
-    }
+    collect_inject_env_from_field(args, "injectEnv", &mut out);
+    collect_inject_env_from_field(args, "inject_env", &mut out);
+    collect_inject_env_from_field(args, "secretNames", &mut out);
+    collect_inject_env_from_field(args, "secret_names", &mut out);
+    collect_inject_env_from_field(args, "secrets", &mut out);
 
     out
+}
+
+fn collect_inject_env_from_field(args: &Value, key: &str, target: &mut Vec<String>) {
+    let Some(raw) = args.get(key) else {
+        return;
+    };
+    match raw {
+        Value::String(single) => push_key(target, single),
+        Value::Array(items) => {
+            for item in items {
+                if let Some(raw) = item.as_str() {
+                    push_key(target, raw);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn push_key(target: &mut Vec<String>, raw: &str) {
@@ -154,4 +183,11 @@ fn push_key(target: &mut Vec<String>, raw: &str) {
     if !normalized.is_empty() && !target.contains(&normalized) {
         target.push(normalized);
     }
+}
+
+fn count_substring_matches(haystack: &str, needle: &str) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+    haystack.match_indices(needle).count()
 }

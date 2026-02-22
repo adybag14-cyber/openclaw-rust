@@ -15,14 +15,16 @@ use crate::channels::{
     build_channel_transport_receipt, channel_supports_message_action, normalize_channel_id,
     ChannelCapabilities, ChannelMessageAction, DriverRegistry,
 };
-use crate::config::{ToolRuntimeLeakAction, ToolRuntimePolicyConfig, ToolRuntimeSafetyLayerConfig};
+use crate::config::{ToolRuntimeLeakAction, ToolRuntimePolicyConfig, ToolRuntimeWasmMode};
 use crate::routines::{RoutineDefinition, RoutineOrchestrator, RoutineTriggerKind};
 use crate::security::credential_injector::CredentialInjector;
-use crate::security::safety_layer::truncate_output;
+use crate::security::safety_layer::SafetyLayer;
 use crate::security::tool_loop::{ToolLoopGuard, ToolLoopLevel};
 use crate::security::tool_policy::ToolPolicyMatcher;
 use crate::session_key::parse_session_key;
-use crate::types::ActionRequest;
+use crate::tool_registry::ToolRegistry;
+use crate::types::{ActionRequest, DecisionAction};
+use crate::wasm_runtime::WasmRuntime;
 use crate::wasm_sandbox::WasmSandbox;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,9 +267,11 @@ pub struct ToolRuntimeHost {
     message_channel_capabilities: HashMap<String, ChannelCapabilities>,
     credential_injector: CredentialInjector,
     wasm_sandbox: WasmSandbox,
+    wasm_runtime: WasmRuntime,
+    tool_registry: Mutex<ToolRegistry>,
     routines_enabled: bool,
     routine_orchestrator: RoutineOrchestrator,
-    safety_cfg: ToolRuntimeSafetyLayerConfig,
+    safety_layer: SafetyLayer,
 }
 
 #[derive(Clone, Copy)]
@@ -319,9 +323,29 @@ impl ToolRuntimeHost {
                 )
             })?;
         let wasm_sandbox = WasmSandbox::new(policy.wasm.clone());
+        let wasm_runtime = WasmRuntime::new(policy.wasm.clone()).map_err(|err| {
+            ToolRuntimeError::new(
+                ToolRuntimeErrorCode::InvalidArgs,
+                format!("invalid wasm runtime configuration: {err}"),
+            )
+        })?;
+        let wit_root = if policy.wasm.wit_root.is_absolute() {
+            policy.wasm.wit_root.clone()
+        } else {
+            workspace_root.join(&policy.wasm.wit_root)
+        };
+        let mut tool_registry = ToolRegistry::new(wit_root, policy.wasm.dynamic_wit_loading);
+        if tool_registry.dynamic_wit_loading() || tool_registry.root().exists() {
+            tool_registry.refresh().map_err(|err| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    format!("failed loading WIT tool registry: {err}"),
+                )
+            })?;
+        }
         let routines_enabled = policy.routines.enabled;
         let routine_orchestrator = RoutineOrchestrator::new(&policy.routines);
-        let safety_cfg = policy.safety.clone();
+        let safety_layer = SafetyLayer::new(policy.safety.clone());
         let message_channel_capabilities = DriverRegistry::default_registry()
             .capabilities()
             .into_iter()
@@ -353,9 +377,11 @@ impl ToolRuntimeHost {
             message_channel_capabilities,
             credential_injector,
             wasm_sandbox,
+            wasm_runtime,
+            tool_registry: Mutex::new(tool_registry),
             routines_enabled,
             routine_orchestrator,
-            safety_cfg,
+            safety_layer,
         }))
     }
 
@@ -719,10 +745,15 @@ impl ToolRuntimeHost {
             }
             outcome.aggregated = output_scan.redacted;
         }
-        if self.safety_cfg.enabled && self.safety_cfg.sanitize_output {
-            outcome.aggregated =
-                truncate_output(&outcome.aggregated, self.safety_cfg.max_output_chars);
+        let safety_outcome = self.safety_layer.sanitize_output(&outcome.aggregated);
+        if matches!(safety_outcome.report.min_action, DecisionAction::Block) {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::PolicyDenied,
+                "command output blocked by safety layer policy",
+            ));
         }
+        let safety_review = matches!(safety_outcome.report.min_action, DecisionAction::Review);
+        outcome.aggregated = safety_outcome.text;
         Ok(json!({
             "status": outcome.status,
             "exitCode": outcome.exit_code,
@@ -732,7 +763,8 @@ impl ToolRuntimeHost {
             "injectedEnv": injected_env_keys,
             "credentialWarnings": injection.warnings,
             "preExecutionLeakMatches": pre_scan.matches,
-            "outputLeakMatches": output_scan.matches
+            "outputLeakMatches": output_scan.matches,
+            "safetyReview": safety_review
         }))
     }
 
@@ -843,11 +875,90 @@ impl ToolRuntimeHost {
             .filter(|value| !value.is_empty())
             .unwrap_or("inspect")
             .to_ascii_lowercase();
+
+        if matches!(
+            action.as_str(),
+            "registry" | "tools" | "list-tools" | "list_tools"
+        ) {
+            let refresh_requested = request
+                .args
+                .get("refresh")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let mut registry = self.tool_registry.lock().await;
+            let refreshed = if refresh_requested || registry.dynamic_wit_loading() {
+                registry.refresh().map_err(|err| {
+                    ToolRuntimeError::new(
+                        ToolRuntimeErrorCode::ExecutionFailed,
+                        format!("failed refreshing WIT registry: {err}"),
+                    )
+                })?
+            } else {
+                registry.list().len()
+            };
+            let tools = registry.list();
+            return Ok(json!({
+                "status": "completed",
+                "count": tools.len(),
+                "refreshed": refreshed,
+                "witRoot": registry.root().display().to_string(),
+                "tools": tools
+            }));
+        }
+
+        if matches!(action.as_str(), "schema" | "tool-schema" | "tool_schema") {
+            let tool_id =
+                required_string_arg(&request.args, &["id", "tool", "name", "module"], "id")?;
+            let tool_key = Path::new(&tool_id)
+                .file_stem()
+                .and_then(|entry| entry.to_str())
+                .unwrap_or(&tool_id)
+                .trim()
+                .to_ascii_lowercase();
+            let refresh_requested = request
+                .args
+                .get("refresh")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let mut registry = self.tool_registry.lock().await;
+            if refresh_requested || registry.dynamic_wit_loading() {
+                registry.refresh().map_err(|err| {
+                    ToolRuntimeError::new(
+                        ToolRuntimeErrorCode::ExecutionFailed,
+                        format!("failed refreshing WIT registry: {err}"),
+                    )
+                })?;
+            }
+            let schema = registry.schema(&tool_key).ok_or_else(|| {
+                ToolRuntimeError::new(
+                    ToolRuntimeErrorCode::InvalidArgs,
+                    format!("unknown WIT tool `{tool_id}` (resolved key `{tool_key}`)"),
+                )
+            })?;
+            return Ok(json!({
+                "status": "completed",
+                "tool": tool_id,
+                "schema": schema
+            }));
+        }
+
         let module = required_string_arg(
             &request.args,
             &["module", "modulePath", "module_path", "path"],
             "module",
         )?;
+        let registered_tool = {
+            let mut registry = self.tool_registry.lock().await;
+            if registry.dynamic_wit_loading() {
+                registry.refresh().map_err(|err| {
+                    ToolRuntimeError::new(
+                        ToolRuntimeErrorCode::ExecutionFailed,
+                        format!("failed refreshing WIT registry: {err}"),
+                    )
+                })?;
+            }
+            registry.resolve(&module)
+        };
         let requested_capabilities =
             collect_string_args(&request.args, &["capabilities", "requestedCapabilities"]);
         let inspection = self
@@ -863,19 +974,54 @@ impl ToolRuntimeHost {
         match action.as_str() {
             "inspect" => Ok(json!({
                 "status": "completed",
-                "inspection": inspection
+                "inspection": inspection,
+                "runtimeMode": match self.wasm_runtime.mode() {
+                    ToolRuntimeWasmMode::InspectionStub => "inspection_stub",
+                    ToolRuntimeWasmMode::WasmSandbox => "wasm_sandbox",
+                },
+                "registeredTool": registered_tool
             })),
             "run" | "execute" => {
                 let operation = first_string_arg(&request.args, &["operation"])
                     .unwrap_or_else(|| "execute".to_owned());
                 let payload = request.args.get("payload").cloned().unwrap_or(Value::Null);
+                let injection = self.credential_injector.inject_env_from_args(&request.args);
+                let injected_env_keys = injection
+                    .env_pairs
+                    .iter()
+                    .map(|(key, _)| key.clone())
+                    .collect::<Vec<_>>();
+                let pre_scan = self.credential_injector.scan_value(&json!({
+                    "module": module,
+                    "operation": operation,
+                    "payload": payload
+                }));
+                if pre_scan.leaked && matches!(pre_scan.action, ToolRuntimeLeakAction::Block) {
+                    return Err(ToolRuntimeError::new(
+                        ToolRuntimeErrorCode::PolicyDenied,
+                        format!(
+                            "wasm payload blocked by leak detector before execution ({} matches)",
+                            pre_scan.matches
+                        ),
+                    ));
+                }
+                if !inspection.blocked_capabilities.is_empty() {
+                    return Err(ToolRuntimeError::new(
+                        ToolRuntimeErrorCode::PolicyDenied,
+                        format!(
+                            "wasm capability denied: {}",
+                            inspection.blocked_capabilities.join(",")
+                        ),
+                    ));
+                }
+
                 let mut response = self
-                    .wasm_sandbox
-                    .execute_stub(&inspection, &operation, &payload)
+                    .wasm_runtime
+                    .execute(&inspection, &operation, &payload)
                     .map_err(|err| {
                         ToolRuntimeError::new(
-                            ToolRuntimeErrorCode::PolicyDenied,
-                            format!("wasm execution rejected: {err}"),
+                            ToolRuntimeErrorCode::ExecutionFailed,
+                            format!("wasm execution failed: {err}"),
                         )
                     })?;
                 if let Value::Object(ref mut map) = response {
@@ -883,8 +1029,15 @@ impl ToolRuntimeHost {
                         "inspection".to_owned(),
                         serde_json::to_value(&inspection).unwrap_or(Value::Null),
                     );
+                    map.insert("injectedEnv".to_owned(), json!(injected_env_keys));
+                    map.insert("credentialWarnings".to_owned(), json!(injection.warnings));
+                    map.insert(
+                        "preExecutionLeakMatches".to_owned(),
+                        json!(pre_scan.matches),
+                    );
+                    map.insert("registeredTool".to_owned(), json!(registered_tool));
                 }
-                Ok(response)
+                self.apply_exec_output_safety(response)
             }
             _ => Err(ToolRuntimeError::new(
                 ToolRuntimeErrorCode::InvalidArgs,
@@ -4223,14 +4376,23 @@ impl ToolRuntimeHost {
         } else {
             aggregated
         };
-        if self.safety_cfg.enabled && self.safety_cfg.sanitize_output {
-            updated = truncate_output(&updated, self.safety_cfg.max_output_chars);
+        let safety_outcome = self.safety_layer.sanitize_output(&updated);
+        if matches!(safety_outcome.report.min_action, DecisionAction::Block) {
+            return Err(ToolRuntimeError::new(
+                ToolRuntimeErrorCode::PolicyDenied,
+                "process output blocked by safety layer policy",
+            ));
         }
+        let safety_review = matches!(safety_outcome.report.min_action, DecisionAction::Review);
+        updated = safety_outcome.text;
 
         if let Value::Object(ref mut map) = payload {
             map.insert("aggregated".to_owned(), Value::String(updated));
             if scan.leaked {
                 map.insert("outputLeakMatches".to_owned(), json!(scan.matches));
+            }
+            if safety_review {
+                map.insert("safetyReview".to_owned(), Value::Bool(true));
             }
         }
         Ok(payload)
@@ -5546,6 +5708,130 @@ mod tests {
             .await
             .expect_err("blocked capability should deny execution");
         assert_eq!(denied.code.as_str(), "policy_denied");
+    }
+
+    #[tokio::test]
+    async fn tool_runtime_wasm_execute_runs_numeric_export_with_wasmtime() {
+        let mut policy = default_policy();
+        policy.wasm.enabled = true;
+        policy.wasm.module_root = temp_path("wasm-modules-run");
+        policy.wasm.default_capabilities = vec!["workspace.read".to_owned()];
+
+        std::fs::create_dir_all(&policy.wasm.module_root).expect("wasm root");
+        let module_path = policy.wasm.module_root.join("exec-sample.wasm");
+        let module_bytes: [u8; 40] = [
+            0x00, 0x61, 0x73, 0x6d, // magic
+            0x01, 0x00, 0x00, 0x00, // version
+            0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f, // type section
+            0x03, 0x02, 0x01, 0x00, // function section
+            0x07, 0x0b, 0x01, 0x07, 0x65, 0x78, 0x65, 0x63, 0x75, 0x74, 0x65, 0x00,
+            0x00, // export section
+            0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x07, 0x0b, // code section
+        ];
+        std::fs::write(&module_path, module_bytes).expect("wasm bytes");
+
+        let host = build_host(policy).await;
+        let run = host
+            .execute(ToolRuntimeRequest {
+                request_id: "wasm-run-allow-1".to_owned(),
+                session_id: "wasm-session".to_owned(),
+                tool_name: "wasm".to_owned(),
+                args: serde_json::json!({
+                    "action": "execute",
+                    "module": "exec-sample.wasm",
+                    "operation": "execute"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("wasm execute");
+
+        assert_eq!(
+            run.result.get("engine").and_then(serde_json::Value::as_str),
+            Some("wasmtime")
+        );
+        assert_eq!(
+            run.result
+                .pointer("/result/results/0")
+                .and_then(serde_json::Value::as_i64),
+            Some(7)
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_runtime_wasm_registry_supports_list_and_schema() {
+        let mut policy = default_policy();
+        policy.wasm.enabled = true;
+        policy.wasm.module_root = temp_path("wasm-modules-registry");
+        policy.wasm.wit_root = temp_path("wit-runtime");
+        policy.wasm.dynamic_wit_loading = true;
+
+        std::fs::create_dir_all(&policy.wasm.module_root).expect("wasm root");
+        std::fs::create_dir_all(&policy.wasm.wit_root).expect("wit root");
+        std::fs::write(
+            policy.wasm.wit_root.join("sample-tool.wit"),
+            r#"
+package openclaw:tools@1.6.2;
+
+interface tool {
+  execute: func(input: string) -> result<string, string>;
+  schema: func() -> string;
+}
+
+world sample-tool-runtime {
+  export tool;
+}
+"#,
+        )
+        .expect("wit file");
+
+        let host = build_host(policy).await;
+        let list = host
+            .execute(ToolRuntimeRequest {
+                request_id: "wasm-registry-list-1".to_owned(),
+                session_id: "wasm-registry-session".to_owned(),
+                tool_name: "wasm".to_owned(),
+                args: serde_json::json!({
+                    "action": "registry",
+                    "refresh": true
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("wasm registry list");
+
+        assert!(
+            list.result
+                .get("count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default()
+                >= 1
+        );
+
+        let schema = host
+            .execute(ToolRuntimeRequest {
+                request_id: "wasm-registry-schema-1".to_owned(),
+                session_id: "wasm-registry-session".to_owned(),
+                tool_name: "wasm".to_owned(),
+                args: serde_json::json!({
+                    "action": "schema",
+                    "id": "sample-tool-runtime"
+                }),
+                sandboxed: false,
+                model_provider: None,
+                model_id: None,
+            })
+            .await
+            .expect("wasm registry schema");
+
+        assert!(schema
+            .result
+            .pointer("/schema/properties/operation")
+            .is_some());
     }
 
     #[tokio::test]

@@ -12,8 +12,10 @@ mod security;
 mod session_key;
 mod state;
 mod telegram_bridge;
+mod tool_registry;
 mod tool_runtime;
 mod types;
+mod wasm_runtime;
 mod wasm_sandbox;
 mod website_bridge;
 
@@ -23,7 +25,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
 use clap::{Args, Parser, Subcommand};
-use config::{Config, GatewayAuthMode};
+use config::{Config, GatewayAuthMode, ToolRuntimeWasmMode};
 use gateway::{RpcDispatchOutcome, RpcDispatcher};
 use protocol::RpcRequestFrame;
 use serde::Serialize;
@@ -723,6 +725,49 @@ fn build_doctor_report(
             },
             detail: Some(format!("feature sqlite-state enabled={sqlite_enabled}")),
         });
+
+        let wasm_mode = match cfg.security.wasm.tool_runtime_mode {
+            ToolRuntimeWasmMode::InspectionStub => "inspection_stub",
+            ToolRuntimeWasmMode::WasmSandbox => "wasm_sandbox",
+        };
+        checks.push(DoctorCheck {
+            id: "security.wasm_runtime_mode".to_owned(),
+            status: "pass".to_owned(),
+            message: wasm_mode.to_owned(),
+            detail: None,
+        });
+        checks.push(DoctorCheck {
+            id: "security.wasm_enabled".to_owned(),
+            status: if cfg.security.tool_runtime_policy.wasm.enabled {
+                "pass"
+            } else {
+                "warn"
+            }
+            .to_owned(),
+            message: if cfg.security.tool_runtime_policy.wasm.enabled {
+                "wasm tool runtime enabled".to_owned()
+            } else {
+                "wasm tool runtime disabled".to_owned()
+            },
+            detail: Some(
+                "set security.tool_runtime_policy.wasm.enabled=true for live wasm execution"
+                    .to_owned(),
+            ),
+        });
+        let wit_root = cfg.security.tool_runtime_policy.wasm.wit_root.clone();
+        checks.push(DoctorCheck {
+            id: "security.wasm_wit_root".to_owned(),
+            status: if wit_root.exists() { "pass" } else { "warn" }.to_owned(),
+            message: wit_root.display().to_string(),
+            detail: Some("dynamic WIT tool registry source root".to_owned()),
+        });
+        let module_root = cfg.security.tool_runtime_policy.wasm.module_root.clone();
+        checks.push(DoctorCheck {
+            id: "security.wasm_module_root".to_owned(),
+            status: if module_root.exists() { "pass" } else { "warn" }.to_owned(),
+            message: module_root.display().to_string(),
+            detail: Some("wasm module storage root".to_owned()),
+        });
     }
 
     checks.push(DoctorCheck {
@@ -734,6 +779,17 @@ fn build_doctor_report(
             "docker is not available".to_owned()
         },
         detail: Some("required for full parity stack tests".to_owned()),
+    });
+    let wasmtime_available = command_available("wasmtime");
+    checks.push(DoctorCheck {
+        id: "wasmtime.binary".to_owned(),
+        status: if wasmtime_available { "pass" } else { "warn" }.to_owned(),
+        message: if wasmtime_available {
+            "wasmtime CLI is available".to_owned()
+        } else {
+            "wasmtime CLI is not available".to_owned()
+        },
+        detail: Some("optional but useful for standalone wasm inspection".to_owned()),
     });
 
     let ok = checks.iter().all(|check| check.status != "fail");
@@ -924,5 +980,19 @@ mod tests {
             .checks
             .iter()
             .any(|check| check.id == "docker.binary" && check.status == "warn"));
+    }
+
+    #[test]
+    fn doctor_report_includes_wasm_checks() {
+        let report =
+            build_doctor_report(Ok(Config::default()), Path::new("openclaw-rs.toml"), true);
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check.id == "security.wasm_runtime_mode"));
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check.id == "security.wasm_wit_root"));
     }
 }

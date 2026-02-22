@@ -55,6 +55,11 @@ tool_policies = { gateway = "review", nodes = "review" }
 tool_risk_bonus = { exec = 20, bash = 20, process = 10, apply_patch = 12, browser = 8, gateway = 20, nodes = 20 }
 channel_risk_bonus = { discord = 10, slack = 8, telegram = 6, whatsapp = 6, webchat = 8 }
 
+[security.wasm]
+tool_runtime_mode = "wasm_sandbox" # wasm_sandbox | inspection_stub
+wit_root = "wit"
+dynamic_wit_loading = true
+
 [security.tool_runtime_policy]
 profile = "full" # minimal | coding | messaging | full
 allow = []
@@ -76,7 +81,10 @@ critical_threshold = 20
 
 [security.tool_runtime_policy.wasm]
 enabled = false
+tool_runtime_mode = "wasm_sandbox" # inherited from [security.wasm]
 module_root = ".openclaw-rs/wasm-modules"
+wit_root = "wit" # inherited from [security.wasm]
+dynamic_wit_loading = true # inherited from [security.wasm]
 default_capabilities = ["workspace.read", "http.fetch", "tool.invoke"]
 fuel_limit = 1000000
 memory_limit_bytes = 67108864
@@ -84,6 +92,7 @@ memory_limit_bytes = 67108864
 [security.tool_runtime_policy.credentials]
 enabled = false
 env_allowlist = ["OPENAI_API_KEY", "GITHUB_TOKEN"]
+secret_names = ["OPENAI_API_KEY", "GITHUB_TOKEN"]
 leak_action = "review" # allow | review | block
 redaction_token = "[REDACTED_SECRET]"
 

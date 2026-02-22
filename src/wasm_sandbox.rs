@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Serialize;
-use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::config::ToolRuntimeWasmPolicyConfig;
@@ -82,37 +81,6 @@ impl WasmSandbox {
             fuel_limit: self.cfg.fuel_limit,
             memory_limit_bytes: self.cfg.memory_limit_bytes,
         })
-    }
-
-    pub fn execute_stub(
-        &self,
-        inspection: &WasmInspection,
-        operation: &str,
-        payload: &Value,
-    ) -> Result<Value> {
-        if !inspection.blocked_capabilities.is_empty() {
-            anyhow::bail!(
-                "wasm capability denied: {}",
-                inspection.blocked_capabilities.join(",")
-            );
-        }
-
-        Ok(json!({
-            "status": "completed",
-            "engine": "wasm-sandbox",
-            "interface": "wit/tool.wit",
-            "operation": operation,
-            "module": inspection.module,
-            "modulePath": inspection.module_path,
-            "sha256": inspection.module_sha256,
-            "capabilitiesGranted": inspection.granted_capabilities,
-            "fuelLimit": inspection.fuel_limit,
-            "memoryLimitBytes": inspection.memory_limit_bytes,
-            "result": {
-                "note": "WASM module execution path integrated; host-side WIT plumbing is active. Runtime invocation remains in secure stub mode for this build.",
-                "input": payload,
-            }
-        }))
     }
 }
 

@@ -5,6 +5,33 @@
 ### Highlights
 - No unreleased changes.
 
+## v1.6.2 - 2026-02-22
+
+### Highlights
+- Replaced wasm stub execution with a real `wasmtime` runtime path (`src/wasm_runtime.rs`) while preserving policy-level fuel/memory/capability enforcement from `security.tool_runtime_policy.wasm`.
+- Added dynamic WIT tool loading + schema generation (`src/tool_registry.rs`) and wired `wasm` actions for runtime registry listing and schema retrieval.
+- Extended credential policy with `secret_names` and stronger bidirectional leak redaction across request/response paths (`src/security/credential_injector.rs` + tool runtime hooks).
+- Expanded SafetyLayer integration from truncation-only to layered input/output scanning, sanitization, and review/block escalation (`src/security/safety_layer.rs`, `src/security/mod.rs`, `src/tool_runtime.rs`).
+- Added new `[security.wasm]` config section with `tool_runtime_mode = "wasm_sandbox"` and WIT registry controls, synchronized into runtime policy (`src/config.rs`, `openclaw-rs.example.toml`, `src/gateway.rs`).
+- Added `doctor` wasm checks for runtime mode, module/WIT roots, and optional wasmtime CLI visibility (`src/main.rs`).
+- Bumped runtime/tooling contracts to `v1.6.2` (`Cargo.toml`, `wit/tool.wit`), plus new wasm runtime tests.
+
+### Validation
+- `cargo fmt --all`
+- `cargo check`
+- `cargo test`
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo build --release`
+- `cargo run -- doctor --non-interactive --json`
+- `wsl -d Ubuntu bash -lc 'source $HOME/.cargo/env && cd /mnt/c/Users/adyba/openclaw-rust && CARGO_TARGET_DIR=target-linux cargo +1.83.0 check'`
+- `wsl -d Ubuntu bash -lc 'source $HOME/.cargo/env && cd /mnt/c/Users/adyba/openclaw-rust && CARGO_TARGET_DIR=target-linux cargo +1.83.0 test --no-run'`
+- `wsl -d Ubuntu bash -lc 'source $HOME/.cargo/env && cd /mnt/c/Users/adyba/openclaw-rust && CARGO_TARGET_DIR=target-linux cargo +1.83.0 build --release'`
+- `docker run --rm ubuntu:20.04 bash -lc 'cat /etc/os-release'`
+- `docker run --rm -v "C:/Users/adyba/openclaw-rust:/workspace" -w /workspace ubuntu:20.04 bash -lc '... CARGO_TARGET_DIR=target-docker cargo +1.83.0 check -q'`
+- `docker run --rm -v "C:/Users/adyba/openclaw-rust:/workspace" -w /workspace ubuntu:20.04 bash -lc '... CARGO_TARGET_DIR=target-docker cargo +1.83.0 build --release -q'`
+- `docker run --rm -v "C:/Users/adyba/openclaw-rust:/workspace" -w /workspace ubuntu:20.04 bash -lc './target-docker/release/openclaw-agent-rs doctor --non-interactive --json'`
+- Note: `docker ... cargo test --no-run` on Ubuntu 20.04 hit container memory limits (`SIGKILL`) on this workstation; build/check/runtime smoke still completed.
+
 ## v1.5.2 - 2026-02-22
 
 ### Highlights

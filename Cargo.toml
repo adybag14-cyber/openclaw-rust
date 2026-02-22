@@ -1,6 +1,6 @@
 [package]
 name = "openclaw-agent-rs"
-version = "1.5.2"
+version = "1.6.2"
 edition = "2021"
 rust-version = "1.83"
 license = "MIT"
@@ -41,3 +41,4 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt"] }
 unicode-normalization = "0.1.24"
 url = "2.5.4"
+wasmtime = { version = "20.0.2", default-features = false, features = ["cranelift", "runtime", "component-model"] }

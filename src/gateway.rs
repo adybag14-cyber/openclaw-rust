@@ -22,7 +22,9 @@ use crate::channels::{
     default_chunk_mode, default_text_chunk_limit, normalize_channel_id, ChannelCapabilities,
     ChannelMessageAction, DriverRegistry,
 };
-use crate::config::{GroupActivationMode, SessionQueueMode, ToolRuntimePolicyConfig};
+use crate::config::{
+    GroupActivationMode, SessionQueueMode, ToolRuntimePolicyConfig, ToolRuntimeWasmMode,
+};
 use crate::protocol::{MethodFamily, RpcRequestFrame};
 use crate::session_key::{parse_session_key, SessionKind};
 use crate::tool_runtime::{ToolRuntimeHost, ToolRuntimeRequest};
@@ -25611,11 +25613,54 @@ fn resolve_provider_runtime_timeout_ms(
 }
 
 fn resolve_tool_runtime_policy_config(config: &Value) -> ToolRuntimePolicyConfig {
-    config
+    let mut policy = config
         .pointer("/security/tool_runtime_policy")
         .cloned()
         .and_then(|value| serde_json::from_value::<ToolRuntimePolicyConfig>(value).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    if let Some(raw_mode) = config
+        .pointer("/security/wasm/tool_runtime_mode")
+        .and_then(Value::as_str)
+    {
+        let mode = match raw_mode.trim().to_ascii_lowercase().as_str() {
+            "inspection_stub" | "inspection-stub" | "stub" => {
+                Some(ToolRuntimeWasmMode::InspectionStub)
+            }
+            "wasm_sandbox" | "wasm-sandbox" | "sandbox" => Some(ToolRuntimeWasmMode::WasmSandbox),
+            _ => None,
+        };
+        if let Some(mode) = mode {
+            policy.wasm.tool_runtime_mode = mode;
+        }
+    }
+
+    if let Some(raw_wit_root) = config
+        .pointer("/security/wasm/wit_root")
+        .and_then(Value::as_str)
+    {
+        let trimmed = raw_wit_root.trim();
+        if !trimmed.is_empty() {
+            policy.wasm.wit_root = PathBuf::from(trimmed);
+        }
+    }
+
+    if let Some(raw_dynamic) = config.pointer("/security/wasm/dynamic_wit_loading") {
+        match raw_dynamic {
+            Value::Bool(flag) => policy.wasm.dynamic_wit_loading = *flag,
+            Value::String(text) => {
+                let normalized = text.trim().to_ascii_lowercase();
+                if matches!(normalized.as_str(), "1" | "true" | "yes" | "on") {
+                    policy.wasm.dynamic_wit_loading = true;
+                } else if matches!(normalized.as_str(), "0" | "false" | "no" | "off") {
+                    policy.wasm.dynamic_wit_loading = false;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    policy
 }
 
 fn resolve_tool_workspace_root_path(workspace: &str, agent_id: &str) -> PathBuf {

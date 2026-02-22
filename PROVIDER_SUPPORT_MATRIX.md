@@ -14,6 +14,10 @@ Status legend:
 - `Bridge default`: runtime seeds website bridge hints (`websiteUrl` and/or `bridgeBaseUrls`).
 - `OAuth catalog`: appears in `auth.oauth.providers/start/wait/complete/logout/import`.
 
+Runtime security note (`v1.6.2`):
+
+- Provider routing/output now flows through the expanded tool runtime safety stack (`security.wasm`, dynamic WIT registry, credential leak redaction, and SafetyLayer output controls).
+
 ## Requested Coverage Matrix
 
 | Provider | Runtime status | Canonical id |

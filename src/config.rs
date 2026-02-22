@@ -132,6 +132,8 @@ pub struct SecurityConfig {
     #[serde(default = "default_channel_risk_bonus")]
     pub channel_risk_bonus: HashMap<String, u8>,
     #[serde(default)]
+    pub wasm: SecurityWasmConfig,
+    #[serde(default)]
     pub tool_runtime_policy: ToolRuntimePolicyConfig,
 }
 
@@ -222,12 +224,46 @@ pub enum ToolRuntimeLeakAction {
     Block,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolRuntimeWasmMode {
+    InspectionStub,
+    #[default]
+    WasmSandbox,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityWasmConfig {
+    #[serde(default)]
+    pub tool_runtime_mode: ToolRuntimeWasmMode,
+    #[serde(default = "default_tool_wasm_wit_root")]
+    pub wit_root: PathBuf,
+    #[serde(default = "default_tool_wasm_dynamic_wit_loading")]
+    pub dynamic_wit_loading: bool,
+}
+
+impl Default for SecurityWasmConfig {
+    fn default() -> Self {
+        Self {
+            tool_runtime_mode: ToolRuntimeWasmMode::default(),
+            wit_root: default_tool_wasm_wit_root(),
+            dynamic_wit_loading: default_tool_wasm_dynamic_wit_loading(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolRuntimeWasmPolicyConfig {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default)]
+    pub tool_runtime_mode: ToolRuntimeWasmMode,
     #[serde(default = "default_tool_wasm_module_root")]
     pub module_root: PathBuf,
+    #[serde(default = "default_tool_wasm_wit_root")]
+    pub wit_root: PathBuf,
+    #[serde(default = "default_tool_wasm_dynamic_wit_loading")]
+    pub dynamic_wit_loading: bool,
     #[serde(default = "default_tool_wasm_default_capabilities")]
     pub default_capabilities: Vec<String>,
     #[serde(default)]
@@ -242,7 +278,10 @@ impl Default for ToolRuntimeWasmPolicyConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            tool_runtime_mode: ToolRuntimeWasmMode::default(),
             module_root: default_tool_wasm_module_root(),
+            wit_root: default_tool_wasm_wit_root(),
+            dynamic_wit_loading: default_tool_wasm_dynamic_wit_loading(),
             default_capabilities: default_tool_wasm_default_capabilities(),
             module_capabilities: HashMap::new(),
             fuel_limit: default_tool_wasm_fuel_limit(),
@@ -257,6 +296,8 @@ pub struct ToolRuntimeCredentialPolicyConfig {
     pub enabled: bool,
     #[serde(default)]
     pub env_allowlist: Vec<String>,
+    #[serde(default)]
+    pub secret_names: Vec<String>,
     #[serde(default = "default_tool_runtime_leak_patterns")]
     pub leak_patterns: Vec<String>,
     #[serde(default)]
@@ -270,6 +311,7 @@ impl Default for ToolRuntimeCredentialPolicyConfig {
         Self {
             enabled: false,
             env_allowlist: Vec::new(),
+            secret_names: Vec::new(),
             leak_patterns: default_tool_runtime_leak_patterns(),
             leak_action: ToolRuntimeLeakAction::default(),
             redaction_token: default_tool_runtime_redaction_token(),
@@ -390,6 +432,7 @@ impl Default for Config {
                 tool_policies: HashMap::new(),
                 tool_risk_bonus: default_tool_risk_bonus(),
                 channel_risk_bonus: default_channel_risk_bonus(),
+                wasm: SecurityWasmConfig::default(),
                 tool_runtime_policy: ToolRuntimePolicyConfig::default(),
             },
         }
@@ -407,6 +450,7 @@ impl Config {
             Self::default()
         };
         cfg.apply_env_overrides();
+        cfg.apply_security_wasm_overrides();
         cfg.validate()?;
         Ok(cfg)
     }
@@ -603,6 +647,20 @@ impl Config {
         if let Ok(v) = env::var("OPENCLAW_RS_TOOL_WASM_ENABLED") {
             self.security.tool_runtime_policy.wasm.enabled = parse_bool(&v);
         }
+        if let Ok(v) = env::var("OPENCLAW_RS_TOOL_RUNTIME_MODE") {
+            if let Some(mode) = parse_tool_runtime_wasm_mode(&v) {
+                self.security.wasm.tool_runtime_mode = mode;
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_WASM_WIT_ROOT") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.security.wasm.wit_root = PathBuf::from(trimmed);
+            }
+        }
+        if let Ok(v) = env::var("OPENCLAW_RS_WASM_DYNAMIC_WIT_LOADING") {
+            self.security.wasm.dynamic_wit_loading = parse_bool(&v);
+        }
         if let Ok(v) = env::var("OPENCLAW_RS_TOOL_CREDENTIALS_ENABLED") {
             self.security.tool_runtime_policy.credentials.enabled = parse_bool(&v);
         }
@@ -612,6 +670,14 @@ impl Config {
         if let Ok(v) = env::var("OPENCLAW_RS_TOOL_ROUTINES_ENABLED") {
             self.security.tool_runtime_policy.routines.enabled = parse_bool(&v);
         }
+    }
+
+    fn apply_security_wasm_overrides(&mut self) {
+        self.security.tool_runtime_policy.wasm.tool_runtime_mode =
+            self.security.wasm.tool_runtime_mode;
+        self.security.tool_runtime_policy.wasm.wit_root = self.security.wasm.wit_root.clone();
+        self.security.tool_runtime_policy.wasm.dynamic_wit_loading =
+            self.security.wasm.dynamic_wit_loading;
     }
 
     fn validate(&self) -> Result<()> {
@@ -722,6 +788,26 @@ impl Config {
         }
         if self.security.tool_runtime_policy.wasm.memory_limit_bytes == 0 {
             anyhow::bail!("security.tool_runtime_policy.wasm.memory_limit_bytes must be > 0");
+        }
+        if self
+            .security
+            .tool_runtime_policy
+            .wasm
+            .module_root
+            .as_os_str()
+            .is_empty()
+        {
+            anyhow::bail!("security.tool_runtime_policy.wasm.module_root must not be empty");
+        }
+        if self
+            .security
+            .tool_runtime_policy
+            .wasm
+            .wit_root
+            .as_os_str()
+            .is_empty()
+        {
+            anyhow::bail!("security.tool_runtime_policy.wasm.wit_root must not be empty");
         }
         if self
             .security
@@ -887,6 +973,14 @@ fn default_tool_wasm_module_root() -> PathBuf {
     PathBuf::from(".openclaw-rs/wasm-modules")
 }
 
+fn default_tool_wasm_wit_root() -> PathBuf {
+    PathBuf::from("wit")
+}
+
+fn default_tool_wasm_dynamic_wit_loading() -> bool {
+    true
+}
+
 fn default_tool_wasm_default_capabilities() -> Vec<String> {
     vec![
         "workspace.read".to_owned(),
@@ -1008,6 +1102,14 @@ fn parse_gateway_auth_mode(s: &str) -> Option<GatewayAuthMode> {
         "none" => Some(GatewayAuthMode::None),
         "token" => Some(GatewayAuthMode::Token),
         "password" => Some(GatewayAuthMode::Password),
+        _ => None,
+    }
+}
+
+fn parse_tool_runtime_wasm_mode(s: &str) -> Option<ToolRuntimeWasmMode> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "inspection_stub" | "inspection-stub" | "stub" => Some(ToolRuntimeWasmMode::InspectionStub),
+        "wasm_sandbox" | "wasm-sandbox" | "sandbox" => Some(ToolRuntimeWasmMode::WasmSandbox),
         _ => None,
     }
 }

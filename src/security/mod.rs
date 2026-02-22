@@ -30,7 +30,7 @@ use self::command_guard::CommandGuard;
 use self::host_guard::HostIntegrityGuard;
 use self::policy_bundle::apply_signed_policy_bundle;
 use self::prompt_guard::PromptInjectionGuard;
-use self::safety_layer::SafetyLayerReport;
+use self::safety_layer::{SafetyLayer, SafetyLayerReport};
 use self::telemetry_guard::EdrTelemetryGuard;
 use self::tool_loop::{ToolLoopGuard, ToolLoopLevel};
 use self::tool_policy::ToolPolicyMatcher;
@@ -50,6 +50,7 @@ pub struct DefenderEngine {
     attestation_guard: RuntimeAttestationGuard,
     tool_policy: ToolPolicyMatcher,
     tool_loop_guard: ToolLoopGuard,
+    safety_layer: SafetyLayer,
     vt: Option<VirusTotalClient>,
     permits: Arc<Semaphore>,
     idempotency: IdempotencyCache,
@@ -81,6 +82,7 @@ impl DefenderEngine {
         let tool_policy = ToolPolicyMatcher::new(cfg.security.tool_runtime_policy.clone());
         let tool_loop_guard =
             ToolLoopGuard::new(cfg.security.tool_runtime_policy.loop_detection.clone());
+        let safety_layer = SafetyLayer::new(cfg.security.tool_runtime_policy.safety.clone());
         let vt = VirusTotalClient::from_config(&cfg)?;
         let permits = Arc::new(Semaphore::new(cfg.runtime.worker_concurrency.max(1)));
         let idempotency = IdempotencyCache::new(
@@ -110,6 +112,7 @@ impl DefenderEngine {
             attestation_guard,
             tool_policy,
             tool_loop_guard,
+            safety_layer,
             vt,
             permits,
             idempotency,
@@ -130,6 +133,13 @@ impl DefenderEngine {
             layer.tags.extend(reason_tags);
             layer.reasons.extend(reason_texts);
             layer.merge_into(&mut risk, &mut minimum_action, &mut tags, &mut reasons);
+
+            self.safety_layer.inspect_input(prompt).merge_into(
+                &mut risk,
+                &mut minimum_action,
+                &mut tags,
+                &mut reasons,
+            );
         }
 
         if let Some(command) = &request.command {
@@ -139,6 +149,13 @@ impl DefenderEngine {
             layer.tags.extend(reason_tags);
             layer.reasons.extend(reason_texts);
             layer.merge_into(&mut risk, &mut minimum_action, &mut tags, &mut reasons);
+
+            self.safety_layer.inspect_input(command).merge_into(
+                &mut risk,
+                &mut minimum_action,
+                &mut tags,
+                &mut reasons,
+            );
         }
 
         if let Some(tool_name) = &request.tool_name {
@@ -581,6 +598,7 @@ mod tests {
                 tool_policies: std::collections::HashMap::new(),
                 tool_risk_bonus: std::collections::HashMap::new(),
                 channel_risk_bonus: std::collections::HashMap::new(),
+                wasm: crate::config::SecurityWasmConfig::default(),
                 tool_runtime_policy: ToolRuntimePolicyConfig::default(),
             },
         }
