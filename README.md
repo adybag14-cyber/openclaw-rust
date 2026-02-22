@@ -87,9 +87,9 @@ systemctl --user status openclaw-agent-rs.service
 - Supports `sessions.patch` via either `key` or `sessionKey` and returns parity-style envelope fields (`ok`, `path`, `key`, `entry`).
 - Supports extended `sessions.patch` parity fields (`thinkingLevel`, `verboseLevel`, `reasoningLevel`, `responseUsage`, `elevatedLevel`, `execHost`, `execSecurity`, `execAsk`, `execNode`, `model`, `spawnDepth`) with explicit `null` clear semantics.
 - Supports provider-defined catalog ingestion from `models.providers.*.models` and OpenAI-compatible provider resolution (including Cerebras-compatible chat completion payload formatting) for runtime agent execution.
-- Supports nested provider runtime options (`models.providers.<id>.options`) for OpenAI-compatible endpoints, including custom auth header names/prefixes, custom request defaults, and full `chat/completions` URLs with query strings; local provider defaults (`ollama`, `vllm`, `litellm`, `lmstudio`, `localai`) can run without API keys.
+- Supports nested provider runtime options (`models.providers.<id>.options`) for OpenAI-compatible endpoints, including custom auth header names/prefixes, custom request defaults, and full `chat/completions` URLs with query strings; local provider defaults (`ollama`, `vllm`, `litellm`, `lmstudio`, `localai`, `llamacpp`, `tgi`, `gpt4all`, `koboldcpp`, `oobabooga`) can run without API keys.
 - Supports website bridge API modes (`website-openai-bridge`, `website-bridge`, `official-website-bridge`) with candidate endpoint failover for official web-model fallback paths and keyless provider startup flows.
-- Includes built-in setup-ready model choices for OpenCode Zen free promotions (`glm-5-free`, `kimi-k2.5-free`, `minimax-m2.5-free`) plus ZhipuAI `glm-5`, with provider aliases/defaults for `zhipuai` and `zhipuai-coding`.
+- Includes built-in setup-ready model choices for OpenCode Zen free promotions (`glm-5-free`, `kimi-k2.5-free`, `minimax-m2.5-free`), ZhipuAI `glm-5`, and OpenRouter free routing (`google/gemini-2.0-flash-exp:free`), with provider aliases/defaults for `zhipuai` and `zhipuai-coding`.
 - Enforces parity-oriented patch guards for labels and subagent metadata (`label` uniqueness, `spawnedBy`/`spawnDepth` subagent-only and immutable after first set).
 - Normalizes/validates patch tuning values to parity-friendly canonical sets (thinking, verbose, reasoning, elevated, and exec policy knobs).
 - Supports `sessions.delete` parity envelope fields (`path`, `archived`) and honors `deleteTranscript` to skip transcript archive hints.
@@ -185,6 +185,18 @@ Use `config.patch`/`config.apply` to register OpenAI-compatible providers explic
         "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
         "apiKey": "${ZHIPUAI_API_KEY}",
         "models": [{ "id": "glm-5", "name": "GLM-5" }]
+      },
+      "deepinfra": {
+        "api": "openai-completions",
+        "baseUrl": "https://api.deepinfra.com/v1/openai",
+        "apiKey": "${DEEPINFRA_API_KEY}",
+        "models": [{ "id": "deepseek-ai/DeepSeek-V3", "name": "DeepSeek V3 (DeepInfra)" }]
+      },
+      "llamacpp": {
+        "api": "openai-completions",
+        "baseUrl": "http://127.0.0.1:8080/v1",
+        "allowUnauthenticated": true,
+        "models": [{ "id": "local-model", "name": "Local llama.cpp" }]
       }
     }
   }
@@ -196,6 +208,13 @@ Use `config.patch`/`config.apply` to register OpenAI-compatible providers explic
 For Zhipu coding-plan models, use provider `zhipuai-coding` or override `baseUrl` with `https://open.bigmodel.cn/api/coding/paas/v4`.
 
 For additional official website bridges (for example Kimi/Minimax/Zhipu web surfaces), keep `api` in website-bridge mode and configure provider-specific `websiteUrl` plus `bridgeBaseUrls` endpoints exposed by that provider.
+
+Bridge-ready provider aliases are normalized for:
+
+- Local/self-hosted: `ollama`, `vllm`, `litellm`, `lmstudio`, `localai`, `llamacpp`, `tgi`, `gpt4all`, `koboldcpp`, `oobabooga`
+- Cloud OpenAI-compatible: `groq`, `google`, `deepseek`, `deepinfra`, `mistral`, `fireworks`, `together`, `cerebras`, `siliconflow`, `sambanova`, `novita`, `hyperbolic`, `nebius`, `inference-net`
+- Routers/aggregators: `openrouter`, `aimlapi`
+- Enterprise/config-driven aliases (set explicit `baseUrl` in config): `azure-openai`, `vertex-ai`, `bedrock`, `cohere`, `xai`, `github-models`, `vercel-ai-gateway`, `shareai`, `bifrost`
 
 ## Signed policy bundles
 

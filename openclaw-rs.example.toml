@@ -73,3 +73,42 @@ enabled = false
 history_size = 30
 warning_threshold = 10
 critical_threshold = 20
+
+# ------------------------------------------------------------------------------
+# OpenAI-compatible provider templates (optional)
+# ------------------------------------------------------------------------------
+#
+# [models.providers.opencode]
+# api = "website-openai-bridge"
+# baseUrl = "https://opencode.ai/zen/v1"
+# websiteUrl = "https://opencode.ai"
+# bridgeBaseUrls = ["https://opencode.ai/zen/v1", "https://api.opencode.ai/v1"]
+# allowUnauthenticated = true
+# apiKey = "${OPENCODE_API_KEY}" # optional for keyless free-tier attempts
+#
+# [[models.providers.opencode.models]]
+# id = "glm-5-free"
+# name = "GLM-5-Free"
+#
+# [[models.providers.opencode.models]]
+# id = "kimi-k2.5-free"
+# name = "Kimi K2.5 Free"
+#
+# [models.providers.zhipuai]
+# api = "openai-completions"
+# baseUrl = "https://open.bigmodel.cn/api/paas/v4"
+# apiKey = "${ZHIPUAI_API_KEY}"
+#
+# [[models.providers.zhipuai.models]]
+# id = "glm-5"
+# name = "GLM-5"
+#
+# [models.providers.deepinfra]
+# api = "openai-completions"
+# baseUrl = "https://api.deepinfra.com/v1/openai"
+# apiKey = "${DEEPINFRA_API_KEY}"
+#
+# [models.providers.llamacpp]
+# api = "openai-completions"
+# baseUrl = "http://127.0.0.1:8080/v1"
+# allowUnauthenticated = true

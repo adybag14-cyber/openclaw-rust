@@ -8509,6 +8509,14 @@ impl ModelRegistry {
                 reasoning: Some(true),
                 fallback_providers: model_provider_failover_chain("zhipuai"),
             },
+            ModelChoice {
+                id: "google/gemini-2.0-flash-exp:free".to_owned(),
+                name: "Gemini 2.0 Flash (OpenRouter Free)".to_owned(),
+                provider: "openrouter".to_owned(),
+                context_window: None,
+                reasoning: None,
+                fallback_providers: model_provider_failover_chain("openrouter"),
+            },
         ];
         Self::sort_models(&mut models);
         Self { models }
@@ -24739,6 +24747,24 @@ fn normalize_provider_id(provider: &str) -> String {
         "claude" | "claude-code" | "claude-code-cli" | "claude-desktop" => "anthropic".to_owned(),
         "lm-studio" => "lmstudio".to_owned(),
         "local-ai" => "localai".to_owned(),
+        "llama.cpp" | "llama-cpp" | "llama-cpp-server" => "llamacpp".to_owned(),
+        "huggingface-tgi" | "hf-tgi" | "text-generation-inference" => "tgi".to_owned(),
+        "gpt-4all" => "gpt4all".to_owned(),
+        "kobold-cpp" => "koboldcpp".to_owned(),
+        "text-generation-webui" | "oobabooga-webui" => "oobabooga".to_owned(),
+        "deep-infra" => "deepinfra".to_owned(),
+        "silicon-flow" => "siliconflow".to_owned(),
+        "novita-ai" => "novita".to_owned(),
+        "inference.net" | "inferencenet" => "inference-net".to_owned(),
+        "aimlapi.com" => "aimlapi".to_owned(),
+        "vercel-ai" | "ai-gateway" => "vercel-ai-gateway".to_owned(),
+        "share-ai" => "shareai".to_owned(),
+        "maxim-bifrost" | "bifrost-maxim" => "bifrost".to_owned(),
+        "azure" | "azure-openai-service" => "azure-openai".to_owned(),
+        "vertex" | "google-vertex" => "vertex-ai".to_owned(),
+        "amazon-bedrock" => "bedrock".to_owned(),
+        "github-model" => "github-models".to_owned(),
+        "nvidia-nim" => "nvidia".to_owned(),
         "cerebras-cloud" => "cerebras".to_owned(),
         "chatgpt" => "openai".to_owned(),
         "codex" | "codex-cli" => "openai-codex".to_owned(),
@@ -24790,7 +24816,9 @@ fn model_provider_failover_chain(provider: &str) -> Vec<String> {
         | "kimi-coding" | "groq" | "cerebras" | "xai" | "openrouter" | "deepseek"
         | "perplexity" | "fireworks" | "mistral" | "together" | "moonshot" | "nvidia"
         | "qianfan" | "volcengine" | "byteplus" | "sambanova" | "ollama" | "vllm" | "litellm"
-        | "lmstudio" | "localai" => {
+        | "lmstudio" | "localai" | "llamacpp" | "tgi" | "gpt4all" | "koboldcpp" | "oobabooga"
+        | "deepinfra" | "siliconflow" | "novita" | "hyperbolic" | "nebius" | "inference-net"
+        | "aimlapi" | "cohere" => {
             vec!["openai".to_owned()]
         }
         _ => Vec::new(),
@@ -24855,6 +24883,12 @@ fn provider_runtime_defaults(provider: &str) -> Option<ProviderRuntimeDefaults> 
             env_vars: &["DEEPSEEK_API_KEY"],
             allow_missing_api_key: false,
         }),
+        "deepinfra" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.deepinfra.com/v1/openai",
+            env_vars: &["DEEPINFRA_API_KEY"],
+            allow_missing_api_key: false,
+        }),
         "perplexity" => Some(ProviderRuntimeDefaults {
             api_mode: "openai-completions",
             base_url: "https://api.perplexity.ai",
@@ -24877,6 +24911,12 @@ fn provider_runtime_defaults(provider: &str) -> Option<ProviderRuntimeDefaults> 
             api_mode: "openai-completions",
             base_url: "https://api.mistral.ai/v1",
             env_vars: &["MISTRAL_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "cohere" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.cohere.com/compatibility/v1",
+            env_vars: &["COHERE_API_KEY"],
             allow_missing_api_key: false,
         }),
         "together" => Some(ProviderRuntimeDefaults {
@@ -24961,6 +25001,42 @@ fn provider_runtime_defaults(provider: &str) -> Option<ProviderRuntimeDefaults> 
             env_vars: &["BYTEPLUS_API_KEY"],
             allow_missing_api_key: false,
         }),
+        "siliconflow" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.siliconflow.cn/v1",
+            env_vars: &["SILICONFLOW_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "novita" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.novita.ai/v3/openai",
+            env_vars: &["NOVITA_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "hyperbolic" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.hyperbolic.xyz/v1",
+            env_vars: &["HYPERBOLIC_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "nebius" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.studio.nebius.com/v1",
+            env_vars: &["NEBIUS_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "inference-net" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.inference.net/v1",
+            env_vars: &["INFERENCE_NET_API_KEY"],
+            allow_missing_api_key: false,
+        }),
+        "aimlapi" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.aimlapi.com/v1",
+            env_vars: &["AIMLAPI_API_KEY"],
+            allow_missing_api_key: false,
+        }),
         "ollama" => Some(ProviderRuntimeDefaults {
             api_mode: "openai-completions",
             base_url: "http://127.0.0.1:11434/v1",
@@ -24995,6 +25071,36 @@ fn provider_runtime_defaults(provider: &str) -> Option<ProviderRuntimeDefaults> 
             api_mode: "openai-completions",
             base_url: "http://127.0.0.1:8080/v1",
             env_vars: &["LOCALAI_API_KEY", "LOCAL_AI_API_KEY"],
+            allow_missing_api_key: true,
+        }),
+        "llamacpp" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "http://127.0.0.1:8080/v1",
+            env_vars: &["LLAMACPP_API_KEY", "LLAMA_CPP_API_KEY"],
+            allow_missing_api_key: true,
+        }),
+        "tgi" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "http://127.0.0.1:8080/v1",
+            env_vars: &["TGI_API_KEY", "HF_TOKEN"],
+            allow_missing_api_key: true,
+        }),
+        "gpt4all" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "http://127.0.0.1:4891/v1",
+            env_vars: &["GPT4ALL_API_KEY"],
+            allow_missing_api_key: true,
+        }),
+        "koboldcpp" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "http://127.0.0.1:5001/v1",
+            env_vars: &["KOBOLDCPP_API_KEY"],
+            allow_missing_api_key: true,
+        }),
+        "oobabooga" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "http://127.0.0.1:5000/v1",
+            env_vars: &["OOBABOOGA_API_KEY"],
             allow_missing_api_key: true,
         }),
         _ => None,
@@ -26859,6 +26965,11 @@ mod tests {
         assert_eq!(super::normalize_provider_id("lm-studio"), "lmstudio");
         assert_eq!(super::normalize_provider_id("local-ai"), "localai");
         assert_eq!(super::normalize_provider_id("zhipu"), "zhipuai");
+        assert_eq!(super::normalize_provider_id("llama-cpp"), "llamacpp");
+        assert_eq!(super::normalize_provider_id("hf-tgi"), "tgi");
+        assert_eq!(super::normalize_provider_id("deep-infra"), "deepinfra");
+        assert_eq!(super::normalize_provider_id("google-vertex"), "vertex-ai");
+        assert_eq!(super::normalize_provider_id("amazon-bedrock"), "bedrock");
         assert_eq!(
             super::normalize_provider_id("zhipu-coding"),
             "zhipuai-coding"
@@ -26883,6 +26994,12 @@ mod tests {
         }));
         assert!(models.iter().any(|entry| {
             entry.provider.eq_ignore_ascii_case("zhipuai") && entry.id.eq_ignore_ascii_case("glm-5")
+        }));
+        assert!(models.iter().any(|entry| {
+            entry.provider.eq_ignore_ascii_case("openrouter")
+                && entry
+                    .id
+                    .eq_ignore_ascii_case("google/gemini-2.0-flash-exp:free")
         }));
     }
 
@@ -26971,6 +27088,22 @@ mod tests {
             .bridge_candidates
             .iter()
             .any(|candidate| candidate == "https://opencode.ai/zen/v1"));
+    }
+
+    #[test]
+    fn resolve_provider_runtime_config_supports_additional_openai_compatible_presets() {
+        let config = json!({});
+        let deepinfra = super::resolve_provider_runtime_config(&config, "deep-infra")
+            .expect("deepinfra runtime config");
+        assert_eq!(deepinfra.provider, "deepinfra");
+        assert_eq!(deepinfra.base_url, "https://api.deepinfra.com/v1/openai");
+        assert!(!deepinfra.allow_missing_api_key);
+
+        let llamacpp = super::resolve_provider_runtime_config(&config, "llama-cpp")
+            .expect("llamacpp runtime config");
+        assert_eq!(llamacpp.provider, "llamacpp");
+        assert_eq!(llamacpp.base_url, "http://127.0.0.1:8080/v1");
+        assert!(llamacpp.allow_missing_api_key);
     }
 
     #[test]
