@@ -5,6 +5,31 @@
 ### Highlights
 - No unreleased changes.
 
+## v1.6.4 - 2026-02-22
+
+### Highlights
+- Added `src/persistent_memory.rs` implementing a Rust-native `zvec`-style vector memory backend with persistent disk snapshots, bounded retention, and cosine top-k recall.
+- Added a Rust-native `graphlite`-style graph memory backend (session/concept nodes + mention/co-occurrence edges) with synthesized fact recall.
+- Integrated persistent memory into `agent` runtime execution:
+  - User and assistant turns are ingested into memory stores.
+  - Memory recall context is injected into the provider prompt path as a bounded system message.
+- Added memory runtime telemetry to `health` and `status` RPC payloads.
+- Added config-driven memory runtime parsing from gateway config (`memory.enabled`, `memory.zvecStorePath`, `memory.graphStorePath`, `memory.maxEntries`, `memory.recallTopK`, `memory.recallMinScore`).
+- Bumped runtime/tooling contracts to `v1.6.4` (`Cargo.toml`, `wit/tool.wit`, wasm registry WIT test fixture string).
+
+### Validation
+- `cargo fmt --all`
+- `cargo check`
+- `cargo test persistent_memory -- --nocapture`
+- `cargo test cli_dispatch_rpc_status_returns_runtime_payload`
+- `cargo test dispatcher_chat_methods_follow_parity_contract`
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo +1.83.0-x86_64-pc-windows-msvc check`
+- `cargo +1.83.0-x86_64-pc-windows-msvc test --no-run`
+- `cargo +1.83.0-x86_64-pc-windows-msvc build --release`
+- `cargo run -- gateway --json status`
+- `cargo run -- agent --message "memory integration smoke test" --session-key main --idempotency-key v164-smoke --json`
+
 ## v1.6.3 - 2026-02-22
 
 ### Highlights

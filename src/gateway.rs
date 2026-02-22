@@ -25,6 +25,10 @@ use crate::channels::{
 use crate::config::{
     GroupActivationMode, SessionQueueMode, ToolRuntimePolicyConfig, ToolRuntimeWasmMode,
 };
+use crate::persistent_memory::{
+    MemoryRecallQuery, MemoryRememberInput, MemoryRuntimeConfig, PersistentMemoryRegistry,
+    DEFAULT_GRAPHLITE_STORE_PATH, DEFAULT_ZVEC_STORE_PATH,
+};
 use crate::protocol::{MethodFamily, RpcRequestFrame};
 use crate::session_key::{parse_session_key, SessionKind};
 use crate::tool_runtime::{ToolRuntimeHost, ToolRuntimeRequest};
@@ -766,6 +770,7 @@ pub struct RpcDispatcher {
     cron: CronRegistry,
     legacy_cron_notify_warned: Mutex<HashSet<String>>,
     config: ConfigRegistry,
+    memory: PersistentMemoryRegistry,
     web_login: WebLoginRegistry,
     oauth: OAuthRegistry,
     wizard: WizardRegistry,
@@ -1084,6 +1089,7 @@ impl RpcDispatcher {
             cron: CronRegistry::new(),
             legacy_cron_notify_warned: Mutex::new(HashSet::new()),
             config: ConfigRegistry::new(),
+            memory: PersistentMemoryRegistry::new(),
             web_login: WebLoginRegistry::new(),
             oauth: OAuthRegistry::new(),
             wizard: WizardRegistry::new(),
@@ -1181,6 +1187,11 @@ impl RpcDispatcher {
     async fn sync_config_runtime_from_config(&self) -> Result<(), String> {
         let runtime = self.config.config_runtime_config().await;
         self.config.apply_runtime_config(runtime).await
+    }
+
+    async fn sync_memory_runtime_from_config(&self) -> Result<(), String> {
+        let runtime = self.config.memory_runtime_config().await;
+        self.memory.apply_runtime_config(runtime).await
     }
 
     async fn sync_agents_runtime_from_config(&self) -> Result<(), String> {
@@ -1542,15 +1553,22 @@ impl RpcDispatcher {
                 .await;
             return RpcDispatchOutcome::internal_error("session runtime unavailable");
         }
+        if let Err(err) = self.sync_memory_runtime_from_config().await {
+            self.system
+                .log_line(format!("memory.runtime sync failed: {err}"))
+                .await;
+        }
         let now = now_ms();
         let summary = self.sessions.summary().await;
+        let memory = self.memory.stats().await;
         RpcDispatchOutcome::Handled(json!({
             "ok": true,
             "service": RUNTIME_NAME,
             "version": RUNTIME_VERSION,
             "ts": now,
             "uptimeMs": now.saturating_sub(self.started_at_ms),
-            "sessions": summary
+            "sessions": summary,
+            "memory": memory
         }))
     }
 
@@ -1561,8 +1579,14 @@ impl RpcDispatcher {
                 .await;
             return RpcDispatchOutcome::internal_error("session runtime unavailable");
         }
+        if let Err(err) = self.sync_memory_runtime_from_config().await {
+            self.system
+                .log_line(format!("memory.runtime sync failed: {err}"))
+                .await;
+        }
         let now = now_ms();
         let summary = self.sessions.summary().await;
+        let memory = self.memory.stats().await;
         RpcDispatchOutcome::Handled(json!({
             "runtime": {
                 "name": RUNTIME_NAME,
@@ -1571,6 +1595,7 @@ impl RpcDispatcher {
                 "uptimeMs": now.saturating_sub(self.started_at_ms),
             },
             "sessions": summary,
+            "memory": memory,
             "rpc": {
                 "supportedMethods": SUPPORTED_RPC_METHODS,
                 "count": SUPPORTED_RPC_METHODS.len()
@@ -2325,6 +2350,11 @@ impl RpcDispatcher {
                 .await;
             return RpcDispatchOutcome::internal_error("agents runtime unavailable");
         }
+        if let Err(err) = self.sync_memory_runtime_from_config().await {
+            self.system
+                .log_line(format!("memory.runtime sync failed: {err}"))
+                .await;
+        }
         let params = match decode_params::<AgentParams>(&req.params) {
             Ok(v) => v,
             Err(err) => {
@@ -2410,6 +2440,7 @@ impl RpcDispatcher {
             message
         }
         .or_else(|| has_attachments.then(|| "[attachment]".to_owned()));
+        let memory_query_text = stored_message.clone();
         let resolved_session_key = session_key.clone();
         let _ = self
             .refresh_session_auth_profile(&resolved_session_key)
@@ -2418,7 +2449,7 @@ impl RpcDispatcher {
             let _ = self
                 .sessions
                 .record_send(SessionSend {
-                    session_key,
+                    session_key: session_key.clone(),
                     request_id: Some(run_id.clone()),
                     message: stored_message,
                     command: None,
@@ -2431,6 +2462,20 @@ impl RpcDispatcher {
                 })
                 .await;
         }
+        if let Some(memory_text) = memory_query_text.clone() {
+            if !memory_text.eq_ignore_ascii_case("[attachment]") {
+                let _ = self
+                    .memory
+                    .remember(MemoryRememberInput {
+                        session_key: resolved_session_key.clone(),
+                        source: "agent.user".to_owned(),
+                        text: memory_text,
+                        request_id: Some(run_id.clone()),
+                        at_ms: None,
+                    })
+                    .await;
+            }
+        }
         let resolved = self
             .resolve_session_model_failover(&resolved_session_key)
             .await;
@@ -2441,6 +2486,8 @@ impl RpcDispatcher {
             api_mode: None,
             tool_calls: None,
             loop_steps: None,
+            memory_hits: None,
+            memory_graph_facts: None,
             reason: Some("provider credentials not configured".to_owned()),
         };
         let mut run_completed = false;
@@ -2486,6 +2533,7 @@ impl RpcDispatcher {
                         resolved: resolved.clone(),
                         provider_runtime: provider_runtime.clone(),
                         extra_system_prompt: params.extra_system_prompt.clone(),
+                        memory_query_text: memory_query_text.clone(),
                         workspace_root,
                         config: config_snapshot.config.clone(),
                     })
@@ -2494,6 +2542,7 @@ impl RpcDispatcher {
                     Ok(outcome) => {
                         runtime_payload = outcome.execution;
                         if let Some(assistant_text) = outcome.assistant_text {
+                            let assistant_memory_text = assistant_text.clone();
                             let _ = self
                                 .sessions
                                 .record_send(SessionSend {
@@ -2507,6 +2556,16 @@ impl RpcDispatcher {
                                     account_id: None,
                                     thread_id: None,
                                     reply_back: None,
+                                })
+                                .await;
+                            let _ = self
+                                .memory
+                                .remember(MemoryRememberInput {
+                                    session_key: resolved_session_key.clone(),
+                                    source: "agent.assistant".to_owned(),
+                                    text: assistant_memory_text,
+                                    request_id: Some(run_id.clone()),
+                                    at_ms: None,
                                 })
                                 .await;
                         }
@@ -7576,6 +7635,7 @@ impl RpcDispatcher {
             resolved,
             provider_runtime,
             extra_system_prompt,
+            memory_query_text,
             workspace_root,
             config,
         } = input;
@@ -7584,6 +7644,24 @@ impl RpcDispatcher {
             .history(Some(&session_key), Some(AGENT_LLM_TURN_MAX_HISTORY))
             .await;
         let mut messages = build_openai_messages_from_session_history(&history);
+        let recall_query_text = normalize_optional_text(memory_query_text, 12_000)
+            .or_else(|| latest_user_text_from_session_history(&history));
+        let memory_recall = self
+            .memory
+            .recall(MemoryRecallQuery {
+                session_key: session_key.clone(),
+                query_text: recall_query_text,
+            })
+            .await;
+        if let Some(memory_prompt) = memory_recall.system_prompt.clone() {
+            messages.insert(
+                0,
+                json!({
+                    "role": "system",
+                    "content": memory_prompt
+                }),
+            );
+        }
         if let Some(system_prompt) = normalize_optional_text(extra_system_prompt, 8_192) {
             messages.insert(
                 0,
@@ -7632,6 +7710,8 @@ impl RpcDispatcher {
                         api_mode: Some(provider_runtime.api_mode.clone()),
                         tool_calls: Some(tool_calls_total),
                         loop_steps: Some(step_count),
+                        memory_hits: Some(memory_recall.vector_hits),
+                        memory_graph_facts: Some(memory_recall.graph_facts),
                         reason: None,
                     },
                 });
@@ -8940,6 +9020,10 @@ struct AgentRuntimeExecutionView {
     tool_calls: Option<usize>,
     #[serde(rename = "loopSteps", skip_serializing_if = "Option::is_none")]
     loop_steps: Option<usize>,
+    #[serde(rename = "memoryHits", skip_serializing_if = "Option::is_none")]
+    memory_hits: Option<usize>,
+    #[serde(rename = "memoryGraphFacts", skip_serializing_if = "Option::is_none")]
+    memory_graph_facts: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
 }
@@ -8957,6 +9041,7 @@ struct AgentRuntimeTurnRequest {
     resolved: ModelFailoverResolutionView,
     provider_runtime: ProviderRuntimeConfig,
     extra_system_prompt: Option<String>,
+    memory_query_text: Option<String>,
     workspace_root: PathBuf,
     config: Value,
 }
@@ -19396,6 +19481,11 @@ impl ConfigRegistry {
         session_runtime_config_from_config(&guard.config)
     }
 
+    async fn memory_runtime_config(&self) -> MemoryRuntimeConfig {
+        let guard = self.state.lock().await;
+        memory_runtime_config_from_config(&guard.config)
+    }
+
     async fn channel_runtime_config(&self) -> ChannelRuntimeConfig {
         let guard = self.state.lock().await;
         channel_runtime_config_from_config(&guard.config)
@@ -19445,6 +19535,14 @@ impl ConfigRegistry {
 fn default_gateway_config_document() -> Value {
     json!({
         "session": { "mainKey": "main" },
+        "memory": {
+            "enabled": true,
+            "zvecStorePath": DEFAULT_ZVEC_STORE_PATH,
+            "graphStorePath": DEFAULT_GRAPHLITE_STORE_PATH,
+            "maxEntries": 20000,
+            "recallTopK": 8,
+            "recallMinScore": 0.18
+        },
         "talk": {
             "outputFormat": "pcm16",
             "interruptOnSpeech": true
@@ -19719,6 +19817,124 @@ fn session_runtime_config_from_config(config: &Value) -> SessionRuntimeConfig {
         )
     });
     SessionRuntimeConfig { store_path }
+}
+
+fn memory_runtime_config_from_config(config: &Value) -> MemoryRuntimeConfig {
+    let runtime = config.get("runtime").and_then(Value::as_object);
+    let memory = config.get("memory").and_then(Value::as_object);
+    let zvec = memory.and_then(|obj| read_config_object(obj, &["zvec", "vector"]));
+    let graphlite = memory.and_then(|obj| read_config_object(obj, &["graphlite", "graph"]));
+
+    let enabled = memory
+        .and_then(|obj| read_config_bool(obj, &["enabled"]))
+        .or_else(|| {
+            runtime.and_then(|obj| read_config_bool(obj, &["memoryEnabled", "memory_enabled"]))
+        });
+
+    let zvec_store_path = zvec
+        .and_then(|obj| read_config_string(obj, &["storePath", "store_path", "path"], 2048))
+        .or_else(|| {
+            memory.and_then(|obj| {
+                read_config_string(
+                    obj,
+                    &[
+                        "zvecStorePath",
+                        "zvec_store_path",
+                        "vectorStorePath",
+                        "vector_store_path",
+                    ],
+                    2048,
+                )
+            })
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string(
+                    obj,
+                    &[
+                        "memoryVectorStorePath",
+                        "memory_vector_store_path",
+                        "zvecStorePath",
+                        "zvec_store_path",
+                    ],
+                    2048,
+                )
+            })
+        });
+
+    let graph_store_path = graphlite
+        .and_then(|obj| read_config_string(obj, &["storePath", "store_path", "path"], 2048))
+        .or_else(|| {
+            memory.and_then(|obj| {
+                read_config_string(
+                    obj,
+                    &[
+                        "graphStorePath",
+                        "graph_store_path",
+                        "graphliteStorePath",
+                        "graphlite_store_path",
+                    ],
+                    2048,
+                )
+            })
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string(
+                    obj,
+                    &[
+                        "memoryGraphStorePath",
+                        "memory_graph_store_path",
+                        "graphStorePath",
+                        "graph_store_path",
+                    ],
+                    2048,
+                )
+            })
+        });
+
+    let max_entries = zvec
+        .and_then(|obj| read_config_usize(obj, &["maxEntries", "max_entries"]))
+        .or_else(|| memory.and_then(|obj| read_config_usize(obj, &["maxEntries", "max_entries"])))
+        .or_else(|| {
+            runtime
+                .and_then(|obj| read_config_usize(obj, &["memoryMaxEntries", "memory_max_entries"]))
+        });
+
+    let recall_top_k = memory
+        .and_then(|obj| read_config_usize(obj, &["recallTopK", "recall_top_k", "topK", "top_k"]))
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_usize(obj, &["memoryRecallTopK", "memory_recall_top_k"])
+            })
+        });
+
+    let recall_min_score = memory
+        .and_then(|obj| {
+            read_config_f64(
+                obj,
+                &[
+                    "recallMinScore",
+                    "recall_min_score",
+                    "minScore",
+                    "min_score",
+                ],
+            )
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_f64(obj, &["memoryRecallMinScore", "memory_recall_min_score"])
+            })
+        });
+
+    MemoryRuntimeConfig {
+        enabled,
+        zvec_store_path,
+        graph_store_path,
+        max_entries,
+        recall_top_k,
+        recall_min_score,
+    }
 }
 
 fn channel_runtime_config_from_config(config: &Value) -> ChannelRuntimeConfig {
@@ -20286,6 +20502,11 @@ fn read_config_u64(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Op
         .find_map(|key| object.get(*key).and_then(config_value_as_u64))
 }
 
+fn read_config_f64(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<f64> {
+    keys.iter()
+        .find_map(|key| object.get(*key).and_then(config_value_as_f64))
+}
+
 fn read_config_bool(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<bool> {
     keys.iter()
         .find_map(|key| object.get(*key).and_then(json_value_as_bool))
@@ -20499,6 +20720,14 @@ fn config_value_as_u64(value: &Value) -> Option<u64> {
     match value {
         Value::Number(number) => number.as_u64(),
         Value::String(text) => text.trim().parse::<u64>().ok(),
+        _ => None,
+    }
+}
+
+fn config_value_as_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => text.trim().parse::<f64>().ok(),
         _ => None,
     }
 }
@@ -25926,6 +26155,36 @@ fn build_openai_messages_from_session_history(history: &[SessionHistoryRecord]) 
         }));
     }
     messages
+}
+
+fn latest_user_text_from_session_history(history: &[SessionHistoryRecord]) -> Option<String> {
+    for entry in history {
+        if entry.kind != SessionHistoryKind::Send {
+            continue;
+        }
+        let source = entry.source.as_deref().map(normalize).unwrap_or_default();
+        if source.starts_with("agent.assistant")
+            || source.starts_with("chat.inject")
+            || source.starts_with("agent.tool.")
+        {
+            continue;
+        }
+        if let Some(text) = entry
+            .text
+            .as_ref()
+            .and_then(|value| normalize_optional_text(Some(value.clone()), 12_000))
+        {
+            return Some(text);
+        }
+        if let Some(command) = entry
+            .command
+            .as_ref()
+            .and_then(|value| normalize_optional_text(Some(value.clone()), 12_000))
+        {
+            return Some(command);
+        }
+    }
+    None
 }
 
 fn build_openai_assistant_tool_call_message(

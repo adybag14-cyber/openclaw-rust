@@ -238,6 +238,15 @@ CP20 increment (2026-02-21):
 - Permissions now inherit resolved channel support for `poll`, `edit`, `delete`, `react/reactions`, and thread actions (`threadCreate/threadList/threadReply`) while preserving permissive defaults when no channel context is resolved.
 - Added CP3 message-parity fixtures and regression assertions validating capability-shaped permission payloads for `slack` and `telegram`.
 
+CP21 increment (2026-02-22):
+
+- Added native Rust persistent memory substrate (`src/persistent_memory.rs`) combining:
+  - `zvec`-style vector memory indexing/recall with bounded disk-backed snapshots.
+  - `graphlite`-style graph memory accumulation (session/concept nodes plus mention/co-occurrence edges).
+- Wired memory ingestion into live `agent` request/response flow (`agent.user`, `agent.assistant`) so runtime memory survives process restart.
+- Wired memory recall into provider prompt construction (bounded memory system context injected before completion calls).
+- Added gateway runtime memory telemetry (`health`/`status`) and config parsing for `memory.*` controls (`enabled`, store paths, retention, recall depth/threshold).
+
 CP21 increment (2026-02-21):
 
 - Expanded channel runtime activity-event parity beyond inbound/outbound markers by adding mutation suffix tracking for reactions, edits, deletes, and thread operations.

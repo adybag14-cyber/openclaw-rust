@@ -17,14 +17,13 @@ provider runtime, persistence, performance strategy, and release layout), see:
 - Feature audit scoreboard: `22 implemented`, `0 partial`, `0 deferred`.
 - RPC method-surface parity: `103` Rust methods, `100%` coverage vs upstream base + handlers.
 - Runtime audit: blanket dead-code suppression removed; only targeted transcript-entry allowance remains in `tool_runtime` for parity/test inspection fields.
-- 1.6.3 release-track integrations added:
-  - New `security audit` CLI parity surface (`security audit --deep|--fix|--json`) with structured findings, summary counts, optional deep gateway probe, and deterministic safe-fix actions.
-  - Real `wasmtime`-backed `wasm` tool runtime execution path with fuel/memory policy limits.
-  - Dynamic WIT tool registry (`registry` / `schema`) and runtime schema generation from `.wit` files.
-  - Credential injector upgrades with config-driven `secret_names`, host-boundary injection aliases, and bidirectional leak redaction.
-  - Full SafetyLayer wiring for input/output scanning, sanitization, truncation, and review/block escalation.
-  - New `security.wasm` config section (`tool_runtime_mode = "wasm_sandbox"`, `wit_root`, `dynamic_wit_loading`) synced into runtime policy.
-  - Extended `doctor` checks for wasm runtime mode, WIT root, module root, and wasmtime binary visibility.
+- 1.6.4 release-track integrations added:
+  - Added a native Rust `zvec`-style persistent vector memory engine (`src/persistent_memory.rs`) with bounded on-disk storage and cosine top-k recall.
+  - Added a native Rust `graphlite`-style persistent graph memory store (session/concept nodes + mention/co-occurrence edges) with synthesized graph facts for recall.
+  - Wired memory ingestion into the live `agent` runtime path for both user turns and assistant outputs.
+  - Wired memory recall into agent turn execution as bounded system-context injection before provider completion calls.
+  - Added runtime memory telemetry to `gateway status` / `health` responses (`memory.enabled`, entry/node/edge counts, store paths, recall limits).
+  - Added config-driven memory tuning under `memory.*` (`enabled`, `zvecStorePath`, `graphStorePath`, `maxEntries`, `recallTopK`, `recallMinScore`).
 - Latest full validation matrix:
   - `cargo test` -> `358` passed (`1` ignored)
   - `cargo test --features sqlite-state` -> `362` passed (`1` ignored)

@@ -4,6 +4,7 @@ mod config;
 mod gateway;
 mod gateway_server;
 mod memory;
+mod persistent_memory;
 mod protocol;
 mod routines;
 mod runtime;
