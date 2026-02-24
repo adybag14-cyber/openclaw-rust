@@ -10,11 +10,11 @@ Generated (UTC): deterministic
 | Audit Partial | 0 |
 | Audit Deferred | 0 |
 | Audit Not Started | 0 |
-| Rust RPC Methods | 104 |
-| Base Coverage (%) | 100 |
-| Base Missing In Rust | 0 |
-| Handlers Coverage (%) | 100 |
-| Handlers Missing In Rust | 0 |
+| Rust RPC Methods | 116 |
+| Base Coverage (%) | 97.8 |
+| Base Missing In Rust | 2 |
+| Handlers Coverage (%) | 98.02 |
+| Handlers Missing In Rust | 2 |
 
 ## Delta vs Baseline
 
@@ -24,11 +24,11 @@ Generated (UTC): deterministic
 | Partial | -9 |
 | Deferred | -3 |
 | Not Started | 0 |
-| Rust RPC Methods | +3 |
-| Base Coverage (%) | 0 |
-| Base Missing In Rust | 0 |
-| Handlers Coverage (%) | 0 |
-| Handlers Missing In Rust | 0 |
+| Rust RPC Methods | +15 |
+| Base Coverage (%) | -2.2 |
+| Base Missing In Rust | +2 |
+| Handlers Coverage (%) | -1.98 |
+| Handlers Missing In Rust | +2 |
 
 ## Subsystem Status Deltas
 

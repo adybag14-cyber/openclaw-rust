@@ -168,6 +168,42 @@ impl MethodRegistry {
                     min_role: "client",
                 },
                 MethodSpec {
+                    name: "edge.voice.transcribe",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "edge.router.plan",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "edge.acceleration.status",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "edge.wasm.marketplace.list",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "edge.swarm.plan",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "edge.multimodal.inspect",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
                     name: "voicewake.get",
                     family: MethodFamily::Gateway,
                     requires_auth: true,
@@ -921,6 +957,8 @@ const AGENT_SELF_HEAL_MAX_ATTEMPTS_ENV: &str = "OPENCLAW_RS_AGENT_SELF_HEAL_MAX_
 const AGENT_SELF_HEAL_BACKOFF_MS_ENV: &str = "OPENCLAW_RS_AGENT_SELF_HEAL_BACKOFF_MS";
 const TTS_KITTENTTS_BIN_ENV: &str = "OPENCLAW_RS_KITTENTTS_BIN";
 const TTS_KITTENTTS_ARGS_ENV: &str = "OPENCLAW_RS_KITTENTTS_ARGS";
+const STT_TINYWHISPER_BIN_ENV: &str = "OPENCLAW_RS_TINYWHISPER_BIN";
+const STT_TINYWHISPER_ARGS_ENV: &str = "OPENCLAW_RS_TINYWHISPER_ARGS";
 const TTS_ELEVENLABS_MODELS: &[&str] = &[
     "eleven_multilingual_v2",
     "eleven_turbo_v2_5",
@@ -931,6 +969,9 @@ const TTS_ELEVENLABS_API_KEY_ENV: &str = "ELEVENLABS_API_KEY";
 const TTS_ELEVENLABS_VOICE_ID_ENV: &str = "ELEVENLABS_VOICE_ID";
 const TTS_ELEVENLABS_DEFAULT_VOICE_ID: &str = "EXAVITQu4vr4xnSDxMaL";
 const TTS_PROVIDER_HTTP_TIMEOUT_SECS: u64 = 15;
+const EDGE_WASM_MARKETPLACE_MAX_MODULES: usize = 128;
+const EDGE_SWARM_MAX_TASKS: usize = 24;
+const EDGE_SWARM_MAX_AGENTS: usize = 12;
 const DEFAULT_VOICEWAKE_TRIGGERS: &[&str] = &["openclaw", "claude", "computer"];
 const VOICE_INPUT_DEVICE_DEFAULT: &str = "default-microphone";
 const VOICE_OUTPUT_DEVICE_DEFAULT: &str = "default-speaker";
@@ -973,6 +1014,12 @@ const SUPPORTED_RPC_METHODS: &[&str] = &[
     "tts.convert",
     "tts.setProvider",
     "tts.providers",
+    "edge.voice.transcribe",
+    "edge.router.plan",
+    "edge.acceleration.status",
+    "edge.wasm.marketplace.list",
+    "edge.swarm.plan",
+    "edge.multimodal.inspect",
     "voicewake.get",
     "voicewake.set",
     "models.list",
@@ -1305,6 +1352,12 @@ impl RpcDispatcher {
             "tts.convert" => self.handle_tts_convert(req).await,
             "tts.setprovider" => self.handle_tts_set_provider(req).await,
             "tts.providers" => self.handle_tts_providers(req).await,
+            "edge.voice.transcribe" => self.handle_edge_voice_transcribe(req).await,
+            "edge.router.plan" => self.handle_edge_router_plan(req).await,
+            "edge.acceleration.status" => self.handle_edge_acceleration_status(req).await,
+            "edge.wasm.marketplace.list" => self.handle_edge_wasm_marketplace_list(req).await,
+            "edge.swarm.plan" => self.handle_edge_swarm_plan(req).await,
+            "edge.multimodal.inspect" => self.handle_edge_multimodal_inspect(req).await,
             "voicewake.get" => self.handle_voicewake_get(req).await,
             "voicewake.set" => self.handle_voicewake_set(req).await,
             "models.list" => self.handle_models_list(req).await,
@@ -2097,6 +2150,301 @@ impl RpcDispatcher {
                 }
             ],
             "active": active
+        }))
+    }
+
+    async fn handle_edge_voice_transcribe(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<EdgeVoiceTranscribeParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid edge.voice.transcribe params: {err}"
+                ));
+            }
+        };
+        let audio_path = normalize_optional_text(params.audio_path, 2_048);
+        let hint_text = normalize_optional_text(params.hint_text, 16_000);
+        let language = normalize_optional_text(params.language, 32).map(|value| normalize(&value));
+        let provider = normalize_optional_text(params.provider, 64)
+            .map(|value| normalize(&value))
+            .unwrap_or_default();
+        if audio_path.is_none() && hint_text.is_none() {
+            return RpcDispatchOutcome::bad_request(
+                "edge.voice.transcribe requires audioPath or hintText",
+            );
+        }
+        let config_snapshot = self.config.get_snapshot().await;
+        let runtime_profile = runtime_feature_profile_from_config(&config_snapshot.config);
+        let result = transcribe_audio_with_provider(
+            audio_path.as_deref(),
+            hint_text.as_deref(),
+            language.as_deref(),
+            &provider,
+            runtime_profile,
+        )
+        .await;
+        self.system
+            .log_line(format!(
+                "edge.voice.transcribe providerRequested={} providerUsed={} source={} chars={}",
+                if provider.is_empty() {
+                    "default"
+                } else {
+                    provider.as_str()
+                },
+                result.provider_used,
+                result.source,
+                result.transcript.chars().count()
+            ))
+            .await;
+        RpcDispatchOutcome::Handled(json!({
+            "runtimeProfile": runtime_profile.as_str(),
+            "providerRequested": if provider.is_empty() { Value::Null } else { Value::String(provider) },
+            "providerUsed": result.provider_used,
+            "source": result.source,
+            "transcript": result.transcript,
+            "confidence": result.confidence,
+            "language": language,
+            "audioPath": audio_path,
+            "hasTinyWhisperBinary": tinywhisper_binary_available()
+        }))
+    }
+
+    async fn handle_edge_router_plan(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<EdgeRouterPlanParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid edge.router.plan params: {err}"
+                ));
+            }
+        };
+        let objective = normalize_optional_text(params.objective, 64)
+            .map(|value| normalize(&value))
+            .unwrap_or_else(|| "balanced".to_owned());
+        let requested_provider =
+            normalize_optional_text(params.provider, 64).map(|value| normalize_provider_id(&value));
+        let requested_model = normalize_optional_text(params.model, 256);
+        let message = normalize_optional_text(params.message, 16_000);
+        let config_snapshot = self.config.get_snapshot().await;
+        let runtime_profile = runtime_feature_profile_from_config(&config_snapshot.config);
+        let catalog = self.models.resolve_catalog(Some(&config_snapshot.config));
+        let selected_model = requested_model
+            .as_deref()
+            .and_then(|model| {
+                catalog
+                    .iter()
+                    .find(|entry| entry.id.eq_ignore_ascii_case(model))
+                    .cloned()
+            })
+            .or_else(|| {
+                requested_provider.as_deref().and_then(|provider| {
+                    ModelRegistry::default_model_for_provider_in_catalog(&catalog, provider)
+                })
+            })
+            .unwrap_or_else(|| ModelRegistry::primary_model_from_catalog(&catalog));
+        let acceleration = detect_edge_acceleration_runtime();
+        let route = build_edge_router_recommendation_chain(
+            &selected_model.provider,
+            &objective,
+            runtime_profile,
+        );
+        let reasoning = build_edge_router_reasoning(
+            &objective,
+            runtime_profile,
+            &route,
+            acceleration.gpu_active || acceleration.npu_active,
+        );
+        RpcDispatchOutcome::Handled(json!({
+            "objective": objective,
+            "runtimeProfile": runtime_profile.as_str(),
+            "selected": {
+                "provider": selected_model.provider,
+                "model": selected_model.id,
+                "name": selected_model.name
+            },
+            "fallbackProviders": selected_model.fallback_providers,
+            "recommendedProviderChain": route,
+            "reasoning": reasoning,
+            "accelerationHint": {
+                "gpuActive": acceleration.gpu_active,
+                "npuActive": acceleration.npu_active,
+                "recommendedMode": acceleration.recommended_mode
+            },
+            "messageChars": message.as_ref().map(|value| value.chars().count()).unwrap_or(0)
+        }))
+    }
+
+    async fn handle_edge_acceleration_status(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = decode_params::<EdgeAccelerationStatusParams>(&req.params) {
+            return RpcDispatchOutcome::bad_request(format!(
+                "invalid edge.acceleration.status params: {err}"
+            ));
+        }
+        let status = detect_edge_acceleration_runtime();
+        RpcDispatchOutcome::Handled(json!({
+            "gpuActive": status.gpu_active,
+            "npuActive": status.npu_active,
+            "recommendedMode": status.recommended_mode,
+            "availableEngines": status.available_engines,
+            "hints": {
+                "cuda": status.cuda,
+                "rocm": status.rocm,
+                "metal": status.metal,
+                "directml": status.directml,
+                "openvinoNpu": status.openvino_npu
+            },
+            "tooling": {
+                "nvidiaSmi": status.nvidia_smi,
+                "rocmSmi": status.rocm_smi
+            }
+        }))
+    }
+
+    async fn handle_edge_wasm_marketplace_list(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<EdgeWasmMarketplaceListParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid edge.wasm.marketplace.list params: {err}"
+                ));
+            }
+        };
+        let config_snapshot = self.config.get_snapshot().await;
+        let runtime_profile = runtime_feature_profile_from_config(&config_snapshot.config);
+        let policy = resolve_tool_runtime_policy_config(&config_snapshot.config);
+        let module_root = policy.wasm.module_root.clone();
+        let wit_root = policy.wasm.wit_root.clone();
+        let modules = collect_marketplace_modules(&module_root, EDGE_WASM_MARKETPLACE_MAX_MODULES);
+        let wit_packages = if params.include_wit.unwrap_or(false) {
+            collect_marketplace_wit_packages(&wit_root, EDGE_WASM_MARKETPLACE_MAX_MODULES)
+        } else {
+            Vec::new()
+        };
+        RpcDispatchOutcome::Handled(json!({
+            "runtimeProfile": runtime_profile.as_str(),
+            "moduleRoot": module_root.to_string_lossy(),
+            "witRoot": wit_root.to_string_lossy(),
+            "moduleCount": modules.len(),
+            "modules": modules,
+            "witPackages": wit_packages,
+            "builder": {
+                "mode": "visual-ai-builder",
+                "supported": true,
+                "templates": ["tool.execute", "tool.fetch", "tool.workflow"],
+                "scaffoldHints": {
+                    "fields": ["name", "description", "inputs", "outputs", "capabilities"],
+                    "defaultCapability": "workspace.read"
+                }
+            }
+        }))
+    }
+
+    async fn handle_edge_swarm_plan(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<EdgeSwarmPlanParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid edge.swarm.plan params: {err}"
+                ));
+            }
+        };
+        let goal = normalize_optional_text(params.goal, 16_000);
+        let config_snapshot = self.config.get_snapshot().await;
+        let runtime_profile = runtime_feature_profile_from_config(&config_snapshot.config);
+        let mut tasks = extract_swarm_tasks(params.tasks.as_ref());
+        if tasks.is_empty() {
+            tasks = build_default_swarm_tasks(goal.as_deref());
+        }
+        if tasks.is_empty() {
+            return RpcDispatchOutcome::bad_request("edge.swarm.plan requires tasks or goal");
+        }
+        tasks.truncate(EDGE_SWARM_MAX_TASKS);
+        let default_agents = match runtime_profile {
+            RuntimeFeatureProfile::Core => 3usize,
+            RuntimeFeatureProfile::Edge => 6usize,
+        };
+        let requested_agents = params
+            .max_agents
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(default_agents)
+            .clamp(1, EDGE_SWARM_MAX_AGENTS);
+        let agent_count = requested_agents.min(tasks.len().max(1));
+        let mut planned = Vec::with_capacity(tasks.len());
+        for (idx, task) in tasks.iter().enumerate() {
+            let task_id = format!("task-{}", idx + 1);
+            let assigned_agent = format!("swarm-agent-{}", (idx % agent_count) + 1);
+            let depends_on = if idx == 0 {
+                Vec::new()
+            } else {
+                vec![format!("task-{idx}")]
+            };
+            planned.push(json!({
+                "id": task_id,
+                "title": task,
+                "assignedAgent": assigned_agent,
+                "specialization": classify_swarm_task(task),
+                "dependsOn": depends_on
+            }));
+        }
+        RpcDispatchOutcome::Handled(json!({
+            "planId": format!("swarm-{}", now_ms()),
+            "runtimeProfile": runtime_profile.as_str(),
+            "goal": goal,
+            "agentCount": agent_count,
+            "taskCount": planned.len(),
+            "tasks": planned
+        }))
+    }
+
+    async fn handle_edge_multimodal_inspect(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<EdgeMultimodalInspectParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid edge.multimodal.inspect params: {err}"
+                ));
+            }
+        };
+        let image_path = normalize_optional_text(params.image_path, 2_048);
+        let screen_path = normalize_optional_text(params.screen_path, 2_048);
+        let video_path = normalize_optional_text(params.video_path, 2_048);
+        let prompt = normalize_optional_text(params.prompt, 8_000);
+        let ocr_text = normalize_optional_text(params.ocr_text, 16_000);
+        if image_path.is_none()
+            && screen_path.is_none()
+            && video_path.is_none()
+            && prompt.is_none()
+            && ocr_text.is_none()
+        {
+            return RpcDispatchOutcome::bad_request(
+                "edge.multimodal.inspect requires media path, prompt, or ocrText",
+            );
+        }
+        let config_snapshot = self.config.get_snapshot().await;
+        let runtime_profile = runtime_feature_profile_from_config(&config_snapshot.config);
+        let memory_runtime = memory_runtime_config_from_config(&config_snapshot.config);
+        let media = [
+            ("image", image_path.as_deref()),
+            ("screen", screen_path.as_deref()),
+            ("video", video_path.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(kind, path)| path.map(|value| inspect_media_path(kind, value)))
+        .collect::<Vec<_>>();
+        let modalities = infer_multimodal_modalities(&media, ocr_text.as_deref());
+        let summary = summarize_multimodal_context(
+            prompt.as_deref(),
+            ocr_text.as_deref(),
+            &media,
+            &modalities,
+        );
+        RpcDispatchOutcome::Handled(json!({
+            "runtimeProfile": runtime_profile.as_str(),
+            "modalities": modalities,
+            "media": media,
+            "ocrText": ocr_text,
+            "summary": summary,
+            "memoryAugmentationReady": memory_runtime.enabled
         }))
     }
 
@@ -14900,6 +15248,552 @@ fn kittentts_extra_args() -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[derive(Debug, Clone)]
+struct EdgeTranscriptionResult {
+    provider_used: String,
+    source: &'static str,
+    transcript: String,
+    confidence: f64,
+}
+
+#[derive(Debug, Clone)]
+struct EdgeAccelerationRuntime {
+    cuda: bool,
+    rocm: bool,
+    metal: bool,
+    directml: bool,
+    openvino_npu: bool,
+    nvidia_smi: bool,
+    rocm_smi: bool,
+    gpu_active: bool,
+    npu_active: bool,
+    recommended_mode: String,
+    available_engines: Vec<String>,
+}
+
+fn tinywhisper_binary_path() -> Option<String> {
+    env::var(STT_TINYWHISPER_BIN_ENV)
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 2_048))
+}
+
+fn tinywhisper_binary_available() -> bool {
+    tinywhisper_binary_path().is_some()
+}
+
+fn tinywhisper_extra_args() -> Vec<String> {
+    env::var(STT_TINYWHISPER_ARGS_ENV)
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 2_048))
+        .map(|value| {
+            value
+                .split_whitespace()
+                .take(32)
+                .map(|item| item.to_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+async fn try_transcribe_audio_tinywhisper(
+    audio_path: &str,
+    language: Option<&str>,
+) -> Option<String> {
+    let binary = tinywhisper_binary_path()?;
+    let mut command = TokioCommand::new(binary);
+    command.arg("--input").arg(audio_path);
+    if let Some(language) = language {
+        command.arg("--language").arg(language);
+    }
+    for arg in tinywhisper_extra_args() {
+        command.arg(arg);
+    }
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let child = command.spawn().ok()?;
+    let output = tokio::time::timeout(Duration::from_secs(8), child.wait_with_output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .and_then(|line| normalize_optional_text(Some(line.to_owned()), 16_000))
+}
+
+fn simulated_transcript(audio_path: Option<&str>, hint_text: Option<&str>) -> String {
+    if let Some(text) =
+        hint_text.and_then(|value| normalize_optional_text(Some(value.to_owned()), 16_000))
+    {
+        return text;
+    }
+    if let Some(path) = audio_path {
+        let file_name = Path::new(path)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .and_then(|value| normalize_optional_text(Some(value.to_owned()), 256))
+            .unwrap_or_else(|| "audio-capture".to_owned());
+        return format!("simulated transcript from {file_name}");
+    }
+    "simulated transcript".to_owned()
+}
+
+async fn transcribe_audio_with_provider(
+    audio_path: Option<&str>,
+    hint_text: Option<&str>,
+    language: Option<&str>,
+    requested_provider: &str,
+    profile: RuntimeFeatureProfile,
+) -> EdgeTranscriptionResult {
+    let requested = normalize(requested_provider);
+    let mut order = Vec::new();
+    if !requested.is_empty() {
+        order.push(requested.clone());
+    }
+    match profile {
+        RuntimeFeatureProfile::Edge => {
+            if !order.iter().any(|entry: &String| entry == "tinywhisper") {
+                order.push("tinywhisper".to_owned());
+            }
+            if !order.iter().any(|entry: &String| entry == "edge") {
+                order.push("edge".to_owned());
+            }
+        }
+        RuntimeFeatureProfile::Core => {
+            if !order.iter().any(|entry: &String| entry == "edge") {
+                order.push("edge".to_owned());
+            }
+            if !order.iter().any(|entry: &String| entry == "tinywhisper") {
+                order.push("tinywhisper".to_owned());
+            }
+        }
+    }
+    for provider in order {
+        if provider == "tinywhisper" {
+            if let Some(path) = audio_path {
+                if let Some(transcript) = try_transcribe_audio_tinywhisper(path, language).await {
+                    return EdgeTranscriptionResult {
+                        provider_used: "tinywhisper".to_owned(),
+                        source: "offline-local",
+                        transcript,
+                        confidence: 0.92,
+                    };
+                }
+            }
+            continue;
+        }
+        if provider == "edge" {
+            let transcript = simulated_transcript(audio_path, hint_text);
+            return EdgeTranscriptionResult {
+                provider_used: "edge".to_owned(),
+                source: "simulated",
+                transcript,
+                confidence: 0.46,
+            };
+        }
+    }
+    EdgeTranscriptionResult {
+        provider_used: if requested.is_empty() {
+            "edge".to_owned()
+        } else {
+            requested
+        },
+        source: "simulated",
+        transcript: simulated_transcript(audio_path, hint_text),
+        confidence: 0.4,
+    }
+}
+
+fn build_edge_router_recommendation_chain(
+    primary_provider: &str,
+    objective: &str,
+    profile: RuntimeFeatureProfile,
+) -> Vec<String> {
+    let objective = normalize(objective);
+    let mut chain = Vec::new();
+    chain.push(normalize_provider_id(primary_provider));
+    chain.extend(model_provider_failover_chain(primary_provider));
+
+    if objective == "cost" {
+        for provider in ["opencode", "openrouter"] {
+            if !chain
+                .iter()
+                .any(|entry| entry.eq_ignore_ascii_case(provider))
+            {
+                chain.push(provider.to_owned());
+            }
+        }
+    } else if objective == "privacy" {
+        for provider in ["ollama", "vllm", "lmstudio", "localai"] {
+            if !chain
+                .iter()
+                .any(|entry| entry.eq_ignore_ascii_case(provider))
+            {
+                chain.push(provider.to_owned());
+            }
+        }
+    } else if objective == "latency" && matches!(profile, RuntimeFeatureProfile::Edge) {
+        for provider in ["openai-codex", "openai", "anthropic"] {
+            if !chain
+                .iter()
+                .any(|entry| entry.eq_ignore_ascii_case(provider))
+            {
+                chain.push(provider.to_owned());
+            }
+        }
+    }
+
+    let mut deduped = Vec::new();
+    for provider in chain {
+        if provider.is_empty() {
+            continue;
+        }
+        if deduped
+            .iter()
+            .any(|entry: &String| entry.eq_ignore_ascii_case(&provider))
+        {
+            continue;
+        }
+        deduped.push(provider);
+    }
+    deduped
+}
+
+fn build_edge_router_reasoning(
+    objective: &str,
+    profile: RuntimeFeatureProfile,
+    route: &[String],
+    has_acceleration: bool,
+) -> Vec<String> {
+    let mut reasoning = Vec::new();
+    reasoning.push(format!(
+        "runtime profile `{}` keeps the core baseline and adds edge failover depth",
+        profile.as_str()
+    ));
+    if objective.eq_ignore_ascii_case("cost") {
+        reasoning.push("cost objective prioritizes free/low-cost provider bridges".to_owned());
+    } else if objective.eq_ignore_ascii_case("privacy") {
+        reasoning
+            .push("privacy objective prioritizes local/self-host provider backends".to_owned());
+    } else if objective.eq_ignore_ascii_case("latency") {
+        reasoning
+            .push("latency objective prioritizes providers with fast failover paths".to_owned());
+    } else {
+        reasoning.push(
+            "balanced objective uses stable provider order with deterministic fallback".to_owned(),
+        );
+    }
+    if has_acceleration {
+        reasoning.push(
+            "hardware acceleration is available and can reduce latency for local models".to_owned(),
+        );
+    }
+    if route.len() > 1 {
+        reasoning.push(format!(
+            "router includes {} fallback provider(s) for resilience",
+            route.len().saturating_sub(1)
+        ));
+    }
+    reasoning
+}
+
+fn env_var_truthy(name: &str) -> bool {
+    let Some(value) = env::var(name)
+        .ok()
+        .and_then(|raw| normalize_optional_text(Some(raw), 256))
+    else {
+        return false;
+    };
+    !matches!(
+        normalize(&value).as_str(),
+        "0" | "false" | "off" | "no" | "-1"
+    )
+}
+
+fn detect_edge_acceleration_runtime() -> EdgeAccelerationRuntime {
+    let nvidia_smi = resolve_local_node_host_executable_path("nvidia-smi").is_some();
+    let rocm_smi = resolve_local_node_host_executable_path("rocm-smi").is_some();
+    let cuda_visible = env::var("CUDA_VISIBLE_DEVICES")
+        .ok()
+        .and_then(|raw| normalize_optional_text(Some(raw), 256))
+        .map(|raw| {
+            let normalized = normalize(&raw);
+            !matches!(normalized.as_str(), "" | "-1" | "none")
+        })
+        .unwrap_or(false);
+    let rocm_visible = env::var("ROCR_VISIBLE_DEVICES")
+        .ok()
+        .and_then(|raw| normalize_optional_text(Some(raw), 256))
+        .is_some();
+    let cuda = nvidia_smi || cuda_visible || env_var_truthy("OPENCLAW_RS_GPU_CUDA");
+    let rocm = rocm_smi || rocm_visible || env_var_truthy("OPENCLAW_RS_GPU_ROCM");
+    let metal = cfg!(target_os = "macos");
+    let directml = cfg!(windows) && env_var_truthy("OPENCLAW_RS_GPU_DIRECTML");
+    let openvino_npu = env_var_truthy("OPENVINO_HOME")
+        || env_var_truthy("OPENCLAW_RS_NPU_ENABLED")
+        || env_var_truthy("NPU_VISIBLE_DEVICES");
+    let gpu_active = cuda || rocm || metal || directml;
+    let npu_active = openvino_npu;
+    let recommended_mode = if npu_active {
+        "npu-preferred".to_owned()
+    } else if gpu_active {
+        "gpu-preferred".to_owned()
+    } else {
+        "cpu".to_owned()
+    };
+    let mut available_engines = Vec::new();
+    if cuda {
+        available_engines.push("cuda".to_owned());
+    }
+    if rocm {
+        available_engines.push("rocm".to_owned());
+    }
+    if metal {
+        available_engines.push("metal".to_owned());
+    }
+    if directml {
+        available_engines.push("directml".to_owned());
+    }
+    if openvino_npu {
+        available_engines.push("openvino-npu".to_owned());
+    }
+    EdgeAccelerationRuntime {
+        cuda,
+        rocm,
+        metal,
+        directml,
+        openvino_npu,
+        nvidia_smi,
+        rocm_smi,
+        gpu_active,
+        npu_active,
+        recommended_mode,
+        available_engines,
+    }
+}
+
+fn collect_marketplace_modules(root: &Path, limit: usize) -> Vec<Value> {
+    let mut paths = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("wasm"))
+            {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort_by(|a, b| {
+        a.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .cmp(
+                b.file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default(),
+            )
+    });
+    paths
+        .into_iter()
+        .take(limit)
+        .map(|path| {
+            let size_bytes = std::fs::metadata(&path).ok().map(|meta| meta.len());
+            let modified_at_ms = file_modified_ms(&path);
+            json!({
+                "id": path.file_stem().and_then(|value| value.to_str()).unwrap_or_default(),
+                "path": path.to_string_lossy(),
+                "sizeBytes": size_bytes,
+                "modifiedAtMs": modified_at_ms
+            })
+        })
+        .collect()
+}
+
+fn collect_marketplace_wit_packages(root: &Path, limit: usize) -> Vec<Value> {
+    let mut paths = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("wit"))
+            {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort_by(|a, b| {
+        a.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .cmp(
+                b.file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default(),
+            )
+    });
+    paths
+        .into_iter()
+        .take(limit)
+        .map(|path| {
+            json!({
+                "name": path.file_name().and_then(|value| value.to_str()).unwrap_or_default(),
+                "path": path.to_string_lossy()
+            })
+        })
+        .collect()
+}
+
+fn extract_swarm_tasks(tasks: Option<&Value>) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(items) = tasks.and_then(Value::as_array) else {
+        return out;
+    };
+    for item in items {
+        let raw = match item {
+            Value::String(value) => Some(value.as_str()),
+            Value::Object(map) => map
+                .get("title")
+                .or_else(|| map.get("task"))
+                .and_then(Value::as_str),
+            _ => None,
+        };
+        let Some(raw) = raw else {
+            continue;
+        };
+        let Some(normalized) = normalize_optional_text(Some(raw.to_owned()), 256) else {
+            continue;
+        };
+        out.push(normalized);
+        if out.len() >= EDGE_SWARM_MAX_TASKS {
+            break;
+        }
+    }
+    out
+}
+
+fn build_default_swarm_tasks(goal: Option<&str>) -> Vec<String> {
+    let Some(goal) = goal.and_then(|value| normalize_optional_text(Some(value.to_owned()), 512))
+    else {
+        return Vec::new();
+    };
+    vec![
+        format!("Analyze objective: {goal}"),
+        "Implement the main changes with guarded rollout".to_owned(),
+        "Validate behavior and produce release evidence".to_owned(),
+    ]
+}
+
+fn classify_swarm_task(task: &str) -> &'static str {
+    let normalized = normalize(task);
+    if normalized.contains("test")
+        || normalized.contains("validate")
+        || normalized.contains("audit")
+    {
+        "qa"
+    } else if normalized.contains("deploy")
+        || normalized.contains("release")
+        || normalized.contains("infra")
+    {
+        "ops"
+    } else if normalized.contains("research")
+        || normalized.contains("investigate")
+        || normalized.contains("analyze")
+    {
+        "research"
+    } else {
+        "builder"
+    }
+}
+
+fn inspect_media_path(kind: &str, path: &str) -> Value {
+    let path_buf = PathBuf::from(path);
+    let exists = path_buf.is_file();
+    let size_bytes = if exists {
+        std::fs::metadata(&path_buf).ok().map(|meta| meta.len())
+    } else {
+        None
+    };
+    json!({
+        "kind": kind,
+        "path": path,
+        "exists": exists,
+        "extension": path_buf.extension().and_then(|value| value.to_str()),
+        "sizeBytes": size_bytes,
+        "modifiedAtMs": if exists { file_modified_ms(&path_buf) } else { None }
+    })
+}
+
+fn infer_multimodal_modalities(media: &[Value], ocr_text: Option<&str>) -> Vec<String> {
+    let mut out = Vec::new();
+    if !media.is_empty() {
+        out.push("vision".to_owned());
+    }
+    if media.iter().any(|entry| {
+        entry
+            .get("kind")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind == "screen" || kind == "video")
+    }) {
+        out.push("screen".to_owned());
+    }
+    if ocr_text
+        .and_then(|value| normalize_optional_text(Some(value.to_owned()), 16_000))
+        .is_some()
+    {
+        out.push("text".to_owned());
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn summarize_multimodal_context(
+    prompt: Option<&str>,
+    ocr_text: Option<&str>,
+    media: &[Value],
+    modalities: &[String],
+) -> String {
+    let prompt_hint = prompt
+        .and_then(|value| normalize_optional_text(Some(value.to_owned()), 256))
+        .unwrap_or_else(|| "inspect incoming scene and extract actionable state".to_owned());
+    let mut summary = format!(
+        "Multimodal pipeline detected {} modality(ies): {}. Objective: {}.",
+        modalities.len(),
+        if modalities.is_empty() {
+            "none".to_owned()
+        } else {
+            modalities.join(", ")
+        },
+        prompt_hint
+    );
+    if let Some(text) =
+        ocr_text.and_then(|value| normalize_optional_text(Some(value.to_owned()), 256))
+    {
+        summary.push_str(&format!(" OCR hint: {}.", text));
+    }
+    if !media.is_empty() {
+        let existing = media
+            .iter()
+            .filter(|entry| entry.get("exists").and_then(Value::as_bool) == Some(true))
+            .count();
+        summary.push_str(&format!(
+            " Media sources: {} provided ({} currently available on disk).",
+            media.len(),
+            existing
+        ));
+    }
+    summary
+}
+
 fn tts_provider_api_key(provider: &str) -> Option<String> {
     match normalize(provider).as_str() {
         "openai" => env::var(TTS_OPENAI_API_KEY_ENV).ok(),
@@ -23531,6 +24425,60 @@ struct TtsSetProviderParams {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct TtsProvidersParams {}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeVoiceTranscribeParams {
+    #[serde(rename = "audioPath", alias = "audio_path")]
+    audio_path: Option<String>,
+    #[serde(rename = "hintText", alias = "hint_text")]
+    hint_text: Option<String>,
+    language: Option<String>,
+    provider: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeRouterPlanParams {
+    objective: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    message: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeAccelerationStatusParams {}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeWasmMarketplaceListParams {
+    #[serde(rename = "includeWit", alias = "include_wit")]
+    include_wit: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeSwarmPlanParams {
+    goal: Option<String>,
+    tasks: Option<Value>,
+    #[serde(rename = "maxAgents", alias = "max_agents")]
+    max_agents: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeMultimodalInspectParams {
+    #[serde(rename = "imagePath", alias = "image_path")]
+    image_path: Option<String>,
+    #[serde(rename = "screenPath", alias = "screen_path")]
+    screen_path: Option<String>,
+    #[serde(rename = "videoPath", alias = "video_path")]
+    video_path: Option<String>,
+    prompt: Option<String>,
+    #[serde(rename = "ocrText", alias = "ocr_text")]
+    ocr_text: Option<String>,
+}
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -32795,6 +33743,152 @@ mod tests {
                         .any(|entry| entry.as_str() == Some("kittentts"))));
             }
             _ => panic!("expected tts.status handled for edge profile"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_edge_feature_batch_methods_return_expected_shapes() {
+        let dispatcher = RpcDispatcher::new();
+        patch_config(&dispatcher, json!({ "runtime": { "profile": "edge" } })).await;
+
+        let transcribe = RpcRequestFrame {
+            id: "req-edge-transcribe".to_owned(),
+            method: "edge.voice.transcribe".to_owned(),
+            params: serde_json::json!({
+                "hintText": "offline transcript sample",
+                "provider": "edge"
+            }),
+        };
+        match dispatcher.handle_request(&transcribe).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/providerUsed").and_then(Value::as_str),
+                    Some("edge")
+                );
+                assert_eq!(
+                    payload.pointer("/source").and_then(Value::as_str),
+                    Some("simulated")
+                );
+                assert!(payload
+                    .pointer("/transcript")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value.contains("offline transcript sample")));
+            }
+            _ => panic!("expected edge.voice.transcribe handled"),
+        }
+
+        let router = RpcRequestFrame {
+            id: "req-edge-router".to_owned(),
+            method: "edge.router.plan".to_owned(),
+            params: serde_json::json!({
+                "objective": "cost",
+                "provider": "openai",
+                "message": "ship edge feature batch"
+            }),
+        };
+        match dispatcher.handle_request(&router).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/objective").and_then(Value::as_str),
+                    Some("cost")
+                );
+                assert!(payload
+                    .pointer("/recommendedProviderChain")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| {
+                        items.iter().any(|entry| entry.as_str() == Some("openai"))
+                            && items.iter().any(|entry| entry.as_str() == Some("opencode"))
+                    }));
+            }
+            _ => panic!("expected edge.router.plan handled"),
+        }
+
+        let acceleration = RpcRequestFrame {
+            id: "req-edge-acceleration".to_owned(),
+            method: "edge.acceleration.status".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher.handle_request(&acceleration).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert!(payload
+                    .pointer("/recommendedMode")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty()));
+                assert!(payload
+                    .pointer("/availableEngines")
+                    .and_then(Value::as_array)
+                    .is_some());
+            }
+            _ => panic!("expected edge.acceleration.status handled"),
+        }
+
+        let marketplace = RpcRequestFrame {
+            id: "req-edge-marketplace".to_owned(),
+            method: "edge.wasm.marketplace.list".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher.handle_request(&marketplace).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert!(payload
+                    .pointer("/moduleRoot")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty()));
+                assert_eq!(
+                    payload
+                        .pointer("/builder/supported")
+                        .and_then(Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected edge.wasm.marketplace.list handled"),
+        }
+
+        let swarm = RpcRequestFrame {
+            id: "req-edge-swarm".to_owned(),
+            method: "edge.swarm.plan".to_owned(),
+            params: serde_json::json!({
+                "tasks": ["research backlog", "implement runtime changes", "validate release"],
+                "maxAgents": 2
+            }),
+        };
+        match dispatcher.handle_request(&swarm).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/agentCount").and_then(Value::as_u64),
+                    Some(2)
+                );
+                assert_eq!(
+                    payload.pointer("/taskCount").and_then(Value::as_u64),
+                    Some(3)
+                );
+                assert!(payload
+                    .pointer("/tasks/1/dependsOn/0")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == "task-1"));
+            }
+            _ => panic!("expected edge.swarm.plan handled"),
+        }
+
+        let multimodal = RpcRequestFrame {
+            id: "req-edge-multimodal".to_owned(),
+            method: "edge.multimodal.inspect".to_owned(),
+            params: serde_json::json!({
+                "prompt": "inspect current screen state",
+                "ocrText": "ERROR timeout while reading workspace"
+            }),
+        };
+        match dispatcher.handle_request(&multimodal).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert!(payload
+                    .pointer("/modalities")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| items.iter().any(|entry| entry.as_str() == Some("text"))));
+                assert!(payload
+                    .pointer("/summary")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value.contains("Multimodal pipeline")));
+            }
+            _ => panic!("expected edge.multimodal.inspect handled"),
         }
     }
 

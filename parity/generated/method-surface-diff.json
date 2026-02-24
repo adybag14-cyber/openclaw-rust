@@ -1,50 +1,75 @@
 {
-    "rustGatewayPath":  "src/gateway.rs",
-    "upstreamRepoPath":  "..\\\\openclaw",
-    "rustCount":  104,
-    "surfaces":  {
-                     "base":  {
-                                  "upstreamCount":  89,
-                                  "rustCount":  104,
-                                  "intersectionCount":  89,
-                                  "coveragePercent":  100,
-                                  "missingInRust":  [
-
-                                                    ],
-                                  "rustOnly":  [
-                                                   "browser.open",
-                                                   "canvas.present",
-                                                   "chat.inject",
-                                                   "connect",
-                                                   "poll",
-                                                   "push.test",
-                                                   "session.status",
-                                                   "sessions.history",
-                                                   "sessions.resolve",
-                                                   "sessions.send",
-                                                   "sessions.usage",
-                                                   "sessions.usage.logs",
-                                                   "sessions.usage.timeseries",
-                                                   "web.login.start",
-                                                   "web.login.wait"
-                                               ]
-                              },
-                     "handlers":  {
-                                      "upstreamCount":  98,
-                                      "rustCount":  104,
-                                      "intersectionCount":  98,
-                                      "coveragePercent":  100,
-                                      "missingInRust":  [
-
-                                                        ],
-                                      "rustOnly":  [
-                                                       "browser.open",
-                                                       "canvas.present",
-                                                       "push.test",
-                                                       "session.status",
-                                                       "sessions.history",
-                                                       "sessions.send"
-                                                   ]
-                                  }
-                 }
+  "rustGatewayPath": "src/gateway.rs",
+  "upstreamRepoPath": "..\\\\openclaw",
+  "rustCount": 116,
+  "surfaces": {
+    "base": {
+      "upstreamCount": 91,
+      "rustCount": 116,
+      "intersectionCount": 89,
+      "coveragePercent": 97.8,
+      "missingInRust": [
+        "doctor.memory.status",
+        "tools.catalog"
+      ],
+      "rustOnly": [
+        "auth.oauth.complete",
+        "auth.oauth.import",
+        "auth.oauth.logout",
+        "auth.oauth.providers",
+        "auth.oauth.start",
+        "auth.oauth.wait",
+        "browser.open",
+        "canvas.present",
+        "chat.inject",
+        "connect",
+        "edge.acceleration.status",
+        "edge.multimodal.inspect",
+        "edge.router.plan",
+        "edge.swarm.plan",
+        "edge.voice.transcribe",
+        "edge.wasm.marketplace.list",
+        "poll",
+        "push.test",
+        "session.status",
+        "sessions.history",
+        "sessions.resolve",
+        "sessions.send",
+        "sessions.usage",
+        "sessions.usage.logs",
+        "sessions.usage.timeseries",
+        "web.login.start",
+        "web.login.wait"
+      ]
+    },
+    "handlers": {
+      "upstreamCount": 101,
+      "rustCount": 116,
+      "intersectionCount": 99,
+      "coveragePercent": 98.02,
+      "missingInRust": [
+        "doctor.memory.status",
+        "tools.catalog"
+      ],
+      "rustOnly": [
+        "auth.oauth.complete",
+        "auth.oauth.import",
+        "auth.oauth.logout",
+        "auth.oauth.providers",
+        "auth.oauth.start",
+        "auth.oauth.wait",
+        "browser.open",
+        "canvas.present",
+        "edge.acceleration.status",
+        "edge.multimodal.inspect",
+        "edge.router.plan",
+        "edge.swarm.plan",
+        "edge.voice.transcribe",
+        "edge.wasm.marketplace.list",
+        "session.status",
+        "sessions.history",
+        "sessions.send"
+      ]
+    }
+  }
 }

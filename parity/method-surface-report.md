@@ -4,26 +4,39 @@ Generated (UTC): deterministic
 
 ## Summary
 
-- Rust method count: 104
+- Rust method count: 116
 - Surfaces compared: 2
 
 ## Surface: base
 
-- Upstream method count: 89
-- Rust method count: 104
+- Upstream method count: 91
+- Rust method count: 116
 - Shared methods: 89
-- Coverage vs upstream: 100%
+- Coverage vs upstream: 97.8%
 
 ### Missing In Rust
 
-- _None_
+- `doctor.memory.status`
+- `tools.catalog`
 
 ### Rust-only Methods
 
+- `auth.oauth.complete`
+- `auth.oauth.import`
+- `auth.oauth.logout`
+- `auth.oauth.providers`
+- `auth.oauth.start`
+- `auth.oauth.wait`
 - `browser.open`
 - `canvas.present`
 - `chat.inject`
 - `connect`
+- `edge.acceleration.status`
+- `edge.multimodal.inspect`
+- `edge.router.plan`
+- `edge.swarm.plan`
+- `edge.voice.transcribe`
+- `edge.wasm.marketplace.list`
 - `poll`
 - `push.test`
 - `session.status`
@@ -38,20 +51,32 @@ Generated (UTC): deterministic
 
 ## Surface: handlers
 
-- Upstream method count: 98
-- Rust method count: 104
-- Shared methods: 98
-- Coverage vs upstream: 100%
+- Upstream method count: 101
+- Rust method count: 116
+- Shared methods: 99
+- Coverage vs upstream: 98.02%
 
 ### Missing In Rust
 
-- _None_
+- `doctor.memory.status`
+- `tools.catalog`
 
 ### Rust-only Methods
 
+- `auth.oauth.complete`
+- `auth.oauth.import`
+- `auth.oauth.logout`
+- `auth.oauth.providers`
+- `auth.oauth.start`
+- `auth.oauth.wait`
 - `browser.open`
 - `canvas.present`
-- `push.test`
+- `edge.acceleration.status`
+- `edge.multimodal.inspect`
+- `edge.router.plan`
+- `edge.swarm.plan`
+- `edge.voice.transcribe`
+- `edge.wasm.marketplace.list`
 - `session.status`
 - `sessions.history`
 - `sessions.send`
