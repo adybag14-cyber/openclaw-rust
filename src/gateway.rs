@@ -822,7 +822,12 @@ const AGENT_LLM_TURN_MAX_HISTORY: usize = 64;
 const AGENT_LLM_TOOL_LOOP_MAX_STEPS: usize = 8;
 const AGENT_TOOL_OUTPUT_MAX_CHARS: usize = 8_192;
 const AGENT_PROVIDER_HTTP_TIMEOUT_MS: u64 = 60_000;
-const AGENT_SELF_HEAL_MAX_ATTEMPTS: usize = 2;
+const AGENT_SELF_HEAL_MAX_ATTEMPTS_CAP: usize = 6;
+const AGENT_SELF_HEAL_DEFAULT_MAX_ATTEMPTS_CORE: usize = 1;
+const AGENT_SELF_HEAL_DEFAULT_MAX_ATTEMPTS_EDGE: usize = 2;
+const AGENT_SELF_HEAL_DEFAULT_BACKOFF_MS_CORE: u64 = 250;
+const AGENT_SELF_HEAL_DEFAULT_BACKOFF_MS_EDGE: u64 = 80;
+const AGENT_SELF_HEAL_MAX_BACKOFF_MS: u64 = 5_000;
 const MAX_CHAT_RUNS: usize = 4_096;
 const CHAT_RUN_COMPLETE_DELAY_MS: u64 = 25;
 const MAX_SEND_CACHE_ENTRIES: usize = 4_096;
@@ -910,6 +915,10 @@ const TTS_OPENAI_VOICES: &[&str] = &[
 const TTS_OPENAI_DEFAULT_MODEL: &str = "gpt-4o-mini-tts";
 const TTS_OPENAI_DEFAULT_VOICE: &str = "alloy";
 const TTS_OPENAI_API_KEY_ENV: &str = "OPENAI_API_KEY";
+const RUNTIME_PROFILE_ENV: &str = "OPENCLAW_RS_RUNTIME_PROFILE";
+const AGENT_SELF_HEAL_ENABLED_ENV: &str = "OPENCLAW_RS_AGENT_SELF_HEAL_ENABLED";
+const AGENT_SELF_HEAL_MAX_ATTEMPTS_ENV: &str = "OPENCLAW_RS_AGENT_SELF_HEAL_MAX_ATTEMPTS";
+const AGENT_SELF_HEAL_BACKOFF_MS_ENV: &str = "OPENCLAW_RS_AGENT_SELF_HEAL_BACKOFF_MS";
 const TTS_KITTENTTS_BIN_ENV: &str = "OPENCLAW_RS_KITTENTTS_BIN";
 const TTS_KITTENTTS_ARGS_ENV: &str = "OPENCLAW_RS_KITTENTTS_ARGS";
 const TTS_ELEVENLABS_MODELS: &[&str] = &[
@@ -1874,16 +1883,19 @@ impl RpcDispatcher {
             return RpcDispatchOutcome::bad_request(format!("invalid tts.status params: {err}"));
         }
         let state = self.tts.snapshot().await;
+        let config_snapshot = self.config.get_snapshot().await;
+        let runtime_profile = runtime_feature_profile_from_config(&config_snapshot.config);
         let io_state = self.voice_io.snapshot().await;
         let has_openai_key = tts_provider_api_key("openai").is_some();
         let has_elevenlabs_key = tts_provider_api_key("elevenlabs").is_some();
         let has_kittentts_bin = kittentts_binary_available();
-        let fallback_providers = tts_fallback_providers(&state.provider);
+        let fallback_providers = tts_fallback_providers(&state.provider, runtime_profile);
         let fallback_provider = fallback_providers.first().cloned();
         RpcDispatchOutcome::Handled(json!({
             "enabled": state.enabled,
             "auto": state.auto_mode,
             "provider": state.provider,
+            "runtimeProfile": runtime_profile.as_str(),
             "fallbackProvider": fallback_provider,
             "fallbackProviders": fallback_providers,
             "prefsPath": TTS_PREFS_PATH,
@@ -1895,6 +1907,9 @@ impl RpcDispatcher {
                 "enabled": true,
                 "lazyLoaded": true,
                 "providers": ["kittentts", "edge"],
+                "profile": runtime_profile.as_str(),
+                "recommendedProvider": if matches!(runtime_profile, RuntimeFeatureProfile::Edge) { "kittentts" } else { "edge" },
+                "kittenttsDefaultEnabled": matches!(runtime_profile, RuntimeFeatureProfile::Edge),
                 "kittenttsAvailable": has_kittentts_bin
             },
             "capture": {
@@ -1953,6 +1968,8 @@ impl RpcDispatcher {
         let channel = normalize_optional_text(params.channel, 64).map(|value| normalize(&value));
         let output_device = normalize_optional_text(params.output_device, 128);
         let state = self.tts.snapshot().await;
+        let config_snapshot = self.config.get_snapshot().await;
+        let runtime_profile = runtime_feature_profile_from_config(&config_snapshot.config);
         let (output_format, extension, voice_compatible) = if channel.as_deref() == Some("telegram")
         {
             ("opus", ".opus", true)
@@ -1961,8 +1978,13 @@ impl RpcDispatcher {
         };
         let text_chars = text.chars().count();
         let audio_path = next_tts_audio_path(extension);
-        let audio_blob =
-            synthesize_tts_audio_blob_with_provider(&text, output_format, &state.provider).await;
+        let audio_blob = synthesize_tts_audio_blob_with_provider(
+            &text,
+            output_format,
+            &state.provider,
+            runtime_profile,
+        )
+        .await;
         let audio_bytes = audio_blob.bytes;
         let audio_base64 = BASE64_STANDARD.encode(&audio_bytes);
         let io_state = self
@@ -1988,6 +2010,7 @@ impl RpcDispatcher {
         RpcDispatchOutcome::Handled(json!({
             "audioPath": audio_path,
             "provider": state.provider,
+            "runtimeProfile": runtime_profile.as_str(),
             "providerUsed": audio_blob.provider_used,
             "synthSource": audio_blob.source,
             "outputFormat": output_format,
@@ -2594,6 +2617,9 @@ impl RpcDispatcher {
                     }
                     Err(err) => {
                         let catalog = self.models.resolve_catalog(Some(&config_snapshot.config));
+                        let self_healing_runtime =
+                            agent_self_healing_runtime_config_from_config(&config_snapshot.config);
+                        let self_heal_profile = self_healing_runtime.profile.as_str().to_owned();
                         let mut final_error = err.clone();
                         let mut healing_attempts: Vec<AgentRuntimeSelfHealingAttemptView> =
                             Vec::new();
@@ -2601,173 +2627,194 @@ impl RpcDispatcher {
                         let mut attempted_providers: Vec<String> = Vec::new();
                         let mut tried_count = 0usize;
 
-                        for fallback_provider_raw in &resolved.fallback_providers {
-                            if tried_count >= AGENT_SELF_HEAL_MAX_ATTEMPTS {
-                                break;
-                            }
-                            let fallback_provider = normalize_provider_id(fallback_provider_raw);
-                            if fallback_provider.eq_ignore_ascii_case(&resolved.model_provider) {
-                                continue;
-                            }
-                            if attempted_providers
-                                .iter()
-                                .any(|existing| existing.eq_ignore_ascii_case(&fallback_provider))
-                            {
-                                continue;
-                            }
-                            attempted_providers.push(fallback_provider.clone());
-                            tried_count = tried_count.saturating_add(1);
-
-                            let fallback_model =
-                                ModelRegistry::default_model_for_provider_in_catalog(
-                                    &catalog,
-                                    &fallback_provider,
-                                )
-                                .map(|entry| entry.id)
-                                .unwrap_or_else(|| resolved.model.clone());
-
-                            let Some(fallback_runtime) = resolve_provider_runtime_config(
-                                &config_snapshot.config,
-                                &fallback_provider,
-                            ) else {
-                                healing_attempts.push(AgentRuntimeSelfHealingAttemptView {
-                                    provider: fallback_provider.clone(),
-                                    model: fallback_model,
-                                    status: "skipped".to_owned(),
-                                    reason: Some("provider_not_configured".to_owned()),
-                                });
-                                continue;
-                            };
-
-                            if fallback_runtime.api_key.is_none()
-                                && !fallback_runtime.allow_missing_api_key
-                            {
-                                healing_attempts.push(AgentRuntimeSelfHealingAttemptView {
-                                    provider: fallback_provider.clone(),
-                                    model: fallback_model,
-                                    status: "skipped".to_owned(),
-                                    reason: Some("credentials_missing".to_owned()),
-                                });
-                                continue;
-                            }
-                            if !provider_api_mode_supported(&fallback_runtime.api_mode) {
-                                healing_attempts.push(AgentRuntimeSelfHealingAttemptView {
-                                    provider: fallback_provider.clone(),
-                                    model: fallback_model,
-                                    status: "skipped".to_owned(),
-                                    reason: Some(format!(
-                                        "unsupported_api_mode:{}",
-                                        fallback_runtime.api_mode
-                                    )),
-                                });
-                                continue;
-                            }
-
-                            let fallback_resolved = ModelFailoverResolutionView {
-                                model_provider: fallback_provider.clone(),
-                                model: fallback_model.clone(),
-                                auth_profile: resolved.auth_profile.clone(),
-                                fallback_providers: model_provider_failover_chain(
-                                    &fallback_provider,
-                                ),
-                                attempts: vec![ModelFailoverAttemptView {
-                                    provider: fallback_provider.clone(),
-                                    model: fallback_model.clone(),
-                                    auth_profile: resolved.auth_profile.clone(),
-                                    status: "ok".to_owned(),
-                                    reason: Some("self_heal_retry".to_owned()),
-                                }],
-                            };
-
-                            match self
-                                .execute_agent_runtime_turn(AgentRuntimeTurnRequest {
-                                    session_key: resolved_session_key.clone(),
-                                    run_id: run_id.clone(),
-                                    resolved: fallback_resolved,
-                                    provider_runtime: fallback_runtime,
-                                    extra_system_prompt: params.extra_system_prompt.clone(),
-                                    memory_query_text: memory_query_text.clone(),
-                                    workspace_root: workspace_root.clone(),
-                                    config: config_snapshot.config.clone(),
-                                })
-                                .await
-                            {
-                                Ok(outcome) => {
-                                    healing_attempts.push(AgentRuntimeSelfHealingAttemptView {
-                                        provider: fallback_provider.clone(),
-                                        model: fallback_model,
-                                        status: "recovered".to_owned(),
-                                        reason: Some("runtime_retry_succeeded".to_owned()),
-                                    });
-                                    recovered = true;
-                                    runtime_payload = outcome.execution;
-                                    runtime_payload.self_healing =
-                                        Some(AgentRuntimeSelfHealingView {
-                                            enabled: true,
-                                            recovered: true,
-                                            attempts: healing_attempts.clone(),
-                                        });
-                                    runtime_payload.reason = None;
-
-                                    if let Some(assistant_text) = outcome.assistant_text {
-                                        let assistant_memory_text = assistant_text.clone();
-                                        let _ = self
-                                            .sessions
-                                            .record_send(SessionSend {
-                                                session_key: resolved_session_key.clone(),
-                                                request_id: Some(run_id.clone()),
-                                                message: Some(assistant_text),
-                                                command: None,
-                                                source: "agent.assistant".to_owned(),
-                                                channel: Some("webchat".to_owned()),
-                                                to: None,
-                                                account_id: None,
-                                                thread_id: None,
-                                                reply_back: None,
-                                            })
-                                            .await;
-                                        let _ = self
-                                            .memory
-                                            .remember(MemoryRememberInput {
-                                                session_key: resolved_session_key.clone(),
-                                                source: "agent.assistant".to_owned(),
-                                                text: assistant_memory_text,
-                                                request_id: Some(run_id.clone()),
-                                                at_ms: None,
-                                            })
-                                            .await;
-                                    }
-                                    self.system
-                                        .log_line(format!(
-                                            "agent.self_heal recovered runId={} provider={} model={}",
-                                            run_id, runtime_payload.provider, runtime_payload.model
-                                        ))
-                                        .await;
-                                    self.agent_runs.complete_ok(run_id.clone()).await;
-                                    run_completed = true;
+                        if self_healing_runtime.enabled && self_healing_runtime.max_attempts > 0 {
+                            for fallback_provider_raw in &resolved.fallback_providers {
+                                if tried_count >= self_healing_runtime.max_attempts {
                                     break;
                                 }
-                                Err(retry_err) => {
-                                    final_error = retry_err.clone();
+                                let fallback_provider =
+                                    normalize_provider_id(fallback_provider_raw);
+                                if fallback_provider.eq_ignore_ascii_case(&resolved.model_provider)
+                                {
+                                    continue;
+                                }
+                                if attempted_providers.iter().any(|existing| {
+                                    existing.eq_ignore_ascii_case(&fallback_provider)
+                                }) {
+                                    continue;
+                                }
+
+                                if tried_count > 0 && self_healing_runtime.backoff_ms > 0 {
+                                    tokio::time::sleep(Duration::from_millis(
+                                        self_healing_runtime.backoff_ms,
+                                    ))
+                                    .await;
+                                }
+                                attempted_providers.push(fallback_provider.clone());
+                                tried_count = tried_count.saturating_add(1);
+
+                                let fallback_model =
+                                    ModelRegistry::default_model_for_provider_in_catalog(
+                                        &catalog,
+                                        &fallback_provider,
+                                    )
+                                    .map(|entry| entry.id)
+                                    .unwrap_or_else(|| resolved.model.clone());
+
+                                let Some(fallback_runtime) = resolve_provider_runtime_config(
+                                    &config_snapshot.config,
+                                    &fallback_provider,
+                                ) else {
                                     healing_attempts.push(AgentRuntimeSelfHealingAttemptView {
                                         provider: fallback_provider.clone(),
                                         model: fallback_model,
-                                        status: "failed".to_owned(),
-                                        reason: Some(truncate_text(&retry_err, 160)),
+                                        status: "skipped".to_owned(),
+                                        reason: Some("provider_not_configured".to_owned()),
                                     });
+                                    continue;
+                                };
+
+                                if fallback_runtime.api_key.is_none()
+                                    && !fallback_runtime.allow_missing_api_key
+                                {
+                                    healing_attempts.push(AgentRuntimeSelfHealingAttemptView {
+                                        provider: fallback_provider.clone(),
+                                        model: fallback_model,
+                                        status: "skipped".to_owned(),
+                                        reason: Some("credentials_missing".to_owned()),
+                                    });
+                                    continue;
+                                }
+                                if !provider_api_mode_supported(&fallback_runtime.api_mode) {
+                                    healing_attempts.push(AgentRuntimeSelfHealingAttemptView {
+                                        provider: fallback_provider.clone(),
+                                        model: fallback_model,
+                                        status: "skipped".to_owned(),
+                                        reason: Some(format!(
+                                            "unsupported_api_mode:{}",
+                                            fallback_runtime.api_mode
+                                        )),
+                                    });
+                                    continue;
+                                }
+
+                                let fallback_resolved = ModelFailoverResolutionView {
+                                    model_provider: fallback_provider.clone(),
+                                    model: fallback_model.clone(),
+                                    auth_profile: resolved.auth_profile.clone(),
+                                    fallback_providers: model_provider_failover_chain(
+                                        &fallback_provider,
+                                    ),
+                                    attempts: vec![ModelFailoverAttemptView {
+                                        provider: fallback_provider.clone(),
+                                        model: fallback_model.clone(),
+                                        auth_profile: resolved.auth_profile.clone(),
+                                        status: "ok".to_owned(),
+                                        reason: Some("self_heal_retry".to_owned()),
+                                    }],
+                                };
+
+                                match self
+                                    .execute_agent_runtime_turn(AgentRuntimeTurnRequest {
+                                        session_key: resolved_session_key.clone(),
+                                        run_id: run_id.clone(),
+                                        resolved: fallback_resolved,
+                                        provider_runtime: fallback_runtime,
+                                        extra_system_prompt: params.extra_system_prompt.clone(),
+                                        memory_query_text: memory_query_text.clone(),
+                                        workspace_root: workspace_root.clone(),
+                                        config: config_snapshot.config.clone(),
+                                    })
+                                    .await
+                                {
+                                    Ok(outcome) => {
+                                        healing_attempts.push(AgentRuntimeSelfHealingAttemptView {
+                                            provider: fallback_provider.clone(),
+                                            model: fallback_model,
+                                            status: "recovered".to_owned(),
+                                            reason: Some("runtime_retry_succeeded".to_owned()),
+                                        });
+                                        recovered = true;
+                                        runtime_payload = outcome.execution;
+                                        runtime_payload.self_healing =
+                                            Some(AgentRuntimeSelfHealingView {
+                                                enabled: true,
+                                                recovered: true,
+                                                profile: Some(self_heal_profile.clone()),
+                                                max_attempts: Some(
+                                                    self_healing_runtime.max_attempts,
+                                                ),
+                                                backoff_ms: Some(self_healing_runtime.backoff_ms),
+                                                attempts: healing_attempts.clone(),
+                                            });
+                                        runtime_payload.reason = None;
+
+                                        if let Some(assistant_text) = outcome.assistant_text {
+                                            let assistant_memory_text = assistant_text.clone();
+                                            let _ = self
+                                                .sessions
+                                                .record_send(SessionSend {
+                                                    session_key: resolved_session_key.clone(),
+                                                    request_id: Some(run_id.clone()),
+                                                    message: Some(assistant_text),
+                                                    command: None,
+                                                    source: "agent.assistant".to_owned(),
+                                                    channel: Some("webchat".to_owned()),
+                                                    to: None,
+                                                    account_id: None,
+                                                    thread_id: None,
+                                                    reply_back: None,
+                                                })
+                                                .await;
+                                            let _ = self
+                                                .memory
+                                                .remember(MemoryRememberInput {
+                                                    session_key: resolved_session_key.clone(),
+                                                    source: "agent.assistant".to_owned(),
+                                                    text: assistant_memory_text,
+                                                    request_id: Some(run_id.clone()),
+                                                    at_ms: None,
+                                                })
+                                                .await;
+                                        }
+                                        self.system
+                                            .log_line(format!(
+                                                "agent.self_heal recovered runId={} provider={} model={} profile={} maxAttempts={} backoffMs={}",
+                                                run_id,
+                                                runtime_payload.provider,
+                                                runtime_payload.model,
+                                                self_heal_profile.as_str(),
+                                                self_healing_runtime.max_attempts,
+                                                self_healing_runtime.backoff_ms
+                                            ))
+                                            .await;
+                                        self.agent_runs.complete_ok(run_id.clone()).await;
+                                        run_completed = true;
+                                        break;
+                                    }
+                                    Err(retry_err) => {
+                                        final_error = retry_err.clone();
+                                        healing_attempts.push(AgentRuntimeSelfHealingAttemptView {
+                                            provider: fallback_provider.clone(),
+                                            model: fallback_model,
+                                            status: "failed".to_owned(),
+                                            reason: Some(truncate_text(&retry_err, 160)),
+                                        });
+                                    }
                                 }
                             }
                         }
 
                         if !recovered {
                             runtime_payload.reason = Some(final_error.clone());
-                            if !healing_attempts.is_empty() {
-                                runtime_payload.self_healing = Some(AgentRuntimeSelfHealingView {
-                                    enabled: true,
-                                    recovered: false,
-                                    attempts: healing_attempts,
-                                });
-                            }
+                            runtime_payload.self_healing = Some(AgentRuntimeSelfHealingView {
+                                enabled: self_healing_runtime.enabled,
+                                recovered: false,
+                                profile: Some(self_heal_profile),
+                                max_attempts: Some(self_healing_runtime.max_attempts),
+                                backoff_ms: Some(self_healing_runtime.backoff_ms),
+                                attempts: healing_attempts,
+                            });
                             self.agent_runs
                                 .complete_error(run_id.clone(), final_error)
                                 .await;
@@ -9207,6 +9254,56 @@ struct ProviderRuntimeConfig {
     request_overrides: serde_json::Map<String, Value>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeFeatureProfile {
+    Core,
+    Edge,
+}
+
+impl RuntimeFeatureProfile {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Core => "core",
+            Self::Edge => "edge",
+        }
+    }
+
+    fn from_raw(raw: &str) -> Option<Self> {
+        match normalize(raw).as_str() {
+            "core" => Some(Self::Core),
+            "edge" => Some(Self::Edge),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AgentSelfHealingRuntimeConfig {
+    profile: RuntimeFeatureProfile,
+    enabled: bool,
+    max_attempts: usize,
+    backoff_ms: u64,
+}
+
+impl AgentSelfHealingRuntimeConfig {
+    fn defaults_for_profile(profile: RuntimeFeatureProfile) -> Self {
+        match profile {
+            RuntimeFeatureProfile::Core => Self {
+                profile,
+                enabled: true,
+                max_attempts: AGENT_SELF_HEAL_DEFAULT_MAX_ATTEMPTS_CORE,
+                backoff_ms: AGENT_SELF_HEAL_DEFAULT_BACKOFF_MS_CORE,
+            },
+            RuntimeFeatureProfile::Edge => Self {
+                profile,
+                enabled: true,
+                max_attempts: AGENT_SELF_HEAL_DEFAULT_MAX_ATTEMPTS_EDGE,
+                backoff_ms: AGENT_SELF_HEAL_DEFAULT_BACKOFF_MS_EDGE,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 struct AgentRuntimeExecutionView {
     executed: bool,
@@ -9232,6 +9329,12 @@ struct AgentRuntimeExecutionView {
 struct AgentRuntimeSelfHealingView {
     enabled: bool,
     recovered: bool,
+    #[serde(rename = "profile", skip_serializing_if = "Option::is_none")]
+    profile: Option<String>,
+    #[serde(rename = "maxAttempts", skip_serializing_if = "Option::is_none")]
+    max_attempts: Option<usize>,
+    #[serde(rename = "backoffMs", skip_serializing_if = "Option::is_none")]
+    backoff_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     attempts: Vec<AgentRuntimeSelfHealingAttemptView>,
 }
@@ -14740,8 +14843,9 @@ async fn synthesize_tts_audio_blob_with_provider(
     text: &str,
     output_format: &str,
     preferred_provider: &str,
+    profile: RuntimeFeatureProfile,
 ) -> TtsAudioBlob {
-    for provider in tts_provider_order(preferred_provider) {
+    for provider in tts_provider_order(preferred_provider, profile) {
         if provider == "kittentts" {
             if let Some(blob) = try_synthesize_tts_audio_blob_kittentts(text, output_format).await {
                 return blob;
@@ -14974,17 +15078,23 @@ fn is_supported_tts_provider(provider: &str) -> bool {
     matches!(provider, "openai" | "elevenlabs" | "kittentts" | "edge")
 }
 
-fn tts_provider_order(primary: &str) -> Vec<&'static str> {
+fn tts_provider_order(primary: &str, profile: RuntimeFeatureProfile) -> Vec<&'static str> {
     let normalized = normalize(primary);
-    let mut order = vec!["openai", "elevenlabs", "kittentts", "edge"];
+    let mut order = match profile {
+        RuntimeFeatureProfile::Core => vec!["openai", "elevenlabs", "edge"],
+        RuntimeFeatureProfile::Edge => vec!["openai", "elevenlabs", "kittentts", "edge"],
+    };
+    if normalized == "kittentts" && !order.contains(&"kittentts") {
+        order.push("kittentts");
+    }
     if let Some(index) = order.iter().position(|candidate| *candidate == normalized) {
         order.swap(0, index);
     }
     order
 }
 
-fn tts_fallback_providers(primary: &str) -> Vec<String> {
-    tts_provider_order(primary)
+fn tts_fallback_providers(primary: &str, profile: RuntimeFeatureProfile) -> Vec<String> {
+    tts_provider_order(primary, profile)
         .into_iter()
         .skip(1)
         .map(str::to_owned)
@@ -20223,6 +20333,174 @@ fn memory_runtime_config_from_config(config: &Value) -> MemoryRuntimeConfig {
         recall_top_k,
         recall_min_score,
     }
+}
+
+fn runtime_feature_profile_from_config(config: &Value) -> RuntimeFeatureProfile {
+    if let Ok(raw) = env::var(RUNTIME_PROFILE_ENV) {
+        if let Some(profile) = RuntimeFeatureProfile::from_raw(&raw) {
+            return profile;
+        }
+    }
+
+    let runtime = config.get("runtime").and_then(Value::as_object);
+    let root = config.as_object();
+    runtime
+        .and_then(|obj| {
+            read_config_string(obj, &["profile", "runtimeProfile", "runtime_profile"], 32)
+        })
+        .or_else(|| {
+            root.and_then(|obj| {
+                read_config_string(obj, &["profile", "runtimeProfile", "runtime_profile"], 32)
+            })
+        })
+        .and_then(|raw| RuntimeFeatureProfile::from_raw(&raw))
+        .unwrap_or(RuntimeFeatureProfile::Core)
+}
+
+fn agent_self_healing_runtime_config_from_config(config: &Value) -> AgentSelfHealingRuntimeConfig {
+    let profile = runtime_feature_profile_from_config(config);
+    let mut runtime = AgentSelfHealingRuntimeConfig::defaults_for_profile(profile);
+
+    let root = config.as_object();
+    let runtime_obj = config.get("runtime").and_then(Value::as_object);
+    let agent_obj = config.get("agent").and_then(Value::as_object);
+    let self_healing_obj = config.get("selfHealing").and_then(Value::as_object);
+    let runtime_self_healing =
+        runtime_obj.and_then(|obj| read_config_object(obj, &["selfHealing", "self_healing"]));
+    let agent_self_healing =
+        agent_obj.and_then(|obj| read_config_object(obj, &["selfHealing", "self_healing"]));
+
+    let enabled = runtime_self_healing
+        .and_then(|obj| read_config_bool(obj, &["enabled"]))
+        .or_else(|| agent_self_healing.and_then(|obj| read_config_bool(obj, &["enabled"])))
+        .or_else(|| self_healing_obj.and_then(|obj| read_config_bool(obj, &["enabled"])))
+        .or_else(|| {
+            runtime_obj.and_then(|obj| {
+                read_config_bool(
+                    obj,
+                    &[
+                        "agentSelfHealingEnabled",
+                        "agent_self_healing_enabled",
+                        "selfHealingEnabled",
+                        "self_healing_enabled",
+                    ],
+                )
+            })
+        })
+        .or_else(|| {
+            root.and_then(|obj| {
+                read_config_bool(
+                    obj,
+                    &[
+                        "agentSelfHealingEnabled",
+                        "agent_self_healing_enabled",
+                        "selfHealingEnabled",
+                        "self_healing_enabled",
+                    ],
+                )
+            })
+        })
+        .or_else(|| {
+            env::var(AGENT_SELF_HEAL_ENABLED_ENV)
+                .ok()
+                .and_then(|raw| json_value_as_bool(&Value::String(raw)))
+        });
+
+    let max_attempts = runtime_self_healing
+        .and_then(|obj| read_config_usize(obj, &["maxAttempts", "max_attempts"]))
+        .or_else(|| {
+            agent_self_healing
+                .and_then(|obj| read_config_usize(obj, &["maxAttempts", "max_attempts"]))
+        })
+        .or_else(|| {
+            self_healing_obj
+                .and_then(|obj| read_config_usize(obj, &["maxAttempts", "max_attempts"]))
+        })
+        .or_else(|| {
+            runtime_obj.and_then(|obj| {
+                read_config_usize(
+                    obj,
+                    &[
+                        "agentSelfHealingMaxAttempts",
+                        "agent_self_healing_max_attempts",
+                        "selfHealingMaxAttempts",
+                        "self_healing_max_attempts",
+                    ],
+                )
+            })
+        })
+        .or_else(|| {
+            root.and_then(|obj| {
+                read_config_usize(
+                    obj,
+                    &[
+                        "agentSelfHealingMaxAttempts",
+                        "agent_self_healing_max_attempts",
+                        "selfHealingMaxAttempts",
+                        "self_healing_max_attempts",
+                    ],
+                )
+            })
+        })
+        .or_else(|| {
+            env::var(AGENT_SELF_HEAL_MAX_ATTEMPTS_ENV)
+                .ok()
+                .and_then(|raw| raw.trim().parse::<usize>().ok())
+        })
+        .map(|value| value.min(AGENT_SELF_HEAL_MAX_ATTEMPTS_CAP));
+
+    let backoff_ms = runtime_self_healing
+        .and_then(|obj| read_config_u64(obj, &["backoffMs", "backoff_ms"]))
+        .or_else(|| {
+            agent_self_healing.and_then(|obj| read_config_u64(obj, &["backoffMs", "backoff_ms"]))
+        })
+        .or_else(|| {
+            self_healing_obj.and_then(|obj| read_config_u64(obj, &["backoffMs", "backoff_ms"]))
+        })
+        .or_else(|| {
+            runtime_obj.and_then(|obj| {
+                read_config_u64(
+                    obj,
+                    &[
+                        "agentSelfHealingBackoffMs",
+                        "agent_self_healing_backoff_ms",
+                        "selfHealingBackoffMs",
+                        "self_healing_backoff_ms",
+                    ],
+                )
+            })
+        })
+        .or_else(|| {
+            root.and_then(|obj| {
+                read_config_u64(
+                    obj,
+                    &[
+                        "agentSelfHealingBackoffMs",
+                        "agent_self_healing_backoff_ms",
+                        "selfHealingBackoffMs",
+                        "self_healing_backoff_ms",
+                    ],
+                )
+            })
+        })
+        .or_else(|| {
+            env::var(AGENT_SELF_HEAL_BACKOFF_MS_ENV)
+                .ok()
+                .and_then(|raw| raw.trim().parse::<u64>().ok())
+        })
+        .map(|value| value.min(AGENT_SELF_HEAL_MAX_BACKOFF_MS));
+
+    if let Some(enabled) = enabled {
+        runtime.enabled = enabled;
+    }
+    if let Some(max_attempts) = max_attempts {
+        runtime.max_attempts = max_attempts;
+    }
+    if let Some(backoff_ms) = backoff_ms {
+        runtime.backoff_ms = backoff_ms;
+    }
+
+    runtime
 }
 
 fn channel_runtime_config_from_config(config: &Value) -> ChannelRuntimeConfig {
@@ -28204,6 +28482,24 @@ mod tests {
                         .and_then(Value::as_bool),
                     Some(true)
                 );
+                assert_eq!(
+                    payload
+                        .pointer("/runtime/selfHealing/profile")
+                        .and_then(Value::as_str),
+                    Some("core")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/runtime/selfHealing/maxAttempts")
+                        .and_then(Value::as_u64),
+                    Some(1)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/runtime/selfHealing/backoffMs")
+                        .and_then(Value::as_u64),
+                    Some(250)
+                );
                 assert!(payload
                     .pointer("/runtime/selfHealing/attempts")
                     .and_then(Value::as_array)
@@ -32426,6 +32722,79 @@ mod tests {
                 );
             }
             _ => panic!("expected tts.disable handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_tts_status_runtime_profile_controls_offline_defaults() {
+        let dispatcher = RpcDispatcher::new();
+
+        patch_config(&dispatcher, json!({ "runtime": { "profile": "core" } })).await;
+        let status_core = RpcRequestFrame {
+            id: "req-tts-status-core-profile".to_owned(),
+            method: "tts.status".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher.handle_request(&status_core).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/runtimeProfile").and_then(Value::as_str),
+                    Some("core")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/offlineVoice/kittenttsDefaultEnabled")
+                        .and_then(Value::as_bool),
+                    Some(false)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/offlineVoice/recommendedProvider")
+                        .and_then(Value::as_str),
+                    Some("edge")
+                );
+                assert!(payload
+                    .pointer("/fallbackProviders")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| !items
+                        .iter()
+                        .any(|entry| entry.as_str() == Some("kittentts"))));
+            }
+            _ => panic!("expected tts.status handled for core profile"),
+        }
+
+        patch_config(&dispatcher, json!({ "runtime": { "profile": "edge" } })).await;
+        let status_edge = RpcRequestFrame {
+            id: "req-tts-status-edge-profile".to_owned(),
+            method: "tts.status".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher.handle_request(&status_edge).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/runtimeProfile").and_then(Value::as_str),
+                    Some("edge")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/offlineVoice/kittenttsDefaultEnabled")
+                        .and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/offlineVoice/recommendedProvider")
+                        .and_then(Value::as_str),
+                    Some("kittentts")
+                );
+                assert!(payload
+                    .pointer("/fallbackProviders")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| items
+                        .iter()
+                        .any(|entry| entry.as_str() == Some("kittentts"))));
+            }
+            _ => panic!("expected tts.status handled for edge profile"),
         }
     }
 

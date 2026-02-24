@@ -17,7 +17,7 @@ provider runtime, persistence, performance strategy, and release layout), see:
 - Feature audit scoreboard: `22 implemented`, `0 partial`, `0 deferred`.
 - RPC method-surface parity: `103` Rust methods, `100%` coverage vs upstream base + handlers.
 - Runtime audit: blanket dead-code suppression removed; only targeted transcript-entry allowance remains in `tool_runtime` for parity/test inspection fields.
-- 1.6.5 release-track integrations added:
+- 1.6.6 release-track integrations added:
   - Added a native Rust `zvec`-style persistent vector memory engine (`src/persistent_memory.rs`) with bounded on-disk storage and cosine top-k recall.
   - Added a native Rust `graphlite`-style persistent graph memory store (session/concept nodes + mention/co-occurrence edges) with synthesized graph facts for recall.
   - Wired memory ingestion into the live `agent` runtime path for both user turns and assistant outputs.
@@ -27,6 +27,8 @@ provider runtime, persistence, performance strategy, and release layout), see:
 - Current core/edge release-track additions:
   - Added light self-healing runtime retries for `agent` execution failures with structured `runtime.selfHealing` response telemetry.
   - Added offline voice provider surface for `kittentts` (lazy local-binary mode, optional via `OPENCLAW_RS_KITTENTTS_BIN`).
+  - Added profile-aware runtime defaults (`runtime.profile`: `core`/`edge`) used by TTS fallback behavior and self-healing policy.
+  - Added configurable self-healing policy controls (`runtime.selfHealing.enabled`, `runtime.selfHealing.maxAttempts`, `runtime.selfHealing.backoffMs`) plus env overrides (`OPENCLAW_RS_AGENT_SELF_HEAL_*`).
   - Added dual-track planning artifacts: `CORE_EDGE_RELEASE_PLAN_TABLE3_TABLE4.md` and issue template `.github/ISSUE_CORE_EDGE_RELEASE_PLAN.md`.
 - Latest full validation matrix:
   - `cargo test` -> `361` passed (`1` ignored)

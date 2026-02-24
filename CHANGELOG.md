@@ -5,6 +5,35 @@
 ### Highlights
 - No unreleased changes.
 
+## v1.6.6 - 2026-02-24
+
+### Highlights
+- Added profile-aware core/edge runtime defaults:
+  - `runtime.profile` now supports `core` and `edge`.
+  - TTS fallback order now respects profile defaults (core keeps offline `kittentts` opt-in; edge enables `kittentts` fallback by default).
+  - `tts.status` now reports `runtimeProfile` and offline voice recommendation metadata.
+- Added configurable self-healing policy controls for `agent` runtime retries:
+  - `runtime.selfHealing.enabled`
+  - `runtime.selfHealing.maxAttempts`
+  - `runtime.selfHealing.backoffMs`
+  - plus env overrides: `OPENCLAW_RS_AGENT_SELF_HEAL_ENABLED`, `OPENCLAW_RS_AGENT_SELF_HEAL_MAX_ATTEMPTS`, `OPENCLAW_RS_AGENT_SELF_HEAL_BACKOFF_MS`.
+- Extended self-healing telemetry to include policy metadata under `runtime.selfHealing`:
+  - `profile`, `maxAttempts`, `backoffMs`, `enabled`, `recovered`, `attempts`.
+- Added/updated test coverage:
+  - `dispatcher_tts_status_runtime_profile_controls_offline_defaults`
+  - extended `dispatcher_agent_runtime_self_heals_with_fallback_provider_retry` assertions for policy metadata.
+
+### Validation
+- `cargo fmt --all -- --check`
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo test`
+- `cargo test --features sqlite-state`
+- `./scripts/parity/run-cp0-gate.ps1`
+- `cargo +1.83.0-x86_64-pc-windows-msvc build --release`
+- `wsl -d Ubuntu-20.04 -- bash -lc 'cd /mnt/c/Users/adyba/openclaw-rust && CARGO_TARGET_DIR=target-linux-ubuntu20 /root/.cargo/bin/cargo +1.83.0 check'`
+- `wsl -d Ubuntu-20.04 -- bash -lc 'cd /mnt/c/Users/adyba/openclaw-rust && CARGO_TARGET_DIR=target-linux-ubuntu20 /root/.cargo/bin/cargo +1.83.0 test --no-run'`
+- `wsl -d Ubuntu-20.04 -- bash -lc 'cd /mnt/c/Users/adyba/openclaw-rust && CARGO_TARGET_DIR=target-linux-ubuntu20 /root/.cargo/bin/cargo +1.83.0 build --release'`
+
 ## v1.6.5 - 2026-02-24
 
 ### Highlights

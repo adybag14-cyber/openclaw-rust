@@ -101,7 +101,7 @@ Long-term (research/high-complexity):
 - [x] Add offline provider metadata to `tts.status` and `tts.providers`.
 - [x] Keep lazy behavior: offline binary only used if configured.
 - [ ] Add optional transcription path (tiny-whisper style) in follow-up.
-- [ ] Add profile default differences (core disabled-by-default, edge recommended).
+- [x] Add profile default differences (core disabled-by-default, edge recommended).
 
 Acceptance checks:
 
@@ -114,7 +114,7 @@ Acceptance checks:
 - [x] Add bounded runtime self-heal retry attempts on agent turn failure.
 - [x] Retry against fallback providers when runtime call fails.
 - [x] Emit structured runtime self-healing telemetry (`runtime.selfHealing`).
-- [ ] Add policy knobs for max attempts and backoff tuning (follow-up).
+- [x] Add policy knobs for max attempts and backoff tuning.
 
 Acceptance checks:
 

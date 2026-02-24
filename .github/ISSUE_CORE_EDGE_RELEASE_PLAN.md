@@ -27,7 +27,7 @@ Reference plan:
 - [x] Add bounded runtime self-heal retry path for `agent` execution failures.
 - [x] Retry across fallback provider chain.
 - [x] Emit structured self-healing telemetry in runtime payload.
-- [ ] Add policy knobs for retry/backoff tuning (follow-up).
+- [x] Add policy knobs for retry/backoff tuning.
 
 ## Core Track Checklist
 
@@ -39,7 +39,7 @@ Reference plan:
 ## Edge Track Checklist
 
 - [ ] Keep core baseline plus richer optional capabilities.
-- [ ] Keep offline voice and advanced resilience surfaces enabled/recommended by profile guidance.
+- [x] Keep offline voice and advanced resilience surfaces enabled/recommended by profile guidance.
 - [ ] Validate expanded behavior does not break core defaults.
 
 ## Build and Validation Matrix
@@ -71,4 +71,3 @@ Reference plan:
 - [ ] Keep retries bounded and observable.
 - [ ] Keep offline dependencies optional and discoverable through status endpoints.
 - [ ] Keep explicit rollback path for feature regressions.
-
