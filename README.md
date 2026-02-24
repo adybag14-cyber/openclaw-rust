@@ -30,12 +30,15 @@ provider runtime, persistence, performance strategy, and release layout), see:
   - Added profile-aware runtime defaults (`runtime.profile`: `core`/`edge`) used by TTS fallback behavior and self-healing policy.
   - Added configurable self-healing policy controls (`runtime.selfHealing.enabled`, `runtime.selfHealing.maxAttempts`, `runtime.selfHealing.backoffMs`) plus env overrides (`OPENCLAW_RS_AGENT_SELF_HEAL_*`).
   - Added dual-track planning artifacts: `CORE_EDGE_RELEASE_PLAN_TABLE3_TABLE4.md` and issue template `.github/ISSUE_CORE_EDGE_RELEASE_PLAN.md`.
+  - Added executable enclave attestation bridge flow for `edge.enclave.prove` via configurable binary runtime (`OPENCLAW_RS_ENCLAVE_ATTEST_BIN`) with persisted proof records exposed on `edge.enclave.status`.
+  - Added executable fine-tune trainer flow for `edge.finetune.run` (`dryRun=false`) with bounded trainer timeout/log capture and persisted per-job state exposed through `edge.finetune.status`.
+  - Added live mesh runtime probes to `edge.mesh.status` using `mesh.ping` invoke waits, returning probe success/timeout telemetry and failed-peer summaries.
 - Latest full validation matrix:
-  - `cargo test` -> `361` passed (`1` ignored)
-  - `cargo test --features sqlite-state` -> `365` passed (`1` ignored)
+  - `cargo +1.83.0-x86_64-pc-windows-gnu test` -> `368` passed (`1` ignored)
+  - `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"` -> `372` passed (`1` ignored)
   - `cargo fmt --all -- --check` + `cargo clippy --all-targets -- -D warnings` pass
-  - Windows release build pass: `cargo +1.83.0-x86_64-pc-windows-msvc build --release`
-  - Ubuntu 20.04 WSL build pass: `cargo +1.83.0 build --release` (with `CARGO_TARGET_DIR=target-linux-ubuntu20`)
+  - Windows release builds pass: `cargo +1.83.0-x86_64-pc-windows-msvc build --release` and `cargo +1.83.0-x86_64-pc-windows-gnu build --release`
+  - Ubuntu 20.04 WSL checks pass: `cargo +1.83.0 check`, `cargo +1.83.0 test --no-run`, `cargo +1.83.0 build --release`
 
 ## Implemented runtime coverage
 

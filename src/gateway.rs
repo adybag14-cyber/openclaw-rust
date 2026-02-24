@@ -843,6 +843,8 @@ pub struct RpcDispatcher {
     legacy_cron_notify_warned: Mutex<HashSet<String>>,
     config: ConfigRegistry,
     memory: PersistentMemoryRegistry,
+    edge_enclave_last_proof: Mutex<Option<EdgeEnclaveProofRecord>>,
+    edge_finetune_jobs: Mutex<HashMap<String, EdgeFineTuneJobState>>,
     web_login: WebLoginRegistry,
     oauth: OAuthRegistry,
     wizard: WizardRegistry,
@@ -999,8 +1001,11 @@ const EDGE_ENCLAVE_MODE_ENV: &str = "OPENCLAW_RS_ENCLAVE_MODE";
 const EDGE_ENCLAVE_SGX_ENV: &str = "OPENCLAW_RS_ENCLAVE_SGX";
 const EDGE_ENCLAVE_TPM_ENV: &str = "OPENCLAW_RS_ENCLAVE_TPM";
 const EDGE_ENCLAVE_SEV_ENV: &str = "OPENCLAW_RS_ENCLAVE_SEV";
+const EDGE_ENCLAVE_ATTEST_BIN_ENV: &str = "OPENCLAW_RS_ENCLAVE_ATTEST_BIN";
+const EDGE_ENCLAVE_ATTEST_ARGS_ENV: &str = "OPENCLAW_RS_ENCLAVE_ATTEST_ARGS";
 const EDGE_LORA_TRAINER_BIN_ENV: &str = "OPENCLAW_RS_LORA_TRAINER_BIN";
 const EDGE_LORA_TRAINER_ARGS_ENV: &str = "OPENCLAW_RS_LORA_TRAINER_ARGS";
+const EDGE_LORA_TRAINER_TIMEOUT_MS_ENV: &str = "OPENCLAW_RS_LORA_TRAINER_TIMEOUT_MS";
 const EDGE_HOMOMORPHIC_SCHEME: &str = "additive-mask-v1";
 const TTS_ELEVENLABS_MODELS: &[&str] = &[
     "eleven_multilingual_v2",
@@ -1016,11 +1021,18 @@ const EDGE_WASM_MARKETPLACE_MAX_MODULES: usize = 128;
 const EDGE_SWARM_MAX_TASKS: usize = 24;
 const EDGE_SWARM_MAX_AGENTS: usize = 12;
 const EDGE_MESH_MAX_PEERS: usize = 1_024;
+const EDGE_MESH_MAX_PROBES: usize = 128;
+const EDGE_MESH_DEFAULT_PROBE_TIMEOUT_MS: u64 = 1_500;
+const EDGE_MESH_MAX_PROBE_TIMEOUT_MS: u64 = 30_000;
 const EDGE_HOMOMORPHIC_MAX_CIPHERTEXTS: usize = 4_096;
 const EDGE_FINETUNE_MAX_EPOCHS: u64 = 64;
 const EDGE_FINETUNE_MAX_RANK: u64 = 512;
 const EDGE_FINETUNE_MAX_SAMPLES: u64 = 200_000;
 const EDGE_FINETUNE_MAX_ADAPTER_NAME_CHARS: usize = 128;
+const EDGE_FINETUNE_MAX_LOG_LINES: usize = 120;
+const EDGE_FINETUNE_MAX_LOG_LINE_CHARS: usize = 800;
+const EDGE_FINETUNE_DEFAULT_TIMEOUT_MS: u64 = 3_600_000;
+const EDGE_ENCLAVE_ATTEST_DEFAULT_TIMEOUT_MS: u64 = 15_000;
 const DEFAULT_VOICEWAKE_TRIGGERS: &[&str] = &["openclaw", "claude", "computer"];
 const VOICE_INPUT_DEVICE_DEFAULT: &str = "default-microphone";
 const VOICE_OUTPUT_DEVICE_DEFAULT: &str = "default-speaker";
@@ -1204,6 +1216,8 @@ impl RpcDispatcher {
             legacy_cron_notify_warned: Mutex::new(HashSet::new()),
             config: ConfigRegistry::new(),
             memory: PersistentMemoryRegistry::new(),
+            edge_enclave_last_proof: Mutex::new(None),
+            edge_finetune_jobs: Mutex::new(HashMap::new()),
             web_login: WebLoginRegistry::new(),
             oauth: OAuthRegistry::new(),
             wizard: WizardRegistry::new(),
@@ -2518,6 +2532,12 @@ impl RpcDispatcher {
         let config_snapshot = self.config.get_snapshot().await;
         let runtime_profile = runtime_feature_profile_from_config(&config_snapshot.config);
         let status = detect_edge_enclave_runtime_status();
+        let attestation_binary =
+            edge_enclave_attestation_binary_path().map(|path| path.to_string_lossy().into_owned());
+        let last_proof = {
+            let guard = self.edge_enclave_last_proof.lock().await;
+            guard.clone()
+        };
         RpcDispatchOutcome::Handled(json!({
             "runtimeProfile": runtime_profile.as_str(),
             "activeMode": status.active_mode,
@@ -2528,9 +2548,14 @@ impl RpcDispatcher {
                 "tpm": status.tpm,
                 "sev": status.sev
             },
+            "attestation": {
+                "configured": attestation_binary.is_some(),
+                "binary": attestation_binary,
+                "lastProof": last_proof
+            },
             "zeroKnowledge": {
                 "enabled": true,
-                "scheme": "sha256-commitment-v1",
+                "scheme": "attestation-quote-v1",
                 "proofMethod": "edge.enclave.prove"
             }
         }))
@@ -2553,23 +2578,31 @@ impl RpcDispatcher {
         let config_snapshot = self.config.get_snapshot().await;
         let runtime_profile = runtime_feature_profile_from_config(&config_snapshot.config);
         let status = detect_edge_enclave_runtime_status();
-        let commitment = build_enclave_zero_knowledge_proof(
-            &statement,
-            &nonce,
-            &status.active_mode,
-            runtime_profile,
-        );
+        let proof =
+            build_edge_enclave_proof_record(&statement, &nonce, &status, runtime_profile).await;
+        {
+            let mut guard = self.edge_enclave_last_proof.lock().await;
+            *guard = Some(proof.clone());
+        }
         RpcDispatchOutcome::Handled(json!({
             "runtimeProfile": runtime_profile.as_str(),
             "activeMode": status.active_mode,
-            "statementHash": hash_sha256_hex(&statement),
-            "nonce": nonce,
-            "proof": commitment,
-            "scheme": "sha256-commitment-v1",
+            "statementHash": proof.statement_hash.clone(),
+            "nonce": proof.nonce.clone(),
+            "proof": proof.proof.clone(),
+            "scheme": proof.scheme.clone(),
+            "verified": proof.verified,
+            "source": proof.source.clone(),
+            "quote": proof.quote.clone(),
+            "measurement": proof.measurement.clone(),
+            "error": proof.error.clone(),
+            "attestationBinary": proof.attestation_binary.clone(),
             "verification": {
                 "deterministic": true,
+                "attested": proof.verified,
                 "inputs": ["statement", "nonce", "activeMode", "runtimeProfile"]
-            }
+            },
+            "record": proof
         }))
     }
 
@@ -2599,6 +2632,33 @@ impl RpcDispatcher {
         let device_pairs = self.devices.list().await;
         let peers = build_edge_mesh_peers(&node_pairs, &device_pairs, include_pending);
         let routes = build_edge_mesh_routes(&peers);
+        let probe_runtime = params.probe_runtime.unwrap_or(true);
+        let probe_timeout_ms = params
+            .probe_timeout_ms
+            .unwrap_or(EDGE_MESH_DEFAULT_PROBE_TIMEOUT_MS)
+            .clamp(250, EDGE_MESH_MAX_PROBE_TIMEOUT_MS);
+        let probes = if probe_runtime {
+            self.probe_edge_mesh_links(&peers, probe_timeout_ms).await
+        } else {
+            Vec::new()
+        };
+        let success_count = probes
+            .iter()
+            .filter(|entry| entry.pointer("/ok").and_then(Value::as_bool) == Some(true))
+            .count();
+        let timeout_count = probes
+            .iter()
+            .filter(|entry| entry.pointer("/timedOut").and_then(Value::as_bool) == Some(true))
+            .count();
+        let failed_peers = probes
+            .iter()
+            .filter(|entry| {
+                entry.pointer("/ok").and_then(Value::as_bool) == Some(false)
+                    || entry.pointer("/timedOut").and_then(Value::as_bool) == Some(true)
+            })
+            .filter_map(|entry| entry.pointer("/peerId").and_then(Value::as_str))
+            .map(|value| Value::String(value.to_owned()))
+            .collect::<Vec<_>>();
         let trusted_peer_count = peers
             .iter()
             .filter(|entry| entry.pointer("/paired").and_then(Value::as_bool) == Some(true))
@@ -2616,9 +2676,114 @@ impl RpcDispatcher {
                 "routeCount": routes.len(),
                 "includesPending": include_pending
             },
+            "meshHealth": {
+                "probeEnabled": probe_runtime,
+                "probeTimeoutMs": probe_timeout_ms,
+                "probedPeers": probes.len(),
+                "successCount": success_count,
+                "timeoutCount": timeout_count,
+                "failedPeers": failed_peers,
+                "probes": probes,
+                "lastProbeAtMs": if probe_runtime { Value::from(now_ms()) } else { Value::Null }
+            },
             "peers": peers,
             "routes": routes
         }))
+    }
+
+    async fn probe_edge_mesh_links(&self, peers: &[Value], timeout_ms: u64) -> Vec<Value> {
+        let mut probes = Vec::new();
+        for peer in peers.iter().take(EDGE_MESH_MAX_PROBES) {
+            let peer_id = peer
+                .pointer("/id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let kind = peer
+                .pointer("/kind")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let paired = peer.pointer("/paired").and_then(Value::as_bool) == Some(true);
+            if !paired || !kind.eq_ignore_ascii_case("node") {
+                probes.push(json!({
+                    "peerId": peer_id,
+                    "kind": kind,
+                    "ok": false,
+                    "timedOut": false,
+                    "status": "unsupported",
+                    "reason": "mesh runtime probe currently supports paired node peers"
+                }));
+                continue;
+            }
+            let Some(node_id) = peer
+                .pointer("/nodeId")
+                .and_then(Value::as_str)
+                .and_then(|value| normalize_optional_text(Some(value.to_owned()), 256))
+            else {
+                probes.push(json!({
+                    "peerId": peer_id,
+                    "kind": kind,
+                    "ok": false,
+                    "timedOut": false,
+                    "status": "invalid",
+                    "reason": "missing nodeId"
+                }));
+                continue;
+            };
+
+            let started_at_ms = now_ms();
+            let idempotency_key = format!("mesh-ping-{node_id}-{started_at_ms}");
+            let (invoke_id, waiter) = self
+                .node_runtime
+                .begin_invoke_with_wait(&node_id, "mesh.ping", Some(timeout_ms), &idempotency_key)
+                .await;
+            let completion = tokio::time::timeout(Duration::from_millis(timeout_ms), waiter).await;
+            match completion {
+                Ok(Ok(result)) => {
+                    probes.push(json!({
+                        "peerId": peer_id,
+                        "kind": kind,
+                        "nodeId": node_id,
+                        "invokeId": invoke_id,
+                        "ok": result.ok,
+                        "timedOut": false,
+                        "status": if result.ok { "ok" } else { "error" },
+                        "payload": result.payload,
+                        "errorCode": result.error.as_ref().and_then(|value| value.code.clone()),
+                        "errorMessage": result.error.as_ref().and_then(|value| value.message.clone()),
+                        "latencyMs": now_ms().saturating_sub(started_at_ms)
+                    }));
+                }
+                Ok(Err(_)) => {
+                    probes.push(json!({
+                        "peerId": peer_id,
+                        "kind": kind,
+                        "nodeId": node_id,
+                        "invokeId": invoke_id,
+                        "ok": false,
+                        "timedOut": false,
+                        "status": "error",
+                        "reason": "probe waiter dropped",
+                        "latencyMs": now_ms().saturating_sub(started_at_ms)
+                    }));
+                }
+                Err(_) => {
+                    self.node_runtime.cancel_invoke(&invoke_id).await;
+                    probes.push(json!({
+                        "peerId": peer_id,
+                        "kind": kind,
+                        "nodeId": node_id,
+                        "invokeId": invoke_id,
+                        "ok": false,
+                        "timedOut": true,
+                        "status": "timeout",
+                        "latencyMs": now_ms().saturating_sub(started_at_ms)
+                    }));
+                }
+            }
+        }
+        probes
     }
 
     async fn handle_edge_homomorphic_compute(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
@@ -2690,6 +2855,27 @@ impl RpcDispatcher {
                 "edges": memory_stats.graph_edges
             }),
         ];
+        let mut jobs = {
+            let guard = self.edge_finetune_jobs.lock().await;
+            guard.values().cloned().collect::<Vec<_>>()
+        };
+        jobs.sort_by(|a, b| {
+            b.started_at_ms
+                .cmp(&a.started_at_ms)
+                .then_with(|| b.job_id.cmp(&a.job_id))
+        });
+        if jobs.len() > 64 {
+            jobs.truncate(64);
+        }
+        let running_jobs = jobs
+            .iter()
+            .filter(|job| job.status == "running" || job.status == "queued")
+            .count();
+        let completed_jobs = jobs.iter().filter(|job| job.status == "completed").count();
+        let failed_jobs = jobs
+            .iter()
+            .filter(|job| job.status == "failed" || job.status == "timeout")
+            .count();
         RpcDispatchOutcome::Handled(json!({
             "runtimeProfile": runtime_profile.as_str(),
             "feature": "on-device-finetune-self-evolution",
@@ -2710,7 +2896,14 @@ impl RpcDispatcher {
                 "graphNodes": memory_stats.graph_nodes,
                 "graphEdges": memory_stats.graph_edges
             },
-            "datasetSources": dataset_sources
+            "datasetSources": dataset_sources,
+            "jobs": jobs,
+            "jobStats": {
+                "running": running_jobs,
+                "completed": completed_jobs,
+                "failed": failed_jobs,
+                "total": running_jobs + completed_jobs + failed_jobs
+            }
         }))
     }
 
@@ -2792,44 +2985,43 @@ impl RpcDispatcher {
                 "edge.finetune.run requires datasetPath or autoIngestMemory=true with memory data",
             );
         }
-        let trainer_binary =
-            edge_lora_trainer_binary_path().map(|path| path.to_string_lossy().into_owned());
-        let mut suggested_command = trainer_binary.as_ref().map(|binary| {
-            let mut argv = edge_lora_trainer_args();
-            argv.extend([
-                "--model".to_owned(),
-                selected_model.id.clone(),
-                "--provider".to_owned(),
-                selected_model.provider.clone(),
-                "--adapter".to_owned(),
-                adapter_name.clone(),
-                "--rank".to_owned(),
-                rank.to_string(),
-                "--epochs".to_owned(),
-                epochs.to_string(),
-                "--lr".to_owned(),
-                format!("{learning_rate:.6}"),
-                "--max-samples".to_owned(),
-                max_samples.to_string(),
-                "--output".to_owned(),
-                output_path.clone(),
-            ]);
-            if let Some(path) = dataset_path.clone() {
-                argv.push("--dataset".to_owned());
-                argv.push(path);
-            }
-            json!({
-                "binary": binary,
-                "argv": argv
-            })
-        });
-        if suggested_command.is_none() {
-            suggested_command = Some(json!({
-                "binary": Value::Null,
-                "argv": [],
-                "note": "set OPENCLAW_RS_LORA_TRAINER_BIN to execute real LoRA fine-tuning"
-            }));
+        let trainer_binary = edge_lora_trainer_binary_path();
+        if !dry_run && trainer_binary.is_none() {
+            return RpcDispatchOutcome::bad_request(format!(
+                "edge.finetune.run requires {} when dryRun=false",
+                EDGE_LORA_TRAINER_BIN_ENV
+            ));
         }
+        let mut trainer_argv = edge_lora_trainer_args();
+        trainer_argv.extend([
+            "--model".to_owned(),
+            selected_model.id.clone(),
+            "--provider".to_owned(),
+            selected_model.provider.clone(),
+            "--adapter".to_owned(),
+            adapter_name.clone(),
+            "--rank".to_owned(),
+            rank.to_string(),
+            "--epochs".to_owned(),
+            epochs.to_string(),
+            "--lr".to_owned(),
+            format!("{learning_rate:.6}"),
+            "--max-samples".to_owned(),
+            max_samples.to_string(),
+            "--output".to_owned(),
+            output_path.clone(),
+        ]);
+        if let Some(path) = dataset_path.clone() {
+            trainer_argv.push("--dataset".to_owned());
+            trainer_argv.push(path);
+        }
+        let suggested_command = json!({
+            "binary": trainer_binary
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+            "argv": trainer_argv,
+            "timeoutMs": edge_lora_trainer_timeout_ms()
+        });
         let job_id = format!("finetune-{}", now_ms());
         let manifest = json!({
             "jobId": job_id,
@@ -2885,9 +3077,209 @@ impl RpcDispatcher {
                 ));
             }
         }
+        let mut job_state = EdgeFineTuneJobState {
+            job_id: job_id.clone(),
+            status: if dry_run {
+                "dry-run".to_owned()
+            } else {
+                "queued".to_owned()
+            },
+            started_at_ms: now_ms(),
+            completed_at_ms: if dry_run { Some(now_ms()) } else { None },
+            exit_code: None,
+            adapter_name: adapter_name.clone(),
+            output_path: output_path.clone(),
+            dry_run,
+            command: Some(suggested_command.clone()),
+            log_tail: Vec::new(),
+            error: None,
+        };
+        {
+            let mut guard = self.edge_finetune_jobs.lock().await;
+            guard.insert(job_id.clone(), job_state.clone());
+            while guard.len() > 256 {
+                let Some(oldest_id) = guard
+                    .iter()
+                    .min_by_key(|(_, state)| state.started_at_ms)
+                    .map(|(id, _)| id.clone())
+                else {
+                    break;
+                };
+                let _ = guard.remove(&oldest_id);
+            }
+        }
+
+        let mut execution = json!({
+            "attempted": false,
+            "success": dry_run,
+            "timedOut": false,
+            "timeoutMs": edge_lora_trainer_timeout_ms(),
+            "binary": trainer_binary
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+            "argv": suggested_command.pointer("/argv").cloned().unwrap_or(Value::Array(Vec::new())),
+            "exitCode": Value::Null,
+            "error": Value::Null,
+            "logTail": Value::Array(Vec::new())
+        });
+        if !dry_run {
+            let timeout_ms = edge_lora_trainer_timeout_ms();
+            if let Some(binary_path) = trainer_binary.as_ref() {
+                if !binary_path.is_file() {
+                    job_state.status = "failed".to_owned();
+                    job_state.completed_at_ms = Some(now_ms());
+                    job_state.error = Some(format!(
+                        "trainer binary not found at {}",
+                        binary_path.to_string_lossy()
+                    ));
+                    {
+                        let mut guard = self.edge_finetune_jobs.lock().await;
+                        guard.insert(job_id.clone(), job_state.clone());
+                    }
+                    return RpcDispatchOutcome::internal_error(format!(
+                        "edge.finetune.run trainer binary not found: {}",
+                        binary_path.to_string_lossy()
+                    ));
+                }
+                job_state.status = "running".to_owned();
+                {
+                    let mut guard = self.edge_finetune_jobs.lock().await;
+                    guard.insert(job_id.clone(), job_state.clone());
+                }
+                let mut command = TokioCommand::new(binary_path);
+                for arg in suggested_command
+                    .pointer("/argv")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                {
+                    command.arg(arg);
+                }
+                command
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                execution["attempted"] = Value::Bool(true);
+                let output =
+                    match tokio::time::timeout(Duration::from_millis(timeout_ms), command.output())
+                        .await
+                    {
+                        Ok(Ok(output)) => {
+                            let log_tail = collect_command_log_tail(&output.stdout, &output.stderr);
+                            execution["logTail"] = json!(log_tail);
+                            execution["exitCode"] = json!(output.status.code());
+                            if output.status.success() {
+                                execution["success"] = Value::Bool(true);
+                                job_state.status = "completed".to_owned();
+                                job_state.exit_code = output.status.code();
+                                job_state.log_tail = execution
+                                    .pointer("/logTail")
+                                    .and_then(Value::as_array)
+                                    .map(|items| {
+                                        items
+                                            .iter()
+                                            .filter_map(Value::as_str)
+                                            .map(|value| value.to_owned())
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .unwrap_or_default();
+                            } else {
+                                execution["success"] = Value::Bool(false);
+                                let error = format!(
+                                    "trainer exited with status {:?}",
+                                    output.status.code()
+                                );
+                                execution["error"] = Value::String(error.clone());
+                                job_state.status = "failed".to_owned();
+                                job_state.exit_code = output.status.code();
+                                job_state.error = Some(error);
+                                job_state.log_tail = execution
+                                    .pointer("/logTail")
+                                    .and_then(Value::as_array)
+                                    .map(|items| {
+                                        items
+                                            .iter()
+                                            .filter_map(Value::as_str)
+                                            .map(|value| value.to_owned())
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .unwrap_or_default();
+                            }
+                            output
+                        }
+                        Ok(Err(err)) => {
+                            execution["success"] = Value::Bool(false);
+                            execution["error"] =
+                                Value::String(format!("trainer execution failed: {err}"));
+                            job_state.status = "failed".to_owned();
+                            job_state.error = Some(format!("trainer execution failed: {err}"));
+                            job_state.log_tail = Vec::new();
+                            job_state.completed_at_ms = Some(now_ms());
+                            {
+                                let mut guard = self.edge_finetune_jobs.lock().await;
+                                guard.insert(job_id.clone(), job_state.clone());
+                            }
+                            self.system
+                                .log_line(format!(
+                                    "edge.finetune.run jobId={} failed to execute trainer: {}",
+                                    job_id, err
+                                ))
+                                .await;
+                            return RpcDispatchOutcome::Handled(json!({
+                                "ok": false,
+                                "jobId": job_id,
+                                "runtimeProfile": runtime_profile.as_str(),
+                                "dryRun": dry_run,
+                                "manifestPath": manifest_path,
+                                "manifest": manifest,
+                                "execution": execution,
+                                "jobStatus": job_state
+                            }));
+                        }
+                        Err(_) => {
+                            execution["success"] = Value::Bool(false);
+                            execution["timedOut"] = Value::Bool(true);
+                            execution["error"] = Value::String("trainer timed out".to_owned());
+                            job_state.status = "timeout".to_owned();
+                            job_state.error = Some("trainer timed out".to_owned());
+                            job_state.log_tail = Vec::new();
+                            job_state.completed_at_ms = Some(now_ms());
+                            {
+                                let mut guard = self.edge_finetune_jobs.lock().await;
+                                guard.insert(job_id.clone(), job_state.clone());
+                            }
+                            self.system
+                                .log_line(format!(
+                                    "edge.finetune.run jobId={} timed out after {} ms",
+                                    job_id, timeout_ms
+                                ))
+                                .await;
+                            return RpcDispatchOutcome::Handled(json!({
+                                "ok": false,
+                                "jobId": job_id,
+                                "runtimeProfile": runtime_profile.as_str(),
+                                "dryRun": dry_run,
+                                "manifestPath": manifest_path,
+                                "manifest": manifest,
+                                "execution": execution,
+                                "jobStatus": job_state
+                            }));
+                        }
+                    };
+                job_state.completed_at_ms = Some(now_ms());
+                if output.status.success() {
+                    job_state.error = None;
+                }
+                {
+                    let mut guard = self.edge_finetune_jobs.lock().await;
+                    guard.insert(job_id.clone(), job_state.clone());
+                }
+            }
+        }
         self.system
             .log_line(format!(
-                "edge.finetune.run jobId={} model={}/{} dryRun={} output={}",
+                "edge.finetune.run jobId={} model={}/{} dryRun={} output={} status={}",
                 job_id,
                 manifest
                     .pointer("/baseModel/provider")
@@ -2898,16 +3290,22 @@ impl RpcDispatcher {
                     .and_then(Value::as_str)
                     .unwrap_or_default(),
                 dry_run,
-                output_path
+                output_path,
+                job_state.status
             ))
             .await;
         RpcDispatchOutcome::Handled(json!({
-            "ok": true,
+            "ok": execution
+                .pointer("/success")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
             "jobId": job_id,
             "runtimeProfile": runtime_profile.as_str(),
             "dryRun": dry_run,
             "manifestPath": manifest_path,
-            "manifest": manifest
+            "manifest": manifest,
+            "execution": execution,
+            "jobStatus": job_state
         }))
     }
 
@@ -15836,6 +16234,59 @@ fn edge_lora_trainer_args() -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn edge_lora_trainer_timeout_ms() -> u64 {
+    env::var(EDGE_LORA_TRAINER_TIMEOUT_MS_ENV)
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 64))
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|value| value.clamp(5_000, 86_400_000))
+        .unwrap_or(EDGE_FINETUNE_DEFAULT_TIMEOUT_MS)
+}
+
+fn edge_enclave_attestation_binary_path() -> Option<PathBuf> {
+    env::var(EDGE_ENCLAVE_ATTEST_BIN_ENV)
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 2_048))
+        .map(PathBuf::from)
+}
+
+fn edge_enclave_attestation_args() -> Vec<String> {
+    env::var(EDGE_ENCLAVE_ATTEST_ARGS_ENV)
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 2_048))
+        .map(|value| {
+            value
+                .split_whitespace()
+                .take(48)
+                .map(|item| item.to_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn collect_command_log_tail(stdout: &[u8], stderr: &[u8]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let stdout_text = String::from_utf8_lossy(stdout);
+    for line in stdout_text.lines() {
+        let text = truncate_text(line.trim(), EDGE_FINETUNE_MAX_LOG_LINE_CHARS);
+        if !text.is_empty() {
+            lines.push(format!("stdout: {text}"));
+        }
+    }
+    let stderr_text = String::from_utf8_lossy(stderr);
+    for line in stderr_text.lines() {
+        let text = truncate_text(line.trim(), EDGE_FINETUNE_MAX_LOG_LINE_CHARS);
+        if !text.is_empty() {
+            lines.push(format!("stderr: {text}"));
+        }
+    }
+    if lines.len() > EDGE_FINETUNE_MAX_LOG_LINES {
+        let start = lines.len().saturating_sub(EDGE_FINETUNE_MAX_LOG_LINES);
+        lines = lines[start..].to_vec();
+    }
+    lines
+}
+
 async fn try_transcribe_audio_tinywhisper(
     audio_path: &str,
     language: Option<&str>,
@@ -16344,6 +16795,56 @@ struct EdgeEnclaveRuntimeStatus {
     available_modes: Vec<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+struct EdgeEnclaveProofRecord {
+    #[serde(rename = "generatedAtMs")]
+    generated_at_ms: u64,
+    #[serde(rename = "activeMode")]
+    active_mode: String,
+    #[serde(rename = "runtimeProfile")]
+    runtime_profile: String,
+    #[serde(rename = "statementHash")]
+    statement_hash: String,
+    nonce: String,
+    proof: String,
+    scheme: String,
+    verified: bool,
+    source: String,
+    #[serde(rename = "attestationBinary", skip_serializing_if = "Option::is_none")]
+    attestation_binary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quote: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    measurement: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct EdgeFineTuneJobState {
+    #[serde(rename = "jobId")]
+    job_id: String,
+    status: String,
+    #[serde(rename = "startedAtMs")]
+    started_at_ms: u64,
+    #[serde(rename = "completedAtMs", skip_serializing_if = "Option::is_none")]
+    completed_at_ms: Option<u64>,
+    #[serde(rename = "exitCode", skip_serializing_if = "Option::is_none")]
+    exit_code: Option<i32>,
+    #[serde(rename = "adapterName")]
+    adapter_name: String,
+    #[serde(rename = "outputPath")]
+    output_path: String,
+    #[serde(rename = "dryRun")]
+    dry_run: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<Value>,
+    #[serde(rename = "logTail")]
+    log_tail: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
 fn detect_edge_enclave_runtime_status() -> EdgeEnclaveRuntimeStatus {
     let sgx = env_var_truthy(EDGE_ENCLAVE_SGX_ENV)
         || Path::new("/dev/sgx_enclave").is_file()
@@ -16415,6 +16916,217 @@ fn build_enclave_zero_knowledge_proof(
         active_mode.trim(),
         profile.as_str()
     ))
+}
+
+fn read_attestation_value(raw: &Value, pointers: &[&str], max_chars: usize) -> Option<String> {
+    for pointer in pointers {
+        if let Some(value) = raw.pointer(pointer).and_then(Value::as_str) {
+            if let Some(text) = normalize_optional_text(Some(value.to_owned()), max_chars) {
+                return Some(text);
+            }
+        }
+    }
+    None
+}
+
+async fn build_edge_enclave_proof_record(
+    statement: &str,
+    nonce: &str,
+    status: &EdgeEnclaveRuntimeStatus,
+    profile: RuntimeFeatureProfile,
+) -> EdgeEnclaveProofRecord {
+    let statement_hash = hash_sha256_hex(statement);
+    let base_proof =
+        build_enclave_zero_knowledge_proof(statement, nonce, &status.active_mode, profile);
+    let runtime_profile = profile.as_str().to_owned();
+    let attestation_binary =
+        edge_enclave_attestation_binary_path().map(|path| path.to_string_lossy().into_owned());
+    let Some(binary) = edge_enclave_attestation_binary_path() else {
+        return EdgeEnclaveProofRecord {
+            generated_at_ms: now_ms(),
+            active_mode: status.active_mode.clone(),
+            runtime_profile,
+            statement_hash,
+            nonce: nonce.to_owned(),
+            proof: base_proof,
+            scheme: "sha256-commitment-v1".to_owned(),
+            verified: false,
+            source: "deterministic-fallback".to_owned(),
+            attestation_binary,
+            quote: None,
+            measurement: None,
+            error: Some("attestation binary not configured".to_owned()),
+        };
+    };
+
+    let mut command = TokioCommand::new(&binary);
+    for arg in edge_enclave_attestation_args() {
+        command.arg(arg);
+    }
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            return EdgeEnclaveProofRecord {
+                generated_at_ms: now_ms(),
+                active_mode: status.active_mode.clone(),
+                runtime_profile,
+                statement_hash,
+                nonce: nonce.to_owned(),
+                proof: base_proof,
+                scheme: "sha256-commitment-v1".to_owned(),
+                verified: false,
+                source: "deterministic-fallback".to_owned(),
+                attestation_binary,
+                quote: None,
+                measurement: None,
+                error: Some(format!("failed to spawn attestation binary: {err}")),
+            };
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let request = json!({
+            "statement": statement,
+            "statementHash": statement_hash.clone(),
+            "nonce": nonce,
+            "activeMode": status.active_mode.clone(),
+            "runtimeProfile": profile.as_str(),
+            "availableModes": status.available_modes.clone(),
+            "signals": {
+                "sgx": status.sgx,
+                "tpm": status.tpm,
+                "sev": status.sev
+            }
+        });
+        if stdin
+            .write_all(request.to_string().as_bytes())
+            .await
+            .is_err()
+        {
+            return EdgeEnclaveProofRecord {
+                generated_at_ms: now_ms(),
+                active_mode: status.active_mode.clone(),
+                runtime_profile,
+                statement_hash,
+                nonce: nonce.to_owned(),
+                proof: base_proof,
+                scheme: "sha256-commitment-v1".to_owned(),
+                verified: false,
+                source: "deterministic-fallback".to_owned(),
+                attestation_binary,
+                quote: None,
+                measurement: None,
+                error: Some("failed to write attestation request".to_owned()),
+            };
+        }
+    }
+
+    let output = match tokio::time::timeout(
+        Duration::from_millis(EDGE_ENCLAVE_ATTEST_DEFAULT_TIMEOUT_MS),
+        child.wait_with_output(),
+    )
+    .await
+    {
+        Ok(Ok(output)) => output,
+        Ok(Err(err)) => {
+            return EdgeEnclaveProofRecord {
+                generated_at_ms: now_ms(),
+                active_mode: status.active_mode.clone(),
+                runtime_profile,
+                statement_hash,
+                nonce: nonce.to_owned(),
+                proof: base_proof,
+                scheme: "sha256-commitment-v1".to_owned(),
+                verified: false,
+                source: "deterministic-fallback".to_owned(),
+                attestation_binary,
+                quote: None,
+                measurement: None,
+                error: Some(format!("attestation command failed: {err}")),
+            };
+        }
+        Err(_) => {
+            return EdgeEnclaveProofRecord {
+                generated_at_ms: now_ms(),
+                active_mode: status.active_mode.clone(),
+                runtime_profile,
+                statement_hash,
+                nonce: nonce.to_owned(),
+                proof: base_proof,
+                scheme: "sha256-commitment-v1".to_owned(),
+                verified: false,
+                source: "deterministic-fallback".to_owned(),
+                attestation_binary,
+                quote: None,
+                measurement: None,
+                error: Some("attestation command timed out".to_owned()),
+            };
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let parsed = serde_json::from_str::<Value>(&stdout).ok();
+    let quote = parsed
+        .as_ref()
+        .and_then(|value| {
+            read_attestation_value(
+                value,
+                &["/quote", "/evidence", "/attestationQuote", "/rawQuote"],
+                200_000,
+            )
+        })
+        .or_else(|| normalize_optional_text(Some(stdout.clone()), 200_000));
+    let measurement = parsed.as_ref().and_then(|value| {
+        read_attestation_value(
+            value,
+            &[
+                "/measurement",
+                "/reportDigest",
+                "/mrEnclave",
+                "/mr",
+                "/digest",
+            ],
+            256,
+        )
+    });
+    let measured = measurement
+        .clone()
+        .unwrap_or_else(|| hash_sha256_hex(quote.as_deref().unwrap_or("")));
+    let proof = hash_sha256_hex(&format!(
+        "edge-attestation-proof-v1|base={base_proof}|measurement={measured}|nonce={nonce}"
+    ));
+    let verified = output.status.success() && quote.is_some();
+    EdgeEnclaveProofRecord {
+        generated_at_ms: now_ms(),
+        active_mode: status.active_mode.clone(),
+        runtime_profile,
+        statement_hash,
+        nonce: nonce.to_owned(),
+        proof,
+        scheme: if verified {
+            "attestation-quote-v1".to_owned()
+        } else {
+            "sha256-commitment-v1".to_owned()
+        },
+        verified,
+        source: if verified {
+            "attestation-binary".to_owned()
+        } else {
+            "deterministic-fallback".to_owned()
+        },
+        attestation_binary,
+        quote,
+        measurement: Some(measured),
+        error: if verified {
+            None
+        } else {
+            normalize_optional_text(Some(stderr), 2_048)
+        },
+    }
 }
 
 fn build_edge_mesh_peers(
@@ -25355,6 +26067,10 @@ struct EdgeEnclaveProveParams {
 struct EdgeMeshStatusParams {
     #[serde(rename = "includePending", alias = "include_pending")]
     include_pending: Option<bool>,
+    #[serde(rename = "probeRuntime", alias = "probe_runtime")]
+    probe_runtime: Option<bool>,
+    #[serde(rename = "probeTimeoutMs", alias = "probe_timeout_ms")]
+    probe_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -34892,6 +35608,7 @@ mod tests {
                         .and_then(Value::as_bool),
                     Some(true)
                 );
+                assert!(payload.pointer("/attestation/configured").is_some());
             }
             _ => panic!("expected edge.enclave.status handled"),
         }
@@ -34933,6 +35650,12 @@ mod tests {
                     .pointer("/transport/mode")
                     .and_then(Value::as_str)
                     .is_some_and(|value| value == "p2p-overlay"));
+                assert_eq!(
+                    payload
+                        .pointer("/meshHealth/probeEnabled")
+                        .and_then(Value::as_bool),
+                    Some(true)
+                );
             }
             _ => panic!("expected edge.mesh.status handled"),
         }
@@ -34990,6 +35713,10 @@ mod tests {
                     .pointer("/datasetSources")
                     .and_then(Value::as_array)
                     .is_some_and(|items| items.len() >= 2));
+                assert!(payload
+                    .pointer("/jobStats/total")
+                    .and_then(Value::as_u64)
+                    .is_some());
             }
             _ => panic!("expected edge.finetune.status handled"),
         }
@@ -35014,6 +35741,12 @@ mod tests {
                 assert_eq!(
                     payload.pointer("/dryRun").and_then(Value::as_bool),
                     Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/execution/attempted")
+                        .and_then(Value::as_bool),
+                    Some(false)
                 );
                 assert!(payload
                     .pointer("/manifest/training/rank")

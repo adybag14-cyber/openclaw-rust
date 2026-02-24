@@ -12,6 +12,8 @@ WORKDIR /workspace
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
+ENV CARGO_BUILD_JOBS=1
+ENV RUSTFLAGS="-Ccodegen-units=1"
 RUN cargo build --release
 
 FROM debian:bullseye-slim

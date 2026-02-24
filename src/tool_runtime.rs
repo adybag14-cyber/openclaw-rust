@@ -5773,7 +5773,7 @@ mod tests {
         std::fs::write(
             policy.wasm.wit_root.join("sample-tool.wit"),
             r#"
-package openclaw:tools@1.6.9;
+package openclaw:tools@1.7.0;
 
 interface tool {
   execute: func(input: string) -> result<string, string>;
