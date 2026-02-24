@@ -5,6 +5,38 @@
 ### Highlights
 - No unreleased changes.
 
+## v1.6.5 - 2026-02-24
+
+### Highlights
+- Added light self-healing runtime retry for `agent` turns:
+  - When the primary provider execution fails, the dispatcher now attempts bounded fallback-provider retries.
+  - Added structured runtime telemetry under `runtime.selfHealing` (`enabled`, `recovered`, `attempts`).
+  - Added recovery-path test coverage (`dispatcher_agent_runtime_self_heals_with_fallback_provider_retry`).
+- Added offline voice expansion for TTS:
+  - Added `kittentts` as a first-class TTS provider option (`tts.setProvider`, `tts.providers`, `tts.status`).
+  - Added lazy local-binary detection via `OPENCLAW_RS_KITTENTTS_BIN` (+ optional args via `OPENCLAW_RS_KITTENTTS_ARGS`).
+  - Kept graceful fallback to simulated output when local binary is unavailable.
+- Added core/edge dual-track planning artifacts:
+  - `CORE_EDGE_RELEASE_PLAN_TABLE3_TABLE4.md`
+  - `.github/ISSUE_CORE_EDGE_RELEASE_PLAN.md`
+- Added dual-tag release bundles:
+  - `dist/release-v1.6.5-core/`
+  - `dist/release-v1.6.5-edge/`
+
+### Validation
+- `cargo fmt --all -- --check`
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo test`
+- `cargo test --features sqlite-state`
+- `cargo +1.83.0-x86_64-pc-windows-msvc build --release`
+- `wsl -d Ubuntu-20.04 -- bash -lc 'cd /mnt/c/Users/adyba/openclaw-rust && CARGO_TARGET_DIR=target-linux-ubuntu20 /root/.cargo/bin/cargo +1.83.0 check'`
+- `wsl -d Ubuntu-20.04 -- bash -lc 'cd /mnt/c/Users/adyba/openclaw-rust && CARGO_TARGET_DIR=target-linux-ubuntu20 /root/.cargo/bin/cargo +1.83.0 test --no-run'`
+- `wsl -d Ubuntu-20.04 -- bash -lc 'cd /mnt/c/Users/adyba/openclaw-rust && CARGO_TARGET_DIR=target-linux-ubuntu20 /root/.cargo/bin/cargo +1.83.0 build --release'`
+- `cargo run -- doctor --non-interactive --json`
+- `cargo run -- security audit --deep --json`
+- Notes:
+  - `scripts/parity/run-cp0-gate.ps1` was executed and reached the replay suite, but failed on this workstation due missing GNU linker runtime (`-lgcc_eh`). Release validation used the full MSVC + Ubuntu 20.04 matrix and parity corpus tests.
+
 ## v1.6.4 - 2026-02-22
 
 ### Highlights

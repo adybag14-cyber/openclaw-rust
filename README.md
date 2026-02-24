@@ -11,23 +11,29 @@ provider runtime, persistence, performance strategy, and release layout), see:
 
 - `PROJECT_OVERVIEW.md`
 
-## Current parity status (February 22, 2026)
+## Current parity status (February 24, 2026)
 
 - End-to-end Rust parity program status: **complete**.
 - Feature audit scoreboard: `22 implemented`, `0 partial`, `0 deferred`.
 - RPC method-surface parity: `103` Rust methods, `100%` coverage vs upstream base + handlers.
 - Runtime audit: blanket dead-code suppression removed; only targeted transcript-entry allowance remains in `tool_runtime` for parity/test inspection fields.
-- 1.6.4 release-track integrations added:
+- 1.6.5 release-track integrations added:
   - Added a native Rust `zvec`-style persistent vector memory engine (`src/persistent_memory.rs`) with bounded on-disk storage and cosine top-k recall.
   - Added a native Rust `graphlite`-style persistent graph memory store (session/concept nodes + mention/co-occurrence edges) with synthesized graph facts for recall.
   - Wired memory ingestion into the live `agent` runtime path for both user turns and assistant outputs.
   - Wired memory recall into agent turn execution as bounded system-context injection before provider completion calls.
   - Added runtime memory telemetry to `gateway status` / `health` responses (`memory.enabled`, entry/node/edge counts, store paths, recall limits).
   - Added config-driven memory tuning under `memory.*` (`enabled`, `zvecStorePath`, `graphStorePath`, `maxEntries`, `recallTopK`, `recallMinScore`).
+- Current core/edge release-track additions:
+  - Added light self-healing runtime retries for `agent` execution failures with structured `runtime.selfHealing` response telemetry.
+  - Added offline voice provider surface for `kittentts` (lazy local-binary mode, optional via `OPENCLAW_RS_KITTENTTS_BIN`).
+  - Added dual-track planning artifacts: `CORE_EDGE_RELEASE_PLAN_TABLE3_TABLE4.md` and issue template `.github/ISSUE_CORE_EDGE_RELEASE_PLAN.md`.
 - Latest full validation matrix:
-  - `cargo test` -> `358` passed (`1` ignored)
-  - `cargo test --features sqlite-state` -> `362` passed (`1` ignored)
-  - `clippy -D warnings` + `release` builds pass for default and `sqlite-state`
+  - `cargo test` -> `361` passed (`1` ignored)
+  - `cargo test --features sqlite-state` -> `365` passed (`1` ignored)
+  - `cargo fmt --all -- --check` + `cargo clippy --all-targets -- -D warnings` pass
+  - Windows release build pass: `cargo +1.83.0-x86_64-pc-windows-msvc build --release`
+  - Ubuntu 20.04 WSL build pass: `cargo +1.83.0 build --release` (with `CARGO_TARGET_DIR=target-linux-ubuntu20`)
 
 ## Implemented runtime coverage
 

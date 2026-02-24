@@ -313,10 +313,14 @@
           },
           {
             "path": "/providers/2/id",
+            "equals": "kittentts"
+          },
+          {
+            "path": "/providers/3/id",
             "equals": "edge"
           },
           {
-            "path": "/providers/2/configured",
+            "path": "/providers/3/configured",
             "equals": true
           }
         ]

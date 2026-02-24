@@ -822,6 +822,7 @@ const AGENT_LLM_TURN_MAX_HISTORY: usize = 64;
 const AGENT_LLM_TOOL_LOOP_MAX_STEPS: usize = 8;
 const AGENT_TOOL_OUTPUT_MAX_CHARS: usize = 8_192;
 const AGENT_PROVIDER_HTTP_TIMEOUT_MS: u64 = 60_000;
+const AGENT_SELF_HEAL_MAX_ATTEMPTS: usize = 2;
 const MAX_CHAT_RUNS: usize = 4_096;
 const CHAT_RUN_COMPLETE_DELAY_MS: u64 = 25;
 const MAX_SEND_CACHE_ENTRIES: usize = 4_096;
@@ -909,6 +910,8 @@ const TTS_OPENAI_VOICES: &[&str] = &[
 const TTS_OPENAI_DEFAULT_MODEL: &str = "gpt-4o-mini-tts";
 const TTS_OPENAI_DEFAULT_VOICE: &str = "alloy";
 const TTS_OPENAI_API_KEY_ENV: &str = "OPENAI_API_KEY";
+const TTS_KITTENTTS_BIN_ENV: &str = "OPENCLAW_RS_KITTENTTS_BIN";
+const TTS_KITTENTTS_ARGS_ENV: &str = "OPENCLAW_RS_KITTENTTS_ARGS";
 const TTS_ELEVENLABS_MODELS: &[&str] = &[
     "eleven_multilingual_v2",
     "eleven_turbo_v2_5",
@@ -1874,6 +1877,7 @@ impl RpcDispatcher {
         let io_state = self.voice_io.snapshot().await;
         let has_openai_key = tts_provider_api_key("openai").is_some();
         let has_elevenlabs_key = tts_provider_api_key("elevenlabs").is_some();
+        let has_kittentts_bin = kittentts_binary_available();
         let fallback_providers = tts_fallback_providers(&state.provider);
         let fallback_provider = fallback_providers.first().cloned();
         RpcDispatchOutcome::Handled(json!({
@@ -1885,7 +1889,14 @@ impl RpcDispatcher {
             "prefsPath": TTS_PREFS_PATH,
             "hasOpenAIKey": has_openai_key,
             "hasElevenLabsKey": has_elevenlabs_key,
+            "hasKittenTtsBinary": has_kittentts_bin,
             "edgeEnabled": true,
+            "offlineVoice": {
+                "enabled": true,
+                "lazyLoaded": true,
+                "providers": ["kittentts", "edge"],
+                "kittenttsAvailable": has_kittentts_bin
+            },
             "capture": {
                 "active": io_state.capture_active,
                 "sessionId": io_state.capture_session_id,
@@ -2016,7 +2027,7 @@ impl RpcDispatcher {
             .unwrap_or_default();
         if !is_supported_tts_provider(&provider) {
             return RpcDispatchOutcome::bad_request(
-                "Invalid provider. Use openai, elevenlabs, or edge.",
+                "Invalid provider. Use openai, elevenlabs, kittentts, or edge.",
             );
         }
         let state = self.tts.set_provider(provider.clone()).await;
@@ -2032,6 +2043,7 @@ impl RpcDispatcher {
         let active = self.tts.snapshot().await.provider;
         let openai_configured = tts_provider_api_key("openai").is_some();
         let elevenlabs_configured = tts_provider_api_key("elevenlabs").is_some();
+        let kittentts_configured = kittentts_binary_available();
         RpcDispatchOutcome::Handled(json!({
             "providers": [
                 {
@@ -2046,6 +2058,13 @@ impl RpcDispatcher {
                     "name": "ElevenLabs",
                     "configured": elevenlabs_configured,
                     "models": TTS_ELEVENLABS_MODELS
+                },
+                {
+                    "id": "kittentts",
+                    "name": "KittenTTS (Offline)",
+                    "configured": kittentts_configured,
+                    "models": ["kitten-small", "kitten-base"],
+                    "lazyLoaded": true
                 },
                 {
                     "id": "edge",
@@ -2488,6 +2507,7 @@ impl RpcDispatcher {
             loop_steps: None,
             memory_hits: None,
             memory_graph_facts: None,
+            self_healing: None,
             reason: Some("provider credentials not configured".to_owned()),
         };
         let mut run_completed = false;
@@ -2534,7 +2554,7 @@ impl RpcDispatcher {
                         provider_runtime: provider_runtime.clone(),
                         extra_system_prompt: params.extra_system_prompt.clone(),
                         memory_query_text: memory_query_text.clone(),
-                        workspace_root,
+                        workspace_root: workspace_root.clone(),
                         config: config_snapshot.config.clone(),
                     })
                     .await
@@ -2573,9 +2593,186 @@ impl RpcDispatcher {
                         run_completed = true;
                     }
                     Err(err) => {
-                        runtime_payload.reason = Some(err.clone());
-                        self.agent_runs.complete_error(run_id.clone(), err).await;
-                        run_completed = true;
+                        let catalog = self.models.resolve_catalog(Some(&config_snapshot.config));
+                        let mut final_error = err.clone();
+                        let mut healing_attempts: Vec<AgentRuntimeSelfHealingAttemptView> =
+                            Vec::new();
+                        let mut recovered = false;
+                        let mut attempted_providers: Vec<String> = Vec::new();
+                        let mut tried_count = 0usize;
+
+                        for fallback_provider_raw in &resolved.fallback_providers {
+                            if tried_count >= AGENT_SELF_HEAL_MAX_ATTEMPTS {
+                                break;
+                            }
+                            let fallback_provider = normalize_provider_id(fallback_provider_raw);
+                            if fallback_provider.eq_ignore_ascii_case(&resolved.model_provider) {
+                                continue;
+                            }
+                            if attempted_providers
+                                .iter()
+                                .any(|existing| existing.eq_ignore_ascii_case(&fallback_provider))
+                            {
+                                continue;
+                            }
+                            attempted_providers.push(fallback_provider.clone());
+                            tried_count = tried_count.saturating_add(1);
+
+                            let fallback_model =
+                                ModelRegistry::default_model_for_provider_in_catalog(
+                                    &catalog,
+                                    &fallback_provider,
+                                )
+                                .map(|entry| entry.id)
+                                .unwrap_or_else(|| resolved.model.clone());
+
+                            let Some(fallback_runtime) = resolve_provider_runtime_config(
+                                &config_snapshot.config,
+                                &fallback_provider,
+                            ) else {
+                                healing_attempts.push(AgentRuntimeSelfHealingAttemptView {
+                                    provider: fallback_provider.clone(),
+                                    model: fallback_model,
+                                    status: "skipped".to_owned(),
+                                    reason: Some("provider_not_configured".to_owned()),
+                                });
+                                continue;
+                            };
+
+                            if fallback_runtime.api_key.is_none()
+                                && !fallback_runtime.allow_missing_api_key
+                            {
+                                healing_attempts.push(AgentRuntimeSelfHealingAttemptView {
+                                    provider: fallback_provider.clone(),
+                                    model: fallback_model,
+                                    status: "skipped".to_owned(),
+                                    reason: Some("credentials_missing".to_owned()),
+                                });
+                                continue;
+                            }
+                            if !provider_api_mode_supported(&fallback_runtime.api_mode) {
+                                healing_attempts.push(AgentRuntimeSelfHealingAttemptView {
+                                    provider: fallback_provider.clone(),
+                                    model: fallback_model,
+                                    status: "skipped".to_owned(),
+                                    reason: Some(format!(
+                                        "unsupported_api_mode:{}",
+                                        fallback_runtime.api_mode
+                                    )),
+                                });
+                                continue;
+                            }
+
+                            let fallback_resolved = ModelFailoverResolutionView {
+                                model_provider: fallback_provider.clone(),
+                                model: fallback_model.clone(),
+                                auth_profile: resolved.auth_profile.clone(),
+                                fallback_providers: model_provider_failover_chain(
+                                    &fallback_provider,
+                                ),
+                                attempts: vec![ModelFailoverAttemptView {
+                                    provider: fallback_provider.clone(),
+                                    model: fallback_model.clone(),
+                                    auth_profile: resolved.auth_profile.clone(),
+                                    status: "ok".to_owned(),
+                                    reason: Some("self_heal_retry".to_owned()),
+                                }],
+                            };
+
+                            match self
+                                .execute_agent_runtime_turn(AgentRuntimeTurnRequest {
+                                    session_key: resolved_session_key.clone(),
+                                    run_id: run_id.clone(),
+                                    resolved: fallback_resolved,
+                                    provider_runtime: fallback_runtime,
+                                    extra_system_prompt: params.extra_system_prompt.clone(),
+                                    memory_query_text: memory_query_text.clone(),
+                                    workspace_root: workspace_root.clone(),
+                                    config: config_snapshot.config.clone(),
+                                })
+                                .await
+                            {
+                                Ok(outcome) => {
+                                    healing_attempts.push(AgentRuntimeSelfHealingAttemptView {
+                                        provider: fallback_provider.clone(),
+                                        model: fallback_model,
+                                        status: "recovered".to_owned(),
+                                        reason: Some("runtime_retry_succeeded".to_owned()),
+                                    });
+                                    recovered = true;
+                                    runtime_payload = outcome.execution;
+                                    runtime_payload.self_healing =
+                                        Some(AgentRuntimeSelfHealingView {
+                                            enabled: true,
+                                            recovered: true,
+                                            attempts: healing_attempts.clone(),
+                                        });
+                                    runtime_payload.reason = None;
+
+                                    if let Some(assistant_text) = outcome.assistant_text {
+                                        let assistant_memory_text = assistant_text.clone();
+                                        let _ = self
+                                            .sessions
+                                            .record_send(SessionSend {
+                                                session_key: resolved_session_key.clone(),
+                                                request_id: Some(run_id.clone()),
+                                                message: Some(assistant_text),
+                                                command: None,
+                                                source: "agent.assistant".to_owned(),
+                                                channel: Some("webchat".to_owned()),
+                                                to: None,
+                                                account_id: None,
+                                                thread_id: None,
+                                                reply_back: None,
+                                            })
+                                            .await;
+                                        let _ = self
+                                            .memory
+                                            .remember(MemoryRememberInput {
+                                                session_key: resolved_session_key.clone(),
+                                                source: "agent.assistant".to_owned(),
+                                                text: assistant_memory_text,
+                                                request_id: Some(run_id.clone()),
+                                                at_ms: None,
+                                            })
+                                            .await;
+                                    }
+                                    self.system
+                                        .log_line(format!(
+                                            "agent.self_heal recovered runId={} provider={} model={}",
+                                            run_id, runtime_payload.provider, runtime_payload.model
+                                        ))
+                                        .await;
+                                    self.agent_runs.complete_ok(run_id.clone()).await;
+                                    run_completed = true;
+                                    break;
+                                }
+                                Err(retry_err) => {
+                                    final_error = retry_err.clone();
+                                    healing_attempts.push(AgentRuntimeSelfHealingAttemptView {
+                                        provider: fallback_provider.clone(),
+                                        model: fallback_model,
+                                        status: "failed".to_owned(),
+                                        reason: Some(truncate_text(&retry_err, 160)),
+                                    });
+                                }
+                            }
+                        }
+
+                        if !recovered {
+                            runtime_payload.reason = Some(final_error.clone());
+                            if !healing_attempts.is_empty() {
+                                runtime_payload.self_healing = Some(AgentRuntimeSelfHealingView {
+                                    enabled: true,
+                                    recovered: false,
+                                    attempts: healing_attempts,
+                                });
+                            }
+                            self.agent_runs
+                                .complete_error(run_id.clone(), final_error)
+                                .await;
+                            run_completed = true;
+                        }
                     }
                 }
             }
@@ -7712,6 +7909,7 @@ impl RpcDispatcher {
                         loop_steps: Some(step_count),
                         memory_hits: Some(memory_recall.vector_hits),
                         memory_graph_facts: Some(memory_recall.graph_facts),
+                        self_healing: None,
                         reason: None,
                     },
                 });
@@ -9024,6 +9222,25 @@ struct AgentRuntimeExecutionView {
     memory_hits: Option<usize>,
     #[serde(rename = "memoryGraphFacts", skip_serializing_if = "Option::is_none")]
     memory_graph_facts: Option<usize>,
+    #[serde(rename = "selfHealing", skip_serializing_if = "Option::is_none")]
+    self_healing: Option<AgentRuntimeSelfHealingView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct AgentRuntimeSelfHealingView {
+    enabled: bool,
+    recovered: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    attempts: Vec<AgentRuntimeSelfHealingAttemptView>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct AgentRuntimeSelfHealingAttemptView {
+    provider: String,
+    model: String,
+    status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
 }
@@ -14525,6 +14742,12 @@ async fn synthesize_tts_audio_blob_with_provider(
     preferred_provider: &str,
 ) -> TtsAudioBlob {
     for provider in tts_provider_order(preferred_provider) {
+        if provider == "kittentts" {
+            if let Some(blob) = try_synthesize_tts_audio_blob_kittentts(text, output_format).await {
+                return blob;
+            }
+            continue;
+        }
         if let Some(api_key) = tts_provider_api_key(provider) {
             if let Some(blob) =
                 try_synthesize_tts_audio_blob_remote(provider, &api_key, text, output_format).await
@@ -14549,6 +14772,30 @@ async fn synthesize_tts_audio_blob_with_provider(
     }
 }
 
+fn kittentts_binary_path() -> Option<String> {
+    env::var(TTS_KITTENTTS_BIN_ENV)
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 2_048))
+}
+
+fn kittentts_binary_available() -> bool {
+    kittentts_binary_path().is_some()
+}
+
+fn kittentts_extra_args() -> Vec<String> {
+    env::var(TTS_KITTENTTS_ARGS_ENV)
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 2_048))
+        .map(|value| {
+            value
+                .split_whitespace()
+                .take(32)
+                .map(|item| item.to_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
 fn tts_provider_api_key(provider: &str) -> Option<String> {
     match normalize(provider).as_str() {
         "openai" => env::var(TTS_OPENAI_API_KEY_ENV).ok(),
@@ -14557,6 +14804,47 @@ fn tts_provider_api_key(provider: &str) -> Option<String> {
     }
     .map(|value| value.trim().to_owned())
     .filter(|value| !value.is_empty())
+}
+
+async fn try_synthesize_tts_audio_blob_kittentts(
+    text: &str,
+    output_format: &str,
+) -> Option<TtsAudioBlob> {
+    let binary = kittentts_binary_path()?;
+    let mut command = TokioCommand::new(binary);
+    command
+        .arg("--format")
+        .arg(if output_format.eq_ignore_ascii_case("opus") {
+            "opus"
+        } else {
+            "mp3"
+        });
+    for arg in kittentts_extra_args() {
+        command.arg(arg);
+    }
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = command.spawn().ok()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        if stdin.write_all(text.as_bytes()).await.is_err() {
+            return None;
+        }
+    }
+    let output = child.wait_with_output().await.ok()?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return None;
+    }
+    let duration_ms = estimate_tts_duration_ms(text, output.stdout.len());
+    Some(TtsAudioBlob {
+        bytes: output.stdout,
+        duration_ms,
+        sample_rate_hz: 24_000,
+        provider_used: "kittentts".to_owned(),
+        source: "offline-local",
+    })
 }
 
 async fn try_synthesize_tts_audio_blob_remote(
@@ -14683,12 +14971,12 @@ fn synthesize_tts_audio_blob_simulated(text: &str, output_format: &str) -> (Vec<
 }
 
 fn is_supported_tts_provider(provider: &str) -> bool {
-    matches!(provider, "openai" | "elevenlabs" | "edge")
+    matches!(provider, "openai" | "elevenlabs" | "kittentts" | "edge")
 }
 
 fn tts_provider_order(primary: &str) -> Vec<&'static str> {
     let normalized = normalize(primary);
-    let mut order = vec!["openai", "elevenlabs", "edge"];
+    let mut order = vec!["openai", "elevenlabs", "kittentts", "edge"];
     if let Some(index) = order.iter().position(|candidate| *candidate == normalized) {
         order.swap(0, index);
     }
@@ -27816,6 +28104,142 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_agent_runtime_self_heals_with_fallback_provider_retry() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind provider listener");
+        let provider_addr = listener.local_addr().expect("provider addr");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept provider request");
+            let mut buffer = vec![0_u8; 64 * 1024];
+            let _ = stream.read(&mut buffer).expect("read provider request");
+            let payload = json!({
+                "id": "cmpl-self-heal-1",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "self-heal-ok"
+                        }
+                    }
+                ]
+            });
+            let body = payload.to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write provider response");
+        });
+
+        let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "models": {
+                    "providers": {
+                        "ollama": {
+                            "api": "openai-completions",
+                            "baseUrl": "http://127.0.0.1:1/v1",
+                            "allowUnauthenticated": true,
+                            "models": [{ "id": "tiny-local", "name": "Tiny Local" }]
+                        },
+                        "openai": {
+                            "api": "openai-completions",
+                            "baseUrl": format!("http://{provider_addr}/v1"),
+                            "apiKey": "test-openai-key",
+                            "models": [{ "id": "gpt-5.3", "name": "GPT-5.3" }]
+                        }
+                    }
+                }
+            }),
+        )
+        .await;
+
+        let session_key = "agent:main:discord:group:g-self-heal-retry";
+        let patch_model = RpcRequestFrame {
+            id: "req-self-heal-patch".to_owned(),
+            method: "sessions.patch".to_owned(),
+            params: json!({
+                "key": session_key,
+                "model": "ollama/tiny-local"
+            }),
+        };
+        assert!(matches!(
+            dispatcher.handle_request(&patch_model).await,
+            RpcDispatchOutcome::Handled(_)
+        ));
+
+        let run_agent = RpcRequestFrame {
+            id: "req-self-heal-run".to_owned(),
+            method: "agent".to_owned(),
+            params: json!({
+                "sessionKey": session_key,
+                "idempotencyKey": "self-heal-run-1",
+                "message": "recover this run"
+            }),
+        };
+        match dispatcher.handle_request(&run_agent).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/status").and_then(Value::as_str),
+                    Some("started")
+                );
+                assert_eq!(
+                    payload.pointer("/runtime/provider").and_then(Value::as_str),
+                    Some("openai")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/runtime/selfHealing/enabled")
+                        .and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/runtime/selfHealing/recovered")
+                        .and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert!(payload
+                    .pointer("/runtime/selfHealing/attempts")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| {
+                        items.iter().any(|entry| {
+                            entry.pointer("/provider").and_then(Value::as_str) == Some("openai")
+                                && entry.pointer("/status").and_then(Value::as_str)
+                                    == Some("recovered")
+                        })
+                    }));
+            }
+            _ => panic!("expected runtime agent request to be handled"),
+        }
+
+        let wait = RpcRequestFrame {
+            id: "req-self-heal-wait".to_owned(),
+            method: "agent.wait".to_owned(),
+            params: json!({
+                "runId": "self-heal-run-1",
+                "timeoutMs": 0
+            }),
+        };
+        match dispatcher.handle_request(&wait).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/status").and_then(Value::as_str),
+                    Some("ok")
+                );
+            }
+            _ => panic!("expected agent.wait handled"),
+        }
+
+        server.join().expect("join self-heal provider server");
+    }
+
+    #[tokio::test]
     async fn dispatcher_compact_rotates_auto_auth_profile_override() {
         let dispatcher = RpcDispatcher::new();
         let key = "agent:main:discord:group:g-model-rotate";
@@ -31774,7 +32198,7 @@ mod tests {
                 assert_eq!(code, 400);
                 assert_eq!(
                     message,
-                    "Invalid provider. Use openai, elevenlabs, or edge."
+                    "Invalid provider. Use openai, elevenlabs, kittentts, or edge."
                 );
             }
             _ => panic!("expected invalid provider rejection"),
@@ -31926,6 +32350,9 @@ mod tests {
                     entry.pointer("/id").and_then(serde_json::Value::as_str) == Some("openai")
                 }));
                 assert!(providers.iter().any(|entry| {
+                    entry.pointer("/id").and_then(serde_json::Value::as_str) == Some("kittentts")
+                }));
+                assert!(providers.iter().any(|entry| {
                     entry.pointer("/id").and_then(serde_json::Value::as_str) == Some("edge")
                         && entry
                             .pointer("/configured")
@@ -31934,6 +32361,54 @@ mod tests {
                 }));
             }
             _ => panic!("expected tts.providers handled"),
+        }
+
+        let set_kittentts = RpcRequestFrame {
+            id: "req-tts-set-provider-kittentts".to_owned(),
+            method: "tts.setProvider".to_owned(),
+            params: serde_json::json!({
+                "provider": "kittentts"
+            }),
+        };
+        match dispatcher.handle_request(&set_kittentts).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/provider")
+                        .and_then(serde_json::Value::as_str),
+                    Some("kittentts")
+                );
+            }
+            _ => panic!("expected kittentts provider set"),
+        }
+
+        let convert_kittentts = RpcRequestFrame {
+            id: "req-tts-convert-kittentts".to_owned(),
+            method: "tts.convert".to_owned(),
+            params: serde_json::json!({
+                "text": "offline voice check"
+            }),
+        };
+        match dispatcher.handle_request(&convert_kittentts).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/provider")
+                        .and_then(serde_json::Value::as_str),
+                    Some("kittentts")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/providerUsed")
+                        .and_then(serde_json::Value::as_str),
+                    Some("kittentts")
+                );
+                assert!(payload
+                    .pointer("/audioBytes")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some_and(|value| value > 0));
+            }
+            _ => panic!("expected kittentts convert handled"),
         }
 
         let disable = RpcRequestFrame {
