@@ -1,6 +1,6 @@
 # Provider Support Matrix (Rust Runtime)
 
-Last audited: 2026-02-22
+Last audited: 2026-02-24
 
 This matrix is generated from the runtime implementation, not marketing labels:
 
@@ -46,6 +46,7 @@ Runtime security note (`v1.6.2`):
 | Nebius | Built-in default | `nebius` |
 | Inference.net | Built-in default | `inference-net` |
 | OpenRouter | Built-in default | `openrouter` |
+| Inception Mercury | Built-in default | `inception` |
 | AIMLAPI | Built-in default | `aimlapi` |
 | Vercel AI Gateway | Alias + config | `vercel-ai-gateway` |
 | ShareAI | Alias + config | `shareai` |
@@ -65,6 +66,7 @@ Runtime security note (`v1.6.2`):
 Notes:
 
 - `zai` / `zhipuai` guest website bridge is implemented (`chat.z.ai` path support).
+- `qwen-portal` guest website bridge fallback is implemented (`chat.qwen.ai` path support).
 - `kimi-coding` has a built-in API endpoint default and OAuth catalog support, but guest bridge is login/session-gated in practice.
 
 ## Exhaustive Built-in Runtime Defaults (Canonical IDs)
@@ -86,6 +88,7 @@ All entries below resolve to `api_mode = openai-completions` in runtime.
 | `huggingface` | `https://api-inference.huggingface.co/v1` | no |
 | `hyperbolic` | `https://api.hyperbolic.xyz/v1` | no |
 | `inference-net` | `https://api.inference.net/v1` | no |
+| `inception` | `https://api.inceptionlabs.ai/v1` | no |
 | `kimi-coding` | `https://api.kimi.com/coding` | no |
 | `koboldcpp` | `http://127.0.0.1:5001/v1` | yes |
 | `litellm` | `http://127.0.0.1:4000/v1` | yes |
@@ -105,7 +108,7 @@ All entries below resolve to `api_mode = openai-completions` in runtime.
 | `openrouter` | `https://openrouter.ai/api/v1` | no |
 | `perplexity` | `https://api.perplexity.ai` | no |
 | `qianfan` | `https://qianfan.baidubce.com/v2` | no |
-| `qwen-portal` | `https://portal.qwen.ai/v1` | no |
+| `qwen-portal` | `https://portal.qwen.ai/v1` | yes (bridge fallback) |
 | `sambanova` | `https://api.sambanova.ai/v1` | no |
 | `siliconflow` | `https://api.siliconflow.cn/v1` | no |
 | `tgi` | `http://127.0.0.1:8080/v1` | yes |
@@ -137,15 +140,17 @@ These canonical IDs are normalized from aliases, but do not have built-in defaul
 | Canonical provider | Default websiteUrl | Default bridge candidates |
 |---|---|---|
 | `opencode` | `https://opencode.ai` | `https://opencode.ai/zen/v1`, `https://api.opencode.ai/v1` |
+| `qwen-portal` | `https://chat.qwen.ai` | `https://chat.qwen.ai` |
 | `zai` | `https://chat.z.ai` | none pre-seeded |
 | `zhipuai` | `https://chat.z.ai` | none pre-seeded |
 | `zhipuai-coding` | `https://chat.z.ai` | none pre-seeded |
 | `kimi-coding` | `https://www.kimi.com` | none pre-seeded |
 | `minimax-portal` | `https://chat.minimax.io` | none pre-seeded |
+| `inception` | `https://chat.inceptionlabs.ai` | `https://api.inceptionlabs.ai/v1` |
 
 Implementation detail:
 
-- Zhipu/Z.ai guest bridge fallback is explicitly recognized in `src/website_bridge.rs`.
+- Zhipu/Z.ai and Qwen guest bridge fallbacks are explicitly recognized in `src/website_bridge.rs`.
 - Kimi/Minimax website hints are surfaced for configured bridge mode, but practical usage is login/session dependent.
 
 ## OAuth Provider Catalog (RPC Surface)

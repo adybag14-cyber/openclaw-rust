@@ -52,6 +52,16 @@ struct ZaiChatCreateResponse {
     id: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct QwenGuestAuthResponse {
+    token: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct QwenChatCreateResponse {
+    id: String,
+}
+
 pub async fn invoke_openai_compatible(
     request: WebsiteBridgeRequest<'_>,
 ) -> Result<WebsiteBridgeResponse, String> {
@@ -68,6 +78,12 @@ pub async fn invoke_openai_compatible(
         match invoke_zai_guest_bridge(&client, &request).await {
             Ok(response) => return Ok(response),
             Err(err) => attempts.push(format!("official_zai_bridge_error: {err}")),
+        }
+    }
+    if should_use_qwen_guest_bridge(&request) {
+        match invoke_qwen_guest_bridge(&client, &request).await {
+            Ok(response) => return Ok(response),
+            Err(err) => attempts.push(format!("official_qwen_bridge_error: {err}")),
         }
     }
 
@@ -242,6 +258,24 @@ fn should_use_zai_guest_bridge(request: &WebsiteBridgeRequest<'_>) -> bool {
             .candidate_base_urls
             .iter()
             .any(|url| url.to_ascii_lowercase().contains("chat.z.ai"))
+}
+
+fn should_use_qwen_guest_bridge(request: &WebsiteBridgeRequest<'_>) -> bool {
+    let provider = request.provider.trim().to_ascii_lowercase();
+    if provider.contains("qwen") {
+        return true;
+    }
+    request
+        .website_url
+        .map(|url| {
+            let lowered = url.to_ascii_lowercase();
+            lowered.contains("chat.qwen.ai") || lowered.contains("qwen.ai")
+        })
+        .unwrap_or(false)
+        || request.candidate_base_urls.iter().any(|url| {
+            let lowered = url.to_ascii_lowercase();
+            lowered.contains("chat.qwen.ai") || lowered.contains("qwen.ai")
+        })
 }
 
 async fn invoke_zai_guest_bridge(
@@ -447,6 +481,343 @@ fn resolve_zai_origin(request: &WebsiteBridgeRequest<'_>) -> Option<String> {
                 .iter()
                 .find_map(|candidate| normalize_origin_url(candidate))
         })
+}
+
+async fn invoke_qwen_guest_bridge(
+    client: &Client,
+    request: &WebsiteBridgeRequest<'_>,
+) -> Result<WebsiteBridgeResponse, String> {
+    let origin = resolve_qwen_origin(request)
+        .ok_or_else(|| "qwen bridge origin could not be resolved".to_owned())?;
+    let model_candidates = build_qwen_model_candidates(request.model);
+    if model_candidates.is_empty() {
+        return Err("qwen bridge has no candidate models".to_owned());
+    }
+    let auth_token = resolve_qwen_auth_token(client, request, &origin).await?;
+    let mut attempts = Vec::new();
+    for model in model_candidates {
+        match invoke_qwen_guest_model(client, request, &origin, &auth_token, &model).await {
+            Ok(response) => return Ok(response),
+            Err(err) => attempts.push(format!("{model}: {err}")),
+        }
+    }
+    Err(format!(
+        "qwen bridge exhausted model candidates; attempts: {}",
+        attempts.join(" | ")
+    ))
+}
+
+fn resolve_qwen_origin(request: &WebsiteBridgeRequest<'_>) -> Option<String> {
+    request
+        .website_url
+        .and_then(normalize_origin_url)
+        .or_else(|| {
+            request
+                .candidate_base_urls
+                .iter()
+                .find_map(|candidate| normalize_origin_url(candidate))
+        })
+        .or_else(|| Some("https://chat.qwen.ai".to_owned()))
+}
+
+async fn resolve_qwen_auth_token(
+    client: &Client,
+    request: &WebsiteBridgeRequest<'_>,
+    origin: &str,
+) -> Result<String, String> {
+    if let Some(token) = request
+        .api_key
+        .and_then(|value| normalize_optional_text(value, 8_192))
+    {
+        return Ok(token);
+    }
+    let auth_endpoint = format!("{origin}/api/v1/auths/");
+    let auth_response = client
+        .get(&auth_endpoint)
+        .send()
+        .await
+        .map_err(|err| format!("qwen auth request failed: {err}"))?;
+    let status = auth_response.status();
+    let body = auth_response
+        .text()
+        .await
+        .map_err(|err| format!("qwen auth body read failed: {err}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "qwen auth request failed with status {}: {}",
+            status.as_u16(),
+            truncate_text(&body, 320)
+        ));
+    }
+    let auth: QwenGuestAuthResponse =
+        serde_json::from_str(&body).map_err(|err| format!("qwen auth parse failed: {err}"))?;
+    let token = normalize_optional_text(&auth.token, 8_192)
+        .ok_or_else(|| "qwen auth response missing token".to_owned())?;
+    Ok(token)
+}
+
+async fn invoke_qwen_guest_model(
+    client: &Client,
+    request: &WebsiteBridgeRequest<'_>,
+    origin: &str,
+    auth_token: &str,
+    model: &str,
+) -> Result<WebsiteBridgeResponse, String> {
+    let create_chat_endpoint = format!("{origin}/api/chats/new");
+    let create_chat_payload = json!({
+        "title": "OpenClaw Rust",
+        "models": [model],
+        "chat_mode": request
+            .request_overrides
+            .get("chat_mode")
+            .cloned()
+            .unwrap_or_else(|| Value::String("normal".to_owned())),
+        "chat_type": request
+            .request_overrides
+            .get("chat_type")
+            .cloned()
+            .unwrap_or_else(|| Value::String("t2t".to_owned())),
+        "timestamp": qwen_now_ms()
+    });
+    let mut create_chat_request = client
+        .post(&create_chat_endpoint)
+        .header("Authorization", format!("Bearer {}", auth_token))
+        .header("Content-Type", "application/json");
+    for (name, value) in request.headers {
+        create_chat_request = create_chat_request.header(name, value);
+    }
+    let create_chat_response = create_chat_request
+        .json(&create_chat_payload)
+        .send()
+        .await
+        .map_err(|err| format!("qwen chat create request failed: {err}"))?;
+    let create_chat_status = create_chat_response.status();
+    let create_chat_body = create_chat_response
+        .text()
+        .await
+        .map_err(|err| format!("qwen chat create body read failed: {err}"))?;
+    if !create_chat_status.is_success() {
+        return Err(format!(
+            "qwen chat create failed with status {}: {}",
+            create_chat_status.as_u16(),
+            truncate_text(&create_chat_body, 320)
+        ));
+    }
+    let chat: QwenChatCreateResponse = serde_json::from_str(&create_chat_body)
+        .map_err(|err| format!("qwen chat create parse failed: {err}"))?;
+    let chat_id = normalize_optional_text(&chat.id, 512)
+        .ok_or_else(|| "qwen chat create response missing chat id".to_owned())?;
+
+    let mut completion_payload = request.request_overrides.clone();
+    completion_payload.insert("chat_id".to_owned(), Value::String(chat_id.clone()));
+    completion_payload.insert("model".to_owned(), Value::String(model.to_owned()));
+    completion_payload.insert(
+        "messages".to_owned(),
+        Value::Array(request.messages.to_vec()),
+    );
+    completion_payload
+        .entry("version".to_owned())
+        .or_insert(Value::String("2.1".to_owned()));
+    completion_payload
+        .entry("timestamp".to_owned())
+        .or_insert(json!(qwen_now_ms()));
+    completion_payload
+        .entry("chat_mode".to_owned())
+        .or_insert(Value::String("normal".to_owned()));
+    completion_payload
+        .entry("stream".to_owned())
+        .or_insert(Value::Bool(false));
+    if !request.tools.is_empty() {
+        completion_payload.insert("tools".to_owned(), Value::Array(request.tools.to_vec()));
+        completion_payload
+            .entry("tool_choice".to_owned())
+            .or_insert(Value::String("auto".to_owned()));
+    }
+
+    let completion_endpoint = format!("{origin}/api/chat/completions?chat_id={chat_id}");
+    let mut completion_request = client
+        .post(&completion_endpoint)
+        .header("Authorization", format!("Bearer {}", auth_token))
+        .header("Content-Type", "application/json")
+        .header("X-Accel-Buffering", "no");
+    for (name, value) in request.headers {
+        completion_request = completion_request.header(name, value);
+    }
+    let completion_response = completion_request
+        .json(&Value::Object(completion_payload))
+        .send()
+        .await
+        .map_err(|err| format!("qwen completion request failed: {err}"))?;
+    let completion_status = completion_response.status();
+    let completion_body = completion_response
+        .text()
+        .await
+        .map_err(|err| format!("qwen completion body read failed: {err}"))?;
+    if !completion_status.is_success() {
+        return Err(format!(
+            "qwen completion failed with status {}: {}",
+            completion_status.as_u16(),
+            truncate_text(&completion_body, 640)
+        ));
+    }
+    let openai_body = parse_qwen_response_to_openai_body(&completion_body).ok_or_else(|| {
+        format!(
+            "qwen completion response missing assistant content: {}",
+            truncate_text(&completion_body, 640)
+        )
+    })?;
+    Ok(WebsiteBridgeResponse {
+        body: openai_body,
+        endpoint: completion_endpoint,
+    })
+}
+
+fn build_qwen_model_candidates(model: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(requested) = normalize_optional_text(model, 256) {
+        out.push(requested.clone());
+        let normalized = requested.to_ascii_lowercase();
+        if normalized.contains("qwen3.5")
+            || normalized.contains("qwen-3.5")
+            || normalized == "qwen35"
+            || normalized == "qwen3_5"
+        {
+            out.push("qwen3.5-397b-a17b".to_owned());
+            out.push("qwen3.5-plus".to_owned());
+            out.push("qwen3.5-flash".to_owned());
+        }
+    }
+    if out.is_empty() {
+        out.push("qwen3.5-397b-a17b".to_owned());
+        out.push("qwen3.5-plus".to_owned());
+        out.push("qwen3.5-flash".to_owned());
+    }
+    let mut dedup = Vec::with_capacity(out.len());
+    for candidate in out {
+        if dedup
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(&candidate))
+        {
+            continue;
+        }
+        dedup.push(candidate);
+    }
+    dedup
+}
+
+fn qwen_now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0)
+}
+
+fn parse_qwen_response_to_openai_body(raw: &str) -> Option<String> {
+    if let Ok(parsed) = serde_json::from_str::<Value>(raw) {
+        if parsed
+            .pointer("/choices")
+            .and_then(Value::as_array)
+            .map(|choices| !choices.is_empty())
+            .unwrap_or(false)
+        {
+            return Some(parsed.to_string());
+        }
+        if let Some(content) = extract_qwen_assistant_content_from_value(&parsed) {
+            return Some(
+                json!({
+                    "choices": [
+                        {
+                            "message": {
+                                "content": content
+                            }
+                        }
+                    ]
+                })
+                .to_string(),
+            );
+        }
+    }
+    parse_qwen_sse_to_openai_body(raw)
+}
+
+fn extract_qwen_assistant_content_from_value(parsed: &Value) -> Option<String> {
+    let content = parsed
+        .pointer("/data/content")
+        .and_then(Value::as_str)
+        .or_else(|| parsed.pointer("/message/content").and_then(Value::as_str))
+        .or_else(|| parsed.pointer("/content").and_then(Value::as_str))?;
+    normalize_optional_text(&cleanup_qwen_completion_text(content), 12_000)
+}
+
+fn parse_qwen_sse_to_openai_body(raw: &str) -> Option<String> {
+    let mut deltas = String::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("data:") {
+            continue;
+        }
+        let payload = trimmed.trim_start_matches("data:").trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            continue;
+        }
+        let parsed: Value = match serde_json::from_str(payload) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if let Some(delta) = parsed
+            .pointer("/choices/0/delta/content")
+            .and_then(Value::as_str)
+        {
+            deltas.push_str(delta);
+            continue;
+        }
+        if let Some(delta) = parsed
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+        {
+            deltas.push_str(delta);
+            continue;
+        }
+        if let Some(delta) = parsed
+            .pointer("/data/delta_content")
+            .and_then(Value::as_str)
+        {
+            deltas.push_str(delta);
+            continue;
+        }
+        if let Some(delta) = parsed.pointer("/data/content").and_then(Value::as_str) {
+            deltas.push_str(delta);
+        }
+    }
+    let cleaned = cleanup_qwen_completion_text(&deltas);
+    let content = normalize_optional_text(&cleaned, 12_000)?;
+    Some(
+        json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": content
+                    }
+                }
+            ]
+        })
+        .to_string(),
+    )
+}
+
+fn cleanup_qwen_completion_text(raw: &str) -> String {
+    let normalized = raw.replace('\r', "");
+    if let Some(idx) = normalized.rfind("</think>") {
+        let tail = normalized[idx + "</think>".len()..].trim();
+        if !tail.is_empty() {
+            return tail.to_owned();
+        }
+    }
+    normalized
+        .replace("<think>", "")
+        .replace("</think>", "")
+        .trim()
+        .to_owned()
 }
 
 fn normalize_origin_url(raw: &str) -> Option<String> {
@@ -1020,6 +1391,157 @@ data: {"type":"chat:completion","data":{"delta_content":"ok","phase":"done"}}"#;
         let completion_request = captured_completion.lock().expect("lock completion").clone();
         assert!(completion_request.contains("\r\nx-signature:"));
         assert!(completion_request.contains("\r\nauthorization: Bearer guest-token-123"));
+
+        server.join().expect("join server");
+    }
+
+    #[test]
+    fn qwen_model_candidates_include_qwen35_fallback_set() {
+        let candidates = build_qwen_model_candidates("qwen3.5");
+        assert_eq!(candidates.first().map(String::as_str), Some("qwen3.5"));
+        assert!(candidates.iter().any(|item| item == "qwen3.5-397b-a17b"));
+        assert!(candidates.iter().any(|item| item == "qwen3.5-plus"));
+        assert!(candidates.iter().any(|item| item == "qwen3.5-flash"));
+    }
+
+    #[test]
+    fn qwen_sse_payload_converts_to_openai_shape() {
+        let sse = r#"data: {"choices":[{"delta":{"content":"<think>trace</think>"}}]}
+
+data: {"choices":[{"delta":{"content":"ok"}}]}
+
+data: [DONE]"#;
+        let parsed = parse_qwen_sse_to_openai_body(sse).expect("parse qwen sse");
+        let json: Value = serde_json::from_str(&parsed).expect("openai json");
+        assert_eq!(
+            json.pointer("/choices/0/message/content")
+                .and_then(Value::as_str),
+            Some("ok")
+        );
+    }
+
+    #[tokio::test]
+    async fn official_qwen_guest_bridge_path_generates_openai_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let captured_completion = Arc::new(Mutex::new(String::new()));
+        let captured_completion_server = Arc::clone(&captured_completion);
+
+        let server = std::thread::spawn(move || {
+            let mut completion_handled = false;
+            while !completion_handled {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                let mut buffer = vec![0_u8; 128 * 1024];
+                let read = stream.read(&mut buffer).expect("read request");
+                let request_text = String::from_utf8_lossy(&buffer[..read]).to_string();
+                let request_line = request_text.lines().next().unwrap_or_default().to_owned();
+                if request_line.starts_with("GET / HTTP/1.1")
+                    || request_line.starts_with("GET / HTTP/1.0")
+                {
+                    let body = "ok";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write root response");
+                    continue;
+                }
+                if request_line.contains("/api/v1/auths/") {
+                    let body = json!({
+                        "token": "qwen-guest-token"
+                    })
+                    .to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write auth response");
+                    continue;
+                }
+                if request_line.contains("/api/chats/new") {
+                    let body = json!({
+                        "id": "qwen-chat-123"
+                    })
+                    .to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write chat response");
+                    continue;
+                }
+                if request_line.contains("/api/chat/completions") {
+                    if let Ok(mut guard) = captured_completion_server.lock() {
+                        *guard = request_text.clone();
+                    }
+                    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"<think>trace</think>\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write completion response");
+                    completion_handled = true;
+                    continue;
+                }
+                let body = "{\"detail\":\"not found\"}";
+                let response = format!(
+                    "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write not found response");
+            }
+        });
+
+        let base = format!("http://{addr}");
+        let candidates = vec![base.clone()];
+        let messages = vec![json!({
+            "role": "user",
+            "content": "Reply with exactly: ok"
+        })];
+        let request_overrides = serde_json::Map::new();
+        let request = WebsiteBridgeRequest {
+            provider: "qwen-portal",
+            model: "qwen3.5",
+            messages: &messages,
+            tools: &[],
+            timeout_ms: 30_000,
+            website_url: Some(&base),
+            candidate_base_urls: &candidates,
+            headers: &[],
+            auth_header_name: "Authorization",
+            auth_header_prefix: "Bearer ",
+            api_key: None,
+            request_overrides: &request_overrides,
+        };
+        let response = invoke_openai_compatible(request)
+            .await
+            .expect("official qwen bridge response");
+        let response_json: Value = serde_json::from_str(&response.body).expect("response json");
+        assert_eq!(
+            response_json
+                .pointer("/choices/0/message/content")
+                .and_then(Value::as_str),
+            Some("ok")
+        );
+        assert!(response.endpoint.contains("/api/chat/completions?chat_id="));
+
+        let completion_request = captured_completion.lock().expect("lock completion").clone();
+        assert!(completion_request.contains("\r\nauthorization: Bearer qwen-guest-token"));
 
         server.join().expect("join server");
     }

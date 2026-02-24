@@ -228,6 +228,18 @@ impl MethodRegistry {
                     min_role: "client",
                 },
                 MethodSpec {
+                    name: "edge.finetune.status",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "edge.finetune.run",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
                     name: "voicewake.get",
                     family: MethodFamily::Gateway,
                     requires_auth: true,
@@ -987,6 +999,8 @@ const EDGE_ENCLAVE_MODE_ENV: &str = "OPENCLAW_RS_ENCLAVE_MODE";
 const EDGE_ENCLAVE_SGX_ENV: &str = "OPENCLAW_RS_ENCLAVE_SGX";
 const EDGE_ENCLAVE_TPM_ENV: &str = "OPENCLAW_RS_ENCLAVE_TPM";
 const EDGE_ENCLAVE_SEV_ENV: &str = "OPENCLAW_RS_ENCLAVE_SEV";
+const EDGE_LORA_TRAINER_BIN_ENV: &str = "OPENCLAW_RS_LORA_TRAINER_BIN";
+const EDGE_LORA_TRAINER_ARGS_ENV: &str = "OPENCLAW_RS_LORA_TRAINER_ARGS";
 const EDGE_HOMOMORPHIC_SCHEME: &str = "additive-mask-v1";
 const TTS_ELEVENLABS_MODELS: &[&str] = &[
     "eleven_multilingual_v2",
@@ -1003,6 +1017,10 @@ const EDGE_SWARM_MAX_TASKS: usize = 24;
 const EDGE_SWARM_MAX_AGENTS: usize = 12;
 const EDGE_MESH_MAX_PEERS: usize = 1_024;
 const EDGE_HOMOMORPHIC_MAX_CIPHERTEXTS: usize = 4_096;
+const EDGE_FINETUNE_MAX_EPOCHS: u64 = 64;
+const EDGE_FINETUNE_MAX_RANK: u64 = 512;
+const EDGE_FINETUNE_MAX_SAMPLES: u64 = 200_000;
+const EDGE_FINETUNE_MAX_ADAPTER_NAME_CHARS: usize = 128;
 const DEFAULT_VOICEWAKE_TRIGGERS: &[&str] = &["openclaw", "claude", "computer"];
 const VOICE_INPUT_DEVICE_DEFAULT: &str = "default-microphone";
 const VOICE_OUTPUT_DEVICE_DEFAULT: &str = "default-speaker";
@@ -1055,6 +1073,8 @@ const SUPPORTED_RPC_METHODS: &[&str] = &[
     "edge.enclave.prove",
     "edge.mesh.status",
     "edge.homomorphic.compute",
+    "edge.finetune.status",
+    "edge.finetune.run",
     "voicewake.get",
     "voicewake.set",
     "models.list",
@@ -1397,6 +1417,8 @@ impl RpcDispatcher {
             "edge.enclave.prove" => self.handle_edge_enclave_prove(req).await,
             "edge.mesh.status" => self.handle_edge_mesh_status(req).await,
             "edge.homomorphic.compute" => self.handle_edge_homomorphic_compute(req).await,
+            "edge.finetune.status" => self.handle_edge_finetune_status(req).await,
+            "edge.finetune.run" => self.handle_edge_finetune_run(req).await,
             "voicewake.get" => self.handle_voicewake_get(req).await,
             "voicewake.set" => self.handle_voicewake_set(req).await,
             "models.list" => self.handle_models_list(req).await,
@@ -2637,6 +2659,256 @@ impl RpcDispatcher {
         }
         let result = run_homomorphic_compute(&key_id, &operation, &ciphertexts, reveal_result);
         RpcDispatchOutcome::Handled(result)
+    }
+
+    async fn handle_edge_finetune_status(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = decode_params::<EdgeFineTuneStatusParams>(&req.params) {
+            return RpcDispatchOutcome::bad_request(format!(
+                "invalid edge.finetune.status params: {err}"
+            ));
+        }
+        let config_snapshot = self.config.get_snapshot().await;
+        let runtime_profile = runtime_feature_profile_from_config(&config_snapshot.config);
+        let memory_stats = self.memory.stats().await;
+        let trainer_bin =
+            edge_lora_trainer_binary_path().map(|path| path.to_string_lossy().into_owned());
+        let trainer_args = edge_lora_trainer_args();
+        let zvec_store_exists = Path::new(&memory_stats.zvec_store_path).is_file();
+        let graph_store_exists = Path::new(&memory_stats.graph_store_path).is_file();
+        let dataset_sources = vec![
+            json!({
+                "id": "zvec",
+                "path": memory_stats.zvec_store_path,
+                "exists": zvec_store_exists,
+                "entries": memory_stats.zvec_entries
+            }),
+            json!({
+                "id": "graphlite",
+                "path": memory_stats.graph_store_path,
+                "exists": graph_store_exists,
+                "nodes": memory_stats.graph_nodes,
+                "edges": memory_stats.graph_edges
+            }),
+        ];
+        RpcDispatchOutcome::Handled(json!({
+            "runtimeProfile": runtime_profile.as_str(),
+            "feature": "on-device-finetune-self-evolution",
+            "supported": true,
+            "adapterFormat": "lora",
+            "trainerBinary": trainer_bin,
+            "trainerArgs": trainer_args,
+            "defaults": {
+                "epochs": 3,
+                "rank": 32,
+                "learningRate": 0.0002,
+                "maxSamples": EDGE_FINETUNE_MAX_SAMPLES.min(16_384),
+                "dryRun": true
+            },
+            "memory": {
+                "enabled": memory_stats.enabled,
+                "zvecEntries": memory_stats.zvec_entries,
+                "graphNodes": memory_stats.graph_nodes,
+                "graphEdges": memory_stats.graph_edges
+            },
+            "datasetSources": dataset_sources
+        }))
+    }
+
+    async fn handle_edge_finetune_run(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<EdgeFineTuneRunParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid edge.finetune.run params: {err}"
+                ));
+            }
+        };
+        let config_snapshot = self.config.get_snapshot().await;
+        let runtime_profile = runtime_feature_profile_from_config(&config_snapshot.config);
+        let catalog = self.models.resolve_catalog(Some(&config_snapshot.config));
+        let requested_model = normalize_optional_text(params.base_model, 256);
+        let selected_model = requested_model
+            .as_deref()
+            .and_then(|raw| {
+                if let Some((provider, model)) = raw.split_once('/') {
+                    let (provider, model) = normalize_model_ref(provider, model);
+                    return catalog
+                        .iter()
+                        .find(|entry| {
+                            entry.provider.eq_ignore_ascii_case(&provider)
+                                && entry.id.eq_ignore_ascii_case(&model)
+                        })
+                        .cloned();
+                }
+                catalog
+                    .iter()
+                    .find(|entry| entry.id.eq_ignore_ascii_case(raw))
+                    .cloned()
+            })
+            .or_else(|| {
+                catalog
+                    .iter()
+                    .find(|entry| {
+                        entry.provider.eq_ignore_ascii_case("qwen-portal")
+                            && entry.id.to_ascii_lowercase().contains("qwen3.5")
+                    })
+                    .cloned()
+            })
+            .or_else(|| {
+                catalog
+                    .iter()
+                    .find(|entry| {
+                        entry.provider.eq_ignore_ascii_case("openrouter")
+                            && entry.id.to_ascii_lowercase().contains("qwen/")
+                    })
+                    .cloned()
+            })
+            .unwrap_or_else(|| ModelRegistry::primary_model_from_catalog(&catalog));
+        let adapter_name =
+            normalize_optional_text(params.adapter_name, EDGE_FINETUNE_MAX_ADAPTER_NAME_CHARS)
+                .unwrap_or_else(|| format!("edge-lora-{}", now_ms()));
+        let epochs = params
+            .epochs
+            .unwrap_or(3)
+            .clamp(1, EDGE_FINETUNE_MAX_EPOCHS);
+        let rank = params.rank.unwrap_or(32).clamp(4, EDGE_FINETUNE_MAX_RANK);
+        let learning_rate = params.learning_rate.unwrap_or(0.0002).clamp(0.000001, 0.2);
+        let max_samples = params
+            .max_samples
+            .unwrap_or(8_192)
+            .clamp(128, EDGE_FINETUNE_MAX_SAMPLES);
+        let dry_run = params.dry_run.unwrap_or(true);
+        let auto_ingest_memory = params.auto_ingest_memory.unwrap_or(true);
+        let dataset_path = normalize_optional_text(params.dataset_path, 2_048);
+        let output_path = normalize_optional_text(params.output_path, 2_048)
+            .unwrap_or_else(|| format!(".openclaw-rs/evolution/adapters/{adapter_name}"));
+        let memory_stats = self.memory.stats().await;
+        if dataset_path.is_none()
+            && !auto_ingest_memory
+            && memory_stats.zvec_entries == 0
+            && memory_stats.graph_nodes == 0
+        {
+            return RpcDispatchOutcome::bad_request(
+                "edge.finetune.run requires datasetPath or autoIngestMemory=true with memory data",
+            );
+        }
+        let trainer_binary =
+            edge_lora_trainer_binary_path().map(|path| path.to_string_lossy().into_owned());
+        let mut suggested_command = trainer_binary.as_ref().map(|binary| {
+            let mut argv = edge_lora_trainer_args();
+            argv.extend([
+                "--model".to_owned(),
+                selected_model.id.clone(),
+                "--provider".to_owned(),
+                selected_model.provider.clone(),
+                "--adapter".to_owned(),
+                adapter_name.clone(),
+                "--rank".to_owned(),
+                rank.to_string(),
+                "--epochs".to_owned(),
+                epochs.to_string(),
+                "--lr".to_owned(),
+                format!("{learning_rate:.6}"),
+                "--max-samples".to_owned(),
+                max_samples.to_string(),
+                "--output".to_owned(),
+                output_path.clone(),
+            ]);
+            if let Some(path) = dataset_path.clone() {
+                argv.push("--dataset".to_owned());
+                argv.push(path);
+            }
+            json!({
+                "binary": binary,
+                "argv": argv
+            })
+        });
+        if suggested_command.is_none() {
+            suggested_command = Some(json!({
+                "binary": Value::Null,
+                "argv": [],
+                "note": "set OPENCLAW_RS_LORA_TRAINER_BIN to execute real LoRA fine-tuning"
+            }));
+        }
+        let job_id = format!("finetune-{}", now_ms());
+        let manifest = json!({
+            "jobId": job_id,
+            "createdAtMs": now_ms(),
+            "runtimeProfile": runtime_profile.as_str(),
+            "dryRun": dry_run,
+            "autoIngestMemory": auto_ingest_memory,
+            "memorySnapshot": {
+                "zvecEntries": memory_stats.zvec_entries,
+                "graphNodes": memory_stats.graph_nodes,
+                "graphEdges": memory_stats.graph_edges
+            },
+            "baseModel": {
+                "provider": selected_model.provider,
+                "id": selected_model.id,
+                "name": selected_model.name
+            },
+            "adapter": {
+                "name": adapter_name,
+                "outputPath": output_path
+            },
+            "training": {
+                "epochs": epochs,
+                "rank": rank,
+                "learningRate": learning_rate,
+                "maxSamples": max_samples
+            },
+            "dataset": {
+                "path": dataset_path,
+                "autoIngestMemory": auto_ingest_memory
+            },
+            "suggestedCommand": suggested_command
+        });
+        let manifest_path = format!("{output_path}/manifest.json");
+        if !dry_run {
+            let output_dir = PathBuf::from(&output_path);
+            if let Err(err) = std::fs::create_dir_all(&output_dir) {
+                return RpcDispatchOutcome::internal_error(format!(
+                    "edge.finetune.run failed to create output path: {err}"
+                ));
+            }
+            let manifest_bytes = match serde_json::to_vec_pretty(&manifest) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    return RpcDispatchOutcome::internal_error(format!(
+                        "edge.finetune.run failed to encode manifest: {err}"
+                    ));
+                }
+            };
+            if let Err(err) = std::fs::write(&manifest_path, manifest_bytes) {
+                return RpcDispatchOutcome::internal_error(format!(
+                    "edge.finetune.run failed to write manifest: {err}"
+                ));
+            }
+        }
+        self.system
+            .log_line(format!(
+                "edge.finetune.run jobId={} model={}/{} dryRun={} output={}",
+                job_id,
+                manifest
+                    .pointer("/baseModel/provider")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                manifest
+                    .pointer("/baseModel/id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                dry_run,
+                output_path
+            ))
+            .await;
+        RpcDispatchOutcome::Handled(json!({
+            "ok": true,
+            "jobId": job_id,
+            "runtimeProfile": runtime_profile.as_str(),
+            "dryRun": dry_run,
+            "manifestPath": manifest_path,
+            "manifest": manifest
+        }))
     }
 
     async fn handle_voicewake_get(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
@@ -9376,11 +9648,67 @@ impl ModelRegistry {
                 fallback_providers: model_provider_failover_chain("zhipuai"),
             },
             ModelChoice {
+                id: "qwen3.5-397b-a17b".to_owned(),
+                name: "Qwen 3.5 397B A17B".to_owned(),
+                provider: "qwen-portal".to_owned(),
+                context_window: Some(131_072),
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("qwen-portal"),
+            },
+            ModelChoice {
+                id: "qwen3.5-plus".to_owned(),
+                name: "Qwen 3.5 Plus".to_owned(),
+                provider: "qwen-portal".to_owned(),
+                context_window: Some(131_072),
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("qwen-portal"),
+            },
+            ModelChoice {
+                id: "qwen3.5-flash".to_owned(),
+                name: "Qwen 3.5 Flash".to_owned(),
+                provider: "qwen-portal".to_owned(),
+                context_window: Some(65_536),
+                reasoning: Some(false),
+                fallback_providers: model_provider_failover_chain("qwen-portal"),
+            },
+            ModelChoice {
+                id: "mercury-2".to_owned(),
+                name: "Mercury 2".to_owned(),
+                provider: "inception".to_owned(),
+                context_window: Some(200_000),
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("inception"),
+            },
+            ModelChoice {
                 id: "google/gemini-2.0-flash-exp:free".to_owned(),
                 name: "Gemini 2.0 Flash (OpenRouter Free)".to_owned(),
                 provider: "openrouter".to_owned(),
                 context_window: None,
                 reasoning: None,
+                fallback_providers: model_provider_failover_chain("openrouter"),
+            },
+            ModelChoice {
+                id: "qwen/qwen3-next-80b-a3b-instruct:free".to_owned(),
+                name: "Qwen3 Next 80B Instruct (OpenRouter Free)".to_owned(),
+                provider: "openrouter".to_owned(),
+                context_window: None,
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("openrouter"),
+            },
+            ModelChoice {
+                id: "qwen/qwen3-coder:free".to_owned(),
+                name: "Qwen3 Coder (OpenRouter Free)".to_owned(),
+                provider: "openrouter".to_owned(),
+                context_window: None,
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("openrouter"),
+            },
+            ModelChoice {
+                id: "inception/mercury".to_owned(),
+                name: "Inception Mercury (OpenRouter)".to_owned(),
+                provider: "openrouter".to_owned(),
+                context_window: None,
+                reasoning: Some(true),
                 fallback_providers: model_provider_failover_chain("openrouter"),
             },
         ];
@@ -9685,6 +10013,7 @@ impl AuthProfileRegistry {
         insert_profiles("zhipuai-coding", &["zhipuai-coding:default"]);
         insert_profiles("opencode", &["opencode:default"]);
         insert_profiles("kimi-coding", &["kimi-coding:default"]);
+        insert_profiles("inception", &["inception:default"]);
 
         Self {
             state: Arc::new(Mutex::new(AuthProfileState { by_provider })),
@@ -15480,6 +15809,27 @@ fn tinywhisper_extra_args() -> Vec<String> {
             value
                 .split_whitespace()
                 .take(32)
+                .map(|item| item.to_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn edge_lora_trainer_binary_path() -> Option<PathBuf> {
+    env::var(EDGE_LORA_TRAINER_BIN_ENV)
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 2_048))
+        .map(PathBuf::from)
+}
+
+fn edge_lora_trainer_args() -> Vec<String> {
+    env::var(EDGE_LORA_TRAINER_ARGS_ENV)
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 2_048))
+        .map(|value| {
+            value
+                .split_whitespace()
+                .take(48)
                 .map(|item| item.to_owned())
                 .collect::<Vec<_>>()
         })
@@ -25020,6 +25370,33 @@ struct EdgeHomomorphicComputeParams {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+struct EdgeFineTuneStatusParams {}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeFineTuneRunParams {
+    #[serde(rename = "baseModel", alias = "base_model")]
+    base_model: Option<String>,
+    #[serde(rename = "adapterName", alias = "adapter_name")]
+    adapter_name: Option<String>,
+    #[serde(rename = "datasetPath", alias = "dataset_path")]
+    dataset_path: Option<String>,
+    #[serde(rename = "outputPath", alias = "output_path")]
+    output_path: Option<String>,
+    epochs: Option<u64>,
+    rank: Option<u64>,
+    #[serde(rename = "learningRate", alias = "learning_rate")]
+    learning_rate: Option<f64>,
+    #[serde(rename = "maxSamples", alias = "max_samples")]
+    max_samples: Option<u64>,
+    #[serde(rename = "autoIngestMemory", alias = "auto_ingest_memory")]
+    auto_ingest_memory: Option<bool>,
+    #[serde(rename = "dryRun", alias = "dry_run")]
+    dry_run: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 struct VoiceWakeGetParams {}
 
 #[derive(Debug, Default, Deserialize)]
@@ -27023,7 +27400,10 @@ fn normalize_provider_id(provider: &str) -> String {
         "zhipu-coding" | "zhipuai-coding" | "bigmodel-coding" => "zhipuai-coding".to_owned(),
         "zhipu" | "zhipu-ai" | "zhipuai" | "bigmodel" | "bigmodel-cn" => "zhipuai".to_owned(),
         "opencode-zen" => "opencode".to_owned(),
-        "qwen" => "qwen-portal".to_owned(),
+        "qwen" | "qwen3.5" | "qwen-3.5" | "qwen35" | "qwen-chat" => "qwen-portal".to_owned(),
+        "inception-labs" | "inceptionlabs" | "mercury" | "mercury2" | "mercury-2" => {
+            "inception".to_owned()
+        }
         "kimi-code" => "kimi-coding".to_owned(),
         "gemini" | "google-gemini-cli" => "google".to_owned(),
         "bytedance" | "doubao" => "volcengine".to_owned(),
@@ -27101,7 +27481,7 @@ fn model_provider_failover_chain(provider: &str) -> Vec<String> {
         | "qianfan" | "volcengine" | "byteplus" | "sambanova" | "ollama" | "vllm" | "litellm"
         | "lmstudio" | "localai" | "llamacpp" | "tgi" | "gpt4all" | "koboldcpp" | "oobabooga"
         | "deepinfra" | "siliconflow" | "novita" | "hyperbolic" | "nebius" | "inference-net"
-        | "aimlapi" | "cohere" => {
+        | "aimlapi" | "cohere" | "inception" => {
             vec!["openai".to_owned()]
         }
         _ => Vec::new(),
@@ -27230,6 +27610,12 @@ fn provider_runtime_defaults(provider: &str) -> Option<ProviderRuntimeDefaults> 
             api_mode: "openai-completions",
             base_url: "https://portal.qwen.ai/v1",
             env_vars: &["QWEN_PORTAL_API_KEY", "QWEN_OAUTH_TOKEN"],
+            allow_missing_api_key: true,
+        }),
+        "inception" => Some(ProviderRuntimeDefaults {
+            api_mode: "openai-completions",
+            base_url: "https://api.inceptionlabs.ai/v1",
+            env_vars: &["INCEPTION_API_KEY", "MERCURY_API_KEY"],
             allow_missing_api_key: false,
         }),
         "zai" => Some(ProviderRuntimeDefaults {
@@ -27398,9 +27784,14 @@ fn provider_runtime_bridge_defaults(
             Some("https://opencode.ai"),
             &["https://opencode.ai/zen/v1", "https://api.opencode.ai/v1"],
         ),
+        "qwen-portal" => (Some("https://chat.qwen.ai"), &["https://chat.qwen.ai"]),
         "zhipuai" | "zhipuai-coding" | "zai" => (Some("https://chat.z.ai"), &[]),
         "kimi-coding" => (Some("https://www.kimi.com"), &[]),
         "minimax-portal" => (Some("https://chat.minimax.io"), &[]),
+        "inception" => (
+            Some("https://chat.inceptionlabs.ai"),
+            &["https://api.inceptionlabs.ai/v1"],
+        ),
         _ => (None, &[]),
     }
 }
@@ -29302,6 +29693,10 @@ mod tests {
             vec!["openai".to_owned()]
         );
         assert_eq!(
+            super::model_provider_failover_chain("inception"),
+            vec!["openai".to_owned()]
+        );
+        assert_eq!(
             super::model_provider_failover_chain("zhipu"),
             vec!["openai".to_owned()]
         );
@@ -29316,8 +29711,11 @@ mod tests {
         assert_eq!(super::normalize_provider_id("chatgpt"), "openai");
         assert_eq!(super::normalize_provider_id("codex-cli"), "openai-codex");
         assert_eq!(super::normalize_provider_id("qwen"), "qwen-portal");
+        assert_eq!(super::normalize_provider_id("qwen3.5"), "qwen-portal");
         assert_eq!(super::normalize_provider_id("gemini"), "google");
         assert_eq!(super::normalize_provider_id("claude"), "anthropic");
+        assert_eq!(super::normalize_provider_id("mercury"), "inception");
+        assert_eq!(super::normalize_provider_id("inception-labs"), "inception");
         assert_eq!(super::normalize_provider_id("lm-studio"), "lmstudio");
         assert_eq!(super::normalize_provider_id("local-ai"), "localai");
         assert_eq!(super::normalize_provider_id("zhipu"), "zhipuai");
@@ -29356,6 +29754,20 @@ mod tests {
                 && entry
                     .id
                     .eq_ignore_ascii_case("google/gemini-2.0-flash-exp:free")
+        }));
+        assert!(models.iter().any(|entry| {
+            entry.provider.eq_ignore_ascii_case("qwen-portal")
+                && entry.id.eq_ignore_ascii_case("qwen3.5-397b-a17b")
+        }));
+        assert!(models.iter().any(|entry| {
+            entry.provider.eq_ignore_ascii_case("inception")
+                && entry.id.eq_ignore_ascii_case("mercury-2")
+        }));
+        assert!(models.iter().any(|entry| {
+            entry.provider.eq_ignore_ascii_case("openrouter")
+                && entry
+                    .id
+                    .eq_ignore_ascii_case("qwen/qwen3-next-80b-a3b-instruct:free")
         }));
     }
 
@@ -29427,6 +29839,40 @@ mod tests {
         assert_eq!(resolved.provider, "zhipuai");
         assert_eq!(resolved.api_mode, "openai-completions");
         assert_eq!(resolved.base_url, "https://open.bigmodel.cn/api/paas/v4");
+        assert!(!resolved.allow_missing_api_key);
+    }
+
+    #[test]
+    fn resolve_provider_runtime_config_supports_qwen_bridge_defaults() {
+        let config = json!({});
+        let resolved =
+            super::resolve_provider_runtime_config(&config, "qwen").expect("qwen runtime config");
+        assert_eq!(resolved.provider, "qwen-portal");
+        assert_eq!(resolved.api_mode, "openai-completions");
+        assert_eq!(resolved.base_url, "https://portal.qwen.ai/v1");
+        assert_eq!(
+            resolved.website_url.as_deref(),
+            Some("https://chat.qwen.ai")
+        );
+        assert!(resolved.allow_missing_api_key);
+        assert!(resolved
+            .bridge_candidates
+            .iter()
+            .any(|candidate| candidate == "https://chat.qwen.ai"));
+    }
+
+    #[test]
+    fn resolve_provider_runtime_config_supports_inception_defaults() {
+        let config = json!({});
+        let resolved = super::resolve_provider_runtime_config(&config, "mercury")
+            .expect("inception runtime config");
+        assert_eq!(resolved.provider, "inception");
+        assert_eq!(resolved.api_mode, "openai-completions");
+        assert_eq!(resolved.base_url, "https://api.inceptionlabs.ai/v1");
+        assert_eq!(
+            resolved.website_url.as_deref(),
+            Some("https://chat.inceptionlabs.ai")
+        );
         assert!(!resolved.allow_missing_api_key);
     }
 
@@ -34523,6 +34969,62 @@ mod tests {
                 );
             }
             _ => panic!("expected edge.homomorphic.compute handled"),
+        }
+
+        let finetune_status = RpcRequestFrame {
+            id: "req-edge-finetune-status".to_owned(),
+            method: "edge.finetune.status".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher.handle_request(&finetune_status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/feature").and_then(Value::as_str),
+                    Some("on-device-finetune-self-evolution")
+                );
+                assert_eq!(
+                    payload.pointer("/adapterFormat").and_then(Value::as_str),
+                    Some("lora")
+                );
+                assert!(payload
+                    .pointer("/datasetSources")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| items.len() >= 2));
+            }
+            _ => panic!("expected edge.finetune.status handled"),
+        }
+
+        let finetune_run = RpcRequestFrame {
+            id: "req-edge-finetune-run".to_owned(),
+            method: "edge.finetune.run".to_owned(),
+            params: serde_json::json!({
+                "baseModel": "qwen3.5-397b-a17b",
+                "adapterName": "edge-autotune-smoke",
+                "epochs": 2,
+                "rank": 16,
+                "learningRate": 0.0003,
+                "maxSamples": 1024,
+                "autoIngestMemory": true,
+                "dryRun": true
+            }),
+        };
+        match dispatcher.handle_request(&finetune_run).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(payload.pointer("/ok").and_then(Value::as_bool), Some(true));
+                assert_eq!(
+                    payload.pointer("/dryRun").and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert!(payload
+                    .pointer("/manifest/training/rank")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|value| value == 16));
+                assert!(payload
+                    .pointer("/manifest/baseModel")
+                    .and_then(Value::as_object)
+                    .is_some());
+            }
+            _ => panic!("expected edge.finetune.run handled"),
         }
     }
 

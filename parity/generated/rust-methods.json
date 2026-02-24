@@ -46,6 +46,8 @@
   "edge.acceleration.status",
   "edge.enclave.prove",
   "edge.enclave.status",
+  "edge.finetune.run",
+  "edge.finetune.status",
   "edge.homomorphic.compute",
   "edge.mesh.status",
   "edge.multimodal.inspect",

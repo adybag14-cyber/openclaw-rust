@@ -4,13 +4,13 @@ Generated (UTC): deterministic
 
 ## Summary
 
-- Rust method count: 120
+- Rust method count: 122
 - Surfaces compared: 2
 
 ## Surface: base
 
 - Upstream method count: 91
-- Rust method count: 120
+- Rust method count: 122
 - Shared methods: 89
 - Coverage vs upstream: 97.8%
 
@@ -34,6 +34,8 @@ Generated (UTC): deterministic
 - `edge.acceleration.status`
 - `edge.enclave.prove`
 - `edge.enclave.status`
+- `edge.finetune.run`
+- `edge.finetune.status`
 - `edge.homomorphic.compute`
 - `edge.mesh.status`
 - `edge.multimodal.inspect`
@@ -56,7 +58,7 @@ Generated (UTC): deterministic
 ## Surface: handlers
 
 - Upstream method count: 101
-- Rust method count: 120
+- Rust method count: 122
 - Shared methods: 99
 - Coverage vs upstream: 98.02%
 
@@ -78,6 +80,8 @@ Generated (UTC): deterministic
 - `edge.acceleration.status`
 - `edge.enclave.prove`
 - `edge.enclave.status`
+- `edge.finetune.run`
+- `edge.finetune.status`
 - `edge.homomorphic.compute`
 - `edge.mesh.status`
 - `edge.multimodal.inspect`

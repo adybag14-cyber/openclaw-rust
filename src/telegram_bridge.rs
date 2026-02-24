@@ -495,9 +495,11 @@ fn provider_priority(provider: &str) -> usize {
         "opencodefree" => 0,
         "opencode" => 1,
         "openrouter" => 2,
-        "zhipuai" => 3,
-        "openai" => 4,
-        "anthropic" => 5,
+        "qwen-portal" => 3,
+        "zhipuai" => 4,
+        "inception" => 5,
+        "openai" => 6,
+        "anthropic" => 7,
         _ => 100,
     }
 }
@@ -506,6 +508,10 @@ fn normalize_provider_alias(provider: &str) -> String {
     let normalized = provider.trim().to_ascii_lowercase();
     match normalized.as_str() {
         "zai" | "z.ai" | "zhipu" => "zhipuai".to_owned(),
+        "qwen" | "qwen3.5" | "qwen-3.5" => "qwen-portal".to_owned(),
+        "inception-labs" | "inceptionlabs" | "mercury" | "mercury2" | "mercury-2" => {
+            "inception".to_owned()
+        }
         "opencode-free" | "opencode_free" => "opencodefree".to_owned(),
         value => value.to_owned(),
     }
@@ -1320,13 +1326,21 @@ mod tests {
                     },
                     "opencode_free": {
                         "models": [{"id":"kimi-k2.5-free"}]
+                    },
+                    "qwen": {
+                        "models": [{"id":"qwen3.5-397b-a17b"}]
+                    },
+                    "mercury": {
+                        "models": [{"id":"mercury-2"}]
                     }
                 }
             }
         });
         let candidates = extract_model_candidates(&config);
-        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates.len(), 4);
         assert_eq!(candidates[0].provider, "opencodefree");
-        assert_eq!(candidates[1].provider, "zhipuai");
+        assert_eq!(candidates[1].provider, "qwen-portal");
+        assert_eq!(candidates[2].provider, "zhipuai");
+        assert_eq!(candidates[3].provider, "inception");
     }
 }

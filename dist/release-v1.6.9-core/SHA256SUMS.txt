@@ -1,0 +1,4 @@
+2becb64d2cc98029a3fbdfebc4ae5cefcd74e407d5ef045daafdb3cb8ba4fe78  openclaw-rust-core-windows-x86_64.exe
+e8e88678fe643c2aa87522f67fa95e2f29b2e13e663d0c70881e8bfe95c825d6  openclaw-rust-core-v1.6.9-windows-x86_64.zip
+1e36cb25425f0e575e11347c24327054d1ef3ed5bb97c1c3a2c334627741f872  openclaw-rust-core-ubuntu20.04-x86_64
+aa680b9190cf6f94290d0697960f84cab43a493543432894af9f77540db11389  openclaw-rust-core-v1.6.9-ubuntu20.04-x86_64.tar.gz

@@ -1,0 +1,4 @@
+2becb64d2cc98029a3fbdfebc4ae5cefcd74e407d5ef045daafdb3cb8ba4fe78  openclaw-rust-edge-windows-x86_64.exe
+fca5c4865e0741fbbcec0dab148dd7b3bb8f294ec18f9f68c71a7fa7d05b8849  openclaw-rust-edge-v1.6.9-windows-x86_64.zip
+1e36cb25425f0e575e11347c24327054d1ef3ed5bb97c1c3a2c334627741f872  openclaw-rust-edge-ubuntu20.04-x86_64
+56aaf5dbd4960cdc001b854c4a308b535b042dca1c318a2331211354c3a39589  openclaw-rust-edge-v1.6.9-ubuntu20.04-x86_64.tar.gz

@@ -1,11 +1,11 @@
 {
   "rustGatewayPath": "src/gateway.rs",
   "upstreamRepoPath": "..\\\\openclaw",
-  "rustCount": 120,
+  "rustCount": 122,
   "surfaces": {
     "base": {
       "upstreamCount": 91,
-      "rustCount": 120,
+      "rustCount": 122,
       "intersectionCount": 89,
       "coveragePercent": 97.8,
       "missingInRust": [
@@ -26,6 +26,8 @@
         "edge.acceleration.status",
         "edge.enclave.prove",
         "edge.enclave.status",
+        "edge.finetune.run",
+        "edge.finetune.status",
         "edge.homomorphic.compute",
         "edge.mesh.status",
         "edge.multimodal.inspect",
@@ -48,7 +50,7 @@
     },
     "handlers": {
       "upstreamCount": 101,
-      "rustCount": 120,
+      "rustCount": 122,
       "intersectionCount": 99,
       "coveragePercent": 98.02,
       "missingInRust": [
@@ -67,6 +69,8 @@
         "edge.acceleration.status",
         "edge.enclave.prove",
         "edge.enclave.status",
+        "edge.finetune.run",
+        "edge.finetune.status",
         "edge.homomorphic.compute",
         "edge.mesh.status",
         "edge.multimodal.inspect",
