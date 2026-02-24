@@ -1,4 +1,4 @@
-package openclaw:tools@1.6.7;
+package openclaw:tools@1.6.8;
 
 interface host {
   log: func(level: string, message: string);

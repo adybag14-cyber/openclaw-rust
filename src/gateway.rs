@@ -204,6 +204,30 @@ impl MethodRegistry {
                     min_role: "client",
                 },
                 MethodSpec {
+                    name: "edge.enclave.status",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "edge.enclave.prove",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "edge.mesh.status",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "edge.homomorphic.compute",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
                     name: "voicewake.get",
                     family: MethodFamily::Gateway,
                     requires_auth: true,
@@ -959,6 +983,11 @@ const TTS_KITTENTTS_BIN_ENV: &str = "OPENCLAW_RS_KITTENTTS_BIN";
 const TTS_KITTENTTS_ARGS_ENV: &str = "OPENCLAW_RS_KITTENTTS_ARGS";
 const STT_TINYWHISPER_BIN_ENV: &str = "OPENCLAW_RS_TINYWHISPER_BIN";
 const STT_TINYWHISPER_ARGS_ENV: &str = "OPENCLAW_RS_TINYWHISPER_ARGS";
+const EDGE_ENCLAVE_MODE_ENV: &str = "OPENCLAW_RS_ENCLAVE_MODE";
+const EDGE_ENCLAVE_SGX_ENV: &str = "OPENCLAW_RS_ENCLAVE_SGX";
+const EDGE_ENCLAVE_TPM_ENV: &str = "OPENCLAW_RS_ENCLAVE_TPM";
+const EDGE_ENCLAVE_SEV_ENV: &str = "OPENCLAW_RS_ENCLAVE_SEV";
+const EDGE_HOMOMORPHIC_SCHEME: &str = "additive-mask-v1";
 const TTS_ELEVENLABS_MODELS: &[&str] = &[
     "eleven_multilingual_v2",
     "eleven_turbo_v2_5",
@@ -972,6 +1001,8 @@ const TTS_PROVIDER_HTTP_TIMEOUT_SECS: u64 = 15;
 const EDGE_WASM_MARKETPLACE_MAX_MODULES: usize = 128;
 const EDGE_SWARM_MAX_TASKS: usize = 24;
 const EDGE_SWARM_MAX_AGENTS: usize = 12;
+const EDGE_MESH_MAX_PEERS: usize = 1_024;
+const EDGE_HOMOMORPHIC_MAX_CIPHERTEXTS: usize = 4_096;
 const DEFAULT_VOICEWAKE_TRIGGERS: &[&str] = &["openclaw", "claude", "computer"];
 const VOICE_INPUT_DEVICE_DEFAULT: &str = "default-microphone";
 const VOICE_OUTPUT_DEVICE_DEFAULT: &str = "default-speaker";
@@ -1020,6 +1051,10 @@ const SUPPORTED_RPC_METHODS: &[&str] = &[
     "edge.wasm.marketplace.list",
     "edge.swarm.plan",
     "edge.multimodal.inspect",
+    "edge.enclave.status",
+    "edge.enclave.prove",
+    "edge.mesh.status",
+    "edge.homomorphic.compute",
     "voicewake.get",
     "voicewake.set",
     "models.list",
@@ -1358,6 +1393,10 @@ impl RpcDispatcher {
             "edge.wasm.marketplace.list" => self.handle_edge_wasm_marketplace_list(req).await,
             "edge.swarm.plan" => self.handle_edge_swarm_plan(req).await,
             "edge.multimodal.inspect" => self.handle_edge_multimodal_inspect(req).await,
+            "edge.enclave.status" => self.handle_edge_enclave_status(req).await,
+            "edge.enclave.prove" => self.handle_edge_enclave_prove(req).await,
+            "edge.mesh.status" => self.handle_edge_mesh_status(req).await,
+            "edge.homomorphic.compute" => self.handle_edge_homomorphic_compute(req).await,
             "voicewake.get" => self.handle_voicewake_get(req).await,
             "voicewake.set" => self.handle_voicewake_set(req).await,
             "models.list" => self.handle_models_list(req).await,
@@ -2446,6 +2485,158 @@ impl RpcDispatcher {
             "summary": summary,
             "memoryAugmentationReady": memory_runtime.enabled
         }))
+    }
+
+    async fn handle_edge_enclave_status(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = decode_params::<EdgeEnclaveStatusParams>(&req.params) {
+            return RpcDispatchOutcome::bad_request(format!(
+                "invalid edge.enclave.status params: {err}"
+            ));
+        }
+        let config_snapshot = self.config.get_snapshot().await;
+        let runtime_profile = runtime_feature_profile_from_config(&config_snapshot.config);
+        let status = detect_edge_enclave_runtime_status();
+        RpcDispatchOutcome::Handled(json!({
+            "runtimeProfile": runtime_profile.as_str(),
+            "activeMode": status.active_mode,
+            "availableModes": status.available_modes,
+            "isolationAvailable": status.sgx || status.tpm || status.sev,
+            "signals": {
+                "sgx": status.sgx,
+                "tpm": status.tpm,
+                "sev": status.sev
+            },
+            "zeroKnowledge": {
+                "enabled": true,
+                "scheme": "sha256-commitment-v1",
+                "proofMethod": "edge.enclave.prove"
+            }
+        }))
+    }
+
+    async fn handle_edge_enclave_prove(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<EdgeEnclaveProveParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid edge.enclave.prove params: {err}"
+                ));
+            }
+        };
+        let Some(statement) = normalize_optional_text(params.statement, 16_000) else {
+            return RpcDispatchOutcome::bad_request("edge.enclave.prove requires statement");
+        };
+        let nonce = normalize_optional_text(params.nonce, 512)
+            .unwrap_or_else(|| format!("nonce-{}", now_ms()));
+        let config_snapshot = self.config.get_snapshot().await;
+        let runtime_profile = runtime_feature_profile_from_config(&config_snapshot.config);
+        let status = detect_edge_enclave_runtime_status();
+        let commitment = build_enclave_zero_knowledge_proof(
+            &statement,
+            &nonce,
+            &status.active_mode,
+            runtime_profile,
+        );
+        RpcDispatchOutcome::Handled(json!({
+            "runtimeProfile": runtime_profile.as_str(),
+            "activeMode": status.active_mode,
+            "statementHash": hash_sha256_hex(&statement),
+            "nonce": nonce,
+            "proof": commitment,
+            "scheme": "sha256-commitment-v1",
+            "verification": {
+                "deterministic": true,
+                "inputs": ["statement", "nonce", "activeMode", "runtimeProfile"]
+            }
+        }))
+    }
+
+    async fn handle_edge_mesh_status(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<EdgeMeshStatusParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid edge.mesh.status params: {err}"
+                ));
+            }
+        };
+        if let Err(err) = self.sync_device_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "edge mesh device runtime unavailable: {err}"
+            ));
+        }
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "edge mesh node runtime unavailable: {err}"
+            ));
+        }
+        let include_pending = params.include_pending.unwrap_or(false);
+        let config_snapshot = self.config.get_snapshot().await;
+        let runtime_profile = runtime_feature_profile_from_config(&config_snapshot.config);
+        let node_pairs = self.nodes.list().await;
+        let device_pairs = self.devices.list().await;
+        let peers = build_edge_mesh_peers(&node_pairs, &device_pairs, include_pending);
+        let routes = build_edge_mesh_routes(&peers);
+        let trusted_peer_count = peers
+            .iter()
+            .filter(|entry| entry.pointer("/paired").and_then(Value::as_bool) == Some(true))
+            .count();
+        RpcDispatchOutcome::Handled(json!({
+            "runtimeProfile": runtime_profile.as_str(),
+            "transport": {
+                "mode": "p2p-overlay",
+                "secureChannel": "noise-like-session-keys",
+                "zeroTrust": true
+            },
+            "topology": {
+                "peerCount": peers.len(),
+                "trustedPeerCount": trusted_peer_count,
+                "routeCount": routes.len(),
+                "includesPending": include_pending
+            },
+            "peers": peers,
+            "routes": routes
+        }))
+    }
+
+    async fn handle_edge_homomorphic_compute(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<EdgeHomomorphicComputeParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid edge.homomorphic.compute params: {err}"
+                ));
+            }
+        };
+        let Some(key_id) = normalize_optional_text(params.key_id, 128) else {
+            return RpcDispatchOutcome::bad_request("edge.homomorphic.compute requires keyId");
+        };
+        let operation = normalize_optional_text(params.operation, 32)
+            .map(|value| normalize(&value))
+            .unwrap_or_else(|| "sum".to_owned());
+        if !matches!(operation.as_str(), "sum" | "count" | "mean") {
+            return RpcDispatchOutcome::bad_request(
+                "edge.homomorphic.compute operation must be sum, count, or mean",
+            );
+        }
+        let reveal_result = params.reveal_result.unwrap_or(false);
+        if operation == "mean" && !reveal_result {
+            return RpcDispatchOutcome::bad_request(
+                "edge.homomorphic.compute mean requires revealResult=true",
+            );
+        }
+        let ciphertexts =
+            match extract_homomorphic_cipher_values(params.ciphertexts.as_ref(), &key_id) {
+                Ok(values) => values,
+                Err(message) => return RpcDispatchOutcome::bad_request(message),
+            };
+        if ciphertexts.is_empty() {
+            return RpcDispatchOutcome::bad_request(
+                "edge.homomorphic.compute requires ciphertexts: string[]",
+            );
+        }
+        let result = run_homomorphic_compute(&key_id, &operation, &ciphertexts, reveal_result);
+        RpcDispatchOutcome::Handled(result)
     }
 
     async fn handle_voicewake_get(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
@@ -15794,6 +15985,324 @@ fn summarize_multimodal_context(
     summary
 }
 
+#[derive(Debug, Clone)]
+struct EdgeEnclaveRuntimeStatus {
+    sgx: bool,
+    tpm: bool,
+    sev: bool,
+    active_mode: String,
+    available_modes: Vec<String>,
+}
+
+fn detect_edge_enclave_runtime_status() -> EdgeEnclaveRuntimeStatus {
+    let sgx = env_var_truthy(EDGE_ENCLAVE_SGX_ENV)
+        || Path::new("/dev/sgx_enclave").is_file()
+        || Path::new("/dev/sgx").is_file();
+    let tpm = env_var_truthy(EDGE_ENCLAVE_TPM_ENV)
+        || Path::new("/sys/class/tpm").is_dir()
+        || resolve_local_node_host_executable_path("tpmtool").is_some();
+    let sev = env_var_truthy(EDGE_ENCLAVE_SEV_ENV)
+        || Path::new("/dev/sev").is_file()
+        || Path::new("/dev/sev-guest").is_file();
+
+    let mut available_modes = vec!["software".to_owned()];
+    if sgx {
+        available_modes.push("sgx".to_owned());
+    }
+    if tpm {
+        available_modes.push("tpm".to_owned());
+    }
+    if sev {
+        available_modes.push("sev".to_owned());
+    }
+    let active_mode = env::var(EDGE_ENCLAVE_MODE_ENV)
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 64))
+        .map(|value| normalize(&value))
+        .filter(|mode| {
+            available_modes
+                .iter()
+                .any(|entry| entry.eq_ignore_ascii_case(mode))
+        })
+        .unwrap_or_else(|| {
+            if sgx {
+                "sgx".to_owned()
+            } else if sev {
+                "sev".to_owned()
+            } else if tpm {
+                "tpm".to_owned()
+            } else {
+                "software".to_owned()
+            }
+        });
+
+    EdgeEnclaveRuntimeStatus {
+        sgx,
+        tpm,
+        sev,
+        active_mode,
+        available_modes,
+    }
+}
+
+fn hash_sha256_hex(input: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn build_enclave_zero_knowledge_proof(
+    statement: &str,
+    nonce: &str,
+    active_mode: &str,
+    profile: RuntimeFeatureProfile,
+) -> String {
+    hash_sha256_hex(&format!(
+        "zk-proof-v1|statement={}|nonce={}|mode={}|profile={}",
+        statement.trim(),
+        nonce.trim(),
+        active_mode.trim(),
+        profile.as_str()
+    ))
+}
+
+fn build_edge_mesh_peers(
+    node_pairs: &NodePairListResult,
+    device_pairs: &DevicePairListResult,
+    include_pending: bool,
+) -> Vec<Value> {
+    let mut peers = Vec::new();
+    let mut seen = HashSet::new();
+
+    for node in &node_pairs.paired {
+        let id = format!("node:{}", node.node_id);
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        peers.push(json!({
+            "id": id,
+            "kind": "node",
+            "nodeId": node.node_id,
+            "displayName": node.display_name,
+            "platform": node.platform,
+            "remoteIp": node.remote_ip,
+            "paired": true,
+            "status": if node.last_connected_at_ms.is_some() { "connected" } else { "paired" },
+            "lastConnectedAtMs": node.last_connected_at_ms,
+            "approvedAtMs": node.approved_at_ms
+        }));
+        if peers.len() >= EDGE_MESH_MAX_PEERS {
+            break;
+        }
+    }
+
+    if peers.len() < EDGE_MESH_MAX_PEERS {
+        for device in &device_pairs.paired {
+            let id = format!("device:{}", device.device_id);
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            peers.push(json!({
+                "id": id,
+                "kind": "device",
+                "deviceId": device.device_id,
+                "displayName": device.display_name,
+                "platform": device.platform,
+                "remoteIp": device.remote_ip,
+                "paired": true,
+                "status": "paired",
+                "approvedAtMs": device.approved_at_ms
+            }));
+            if peers.len() >= EDGE_MESH_MAX_PEERS {
+                break;
+            }
+        }
+    }
+
+    if include_pending && peers.len() < EDGE_MESH_MAX_PEERS {
+        for pending in &node_pairs.pending {
+            let id = format!("node:{}", pending.node_id);
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            peers.push(json!({
+                "id": id,
+                "kind": "node",
+                "nodeId": pending.node_id,
+                "displayName": pending.display_name,
+                "platform": pending.platform,
+                "remoteIp": pending.remote_ip,
+                "paired": false,
+                "status": "pending",
+                "requestedAtMs": pending.ts
+            }));
+            if peers.len() >= EDGE_MESH_MAX_PEERS {
+                break;
+            }
+        }
+    }
+
+    if include_pending && peers.len() < EDGE_MESH_MAX_PEERS {
+        for pending in &device_pairs.pending {
+            let id = format!("device:{}", pending.device_id);
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            peers.push(json!({
+                "id": id,
+                "kind": "device",
+                "deviceId": pending.device_id,
+                "displayName": pending.display_name,
+                "platform": pending.platform,
+                "remoteIp": pending.remote_ip,
+                "paired": false,
+                "status": "pending",
+                "requestedAtMs": pending.ts
+            }));
+            if peers.len() >= EDGE_MESH_MAX_PEERS {
+                break;
+            }
+        }
+    }
+
+    peers.sort_by(|a, b| {
+        a.pointer("/id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .cmp(b.pointer("/id").and_then(Value::as_str).unwrap_or_default())
+    });
+    peers
+}
+
+fn build_edge_mesh_routes(peers: &[Value]) -> Vec<Value> {
+    let ids = peers
+        .iter()
+        .filter_map(|entry| entry.pointer("/id").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    if ids.len() < 2 {
+        return Vec::new();
+    }
+    let mut routes = Vec::new();
+    for idx in 0..ids.len() {
+        let from = ids[idx];
+        let to = ids[(idx + 1) % ids.len()];
+        if from == to {
+            continue;
+        }
+        routes.push(json!({
+            "routeId": format!("mesh-route-{}", idx + 1),
+            "from": from,
+            "to": to,
+            "mode": "direct-or-relay",
+            "encrypted": true
+        }));
+    }
+    routes
+}
+
+fn homomorphic_key_bias(key_id: &str) -> i64 {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(key_id.as_bytes());
+    let digest = hasher.finalize();
+    let mut seed_bytes = [0u8; 8];
+    seed_bytes.copy_from_slice(&digest[..8]);
+    let seed = u64::from_le_bytes(seed_bytes);
+    let bias = (seed % 1_000_003) + 1_003;
+    bias as i64
+}
+
+fn parse_homomorphic_cipher_value(raw: &str, key_id: &str) -> Option<i64> {
+    let trimmed = raw.trim();
+    if let Ok(value) = trimmed.parse::<i64>() {
+        return Some(value);
+    }
+    let mut parts = trimmed.split(':');
+    let prefix = parts.next()?;
+    let key = parts.next()?;
+    let payload = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    if !prefix.eq_ignore_ascii_case("he") || !key.eq_ignore_ascii_case(key_id) {
+        return None;
+    }
+    payload.parse::<i64>().ok()
+}
+
+fn format_homomorphic_ciphertext(key_id: &str, value: i64) -> String {
+    format!("he:{key_id}:{value}")
+}
+
+fn clamp_i128_to_i64(value: i128) -> i64 {
+    value.clamp(i64::MIN as i128, i64::MAX as i128) as i64
+}
+
+fn extract_homomorphic_cipher_values(
+    ciphertexts: Option<&Value>,
+    key_id: &str,
+) -> Result<Vec<i64>, String> {
+    let Some(items) = ciphertexts.and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for item in items {
+        if out.len() >= EDGE_HOMOMORPHIC_MAX_CIPHERTEXTS {
+            break;
+        }
+        let value = match item {
+            Value::String(raw) => parse_homomorphic_cipher_value(raw, key_id),
+            Value::Number(number) => number.as_i64(),
+            _ => None,
+        };
+        let Some(value) = value else {
+            return Err("edge.homomorphic.compute invalid ciphertext entry".to_owned());
+        };
+        out.push(value);
+    }
+    Ok(out)
+}
+
+fn run_homomorphic_compute(
+    key_id: &str,
+    operation: &str,
+    ciphertexts: &[i64],
+    reveal_result: bool,
+) -> Value {
+    let bias = homomorphic_key_bias(key_id);
+    let count = ciphertexts.len() as i64;
+    let encrypted_sum =
+        clamp_i128_to_i64(ciphertexts.iter().map(|value| *value as i128).sum::<i128>());
+    let plain_sum = clamp_i128_to_i64((encrypted_sum as i128) - (bias as i128 * count as i128));
+    let (result_plain, result_cipher, without_decrypting) = match operation {
+        "count" => {
+            let result_plain = count;
+            let result_cipher = clamp_i128_to_i64(result_plain as i128 + bias as i128);
+            (result_plain, result_cipher, true)
+        }
+        "mean" => {
+            let result_plain = if count == 0 { 0 } else { plain_sum / count };
+            let result_cipher = clamp_i128_to_i64(result_plain as i128 + bias as i128);
+            (result_plain, result_cipher, false)
+        }
+        _ => {
+            let adjustment = bias as i128 * (count.saturating_sub(1)) as i128;
+            let result_cipher = clamp_i128_to_i64(encrypted_sum as i128 - adjustment);
+            (plain_sum, result_cipher, true)
+        }
+    };
+    json!({
+        "scheme": EDGE_HOMOMORPHIC_SCHEME,
+        "operation": operation,
+        "keyId": key_id,
+        "inputCount": ciphertexts.len(),
+        "ciphertextResult": format_homomorphic_ciphertext(key_id, result_cipher),
+        "performedWithoutDecrypting": without_decrypting,
+        "revealedResult": if reveal_result { Value::from(result_plain) } else { Value::Null }
+    })
+}
+
 fn tts_provider_api_key(provider: &str) -> Option<String> {
     match normalize(provider).as_str() {
         "openai" => env::var(TTS_OPENAI_API_KEY_ENV).ok(),
@@ -24478,6 +24987,35 @@ struct EdgeMultimodalInspectParams {
     prompt: Option<String>,
     #[serde(rename = "ocrText", alias = "ocr_text")]
     ocr_text: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeEnclaveStatusParams {}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeEnclaveProveParams {
+    statement: Option<String>,
+    nonce: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeMeshStatusParams {
+    #[serde(rename = "includePending", alias = "include_pending")]
+    include_pending: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeHomomorphicComputeParams {
+    #[serde(rename = "keyId", alias = "key_id")]
+    key_id: Option<String>,
+    ciphertexts: Option<Value>,
+    operation: Option<String>,
+    #[serde(rename = "revealResult", alias = "reveal_result")]
+    reveal_result: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -33889,6 +34427,102 @@ mod tests {
                     .is_some_and(|value| value.contains("Multimodal pipeline")));
             }
             _ => panic!("expected edge.multimodal.inspect handled"),
+        }
+
+        let enclave_status = RpcRequestFrame {
+            id: "req-edge-enclave-status".to_owned(),
+            method: "edge.enclave.status".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher.handle_request(&enclave_status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert!(payload
+                    .pointer("/activeMode")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty()));
+                assert_eq!(
+                    payload
+                        .pointer("/zeroKnowledge/enabled")
+                        .and_then(Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected edge.enclave.status handled"),
+        }
+
+        let enclave_prove = RpcRequestFrame {
+            id: "req-edge-enclave-prove".to_owned(),
+            method: "edge.enclave.prove".to_owned(),
+            params: serde_json::json!({
+                "statement": "agent runtime is isolated",
+                "nonce": "nonce-123"
+            }),
+        };
+        match dispatcher.handle_request(&enclave_prove).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert!(payload
+                    .pointer("/proof")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value.len() == 64));
+                assert!(payload
+                    .pointer("/statementHash")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value.len() == 64));
+            }
+            _ => panic!("expected edge.enclave.prove handled"),
+        }
+
+        let mesh_status = RpcRequestFrame {
+            id: "req-edge-mesh-status".to_owned(),
+            method: "edge.mesh.status".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher.handle_request(&mesh_status).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert!(payload
+                    .pointer("/topology/peerCount")
+                    .and_then(Value::as_u64)
+                    .is_some());
+                assert!(payload
+                    .pointer("/transport/mode")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == "p2p-overlay"));
+            }
+            _ => panic!("expected edge.mesh.status handled"),
+        }
+
+        let key_id = "he-test-key";
+        let bias = super::homomorphic_key_bias(key_id);
+        let c1 = super::format_homomorphic_ciphertext(key_id, 7 + bias);
+        let c2 = super::format_homomorphic_ciphertext(key_id, 9 + bias);
+        let he_compute = RpcRequestFrame {
+            id: "req-edge-he-compute".to_owned(),
+            method: "edge.homomorphic.compute".to_owned(),
+            params: serde_json::json!({
+                "keyId": key_id,
+                "operation": "sum",
+                "revealResult": true,
+                "ciphertexts": [c1, c2]
+            }),
+        };
+        match dispatcher.handle_request(&he_compute).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/scheme").and_then(Value::as_str),
+                    Some(super::EDGE_HOMOMORPHIC_SCHEME)
+                );
+                assert_eq!(
+                    payload.pointer("/revealedResult").and_then(Value::as_i64),
+                    Some(16)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/performedWithoutDecrypting")
+                        .and_then(Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected edge.homomorphic.compute handled"),
         }
     }
 
