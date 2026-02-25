@@ -525,7 +525,7 @@ fn provider_priority(provider: &str) -> usize {
 fn normalize_provider_alias(provider: &str) -> String {
     let normalized = provider.trim().to_ascii_lowercase();
     match normalized.as_str() {
-        "z.ai" | "z-ai" => "zai".to_owned(),
+        "z.ai" | "z-ai" | "zaiweb" | "zai-web" => "zai".to_owned(),
         "zhipu-coding" | "zhipuai-coding" | "bigmodel-coding" => "zhipuai-coding".to_owned(),
         "zhipu" | "zhipu-ai" | "zhipuai" | "bigmodel" | "bigmodel-cn" => "zhipuai".to_owned(),
         "opencode-zen" | "opencodefree" | "opencode_free" | "opencode-free" | "opencode-go" => {
@@ -1002,6 +1002,46 @@ fn now_ms() -> u64 {
 }
 
 impl TelegramBridge {
+    async fn patch_session_model_override(
+        &self,
+        session_key: &str,
+        model_override: Option<&str>,
+    ) -> Result<(), String> {
+        let model_value = match model_override.and_then(normalize_optional_text) {
+            Some(value) => Value::String(value),
+            None => Value::Null,
+        };
+        self.gateway_rpc_call(
+            "sessions.patch",
+            json!({
+                "sessionKey": session_key,
+                "model": model_value
+            }),
+            Duration::from_secs(15),
+            &["operator.admin"],
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn read_session_model_override(&self, session_key: &str) -> Option<String> {
+        let status = self
+            .gateway_rpc_call(
+                "session.status",
+                json!({
+                    "sessionKey": session_key
+                }),
+                Duration::from_secs(15),
+                &["operator.admin"],
+            )
+            .await
+            .ok()?;
+        status
+            .pointer("/session/modelOverride")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+    }
+
     async fn process_update(
         &self,
         settings: &TelegramSettings,
@@ -1405,12 +1445,13 @@ impl TelegramBridge {
         let (provider, requested_model, matched_catalog_model) =
             resolve_model_selection(&catalog, &args)?;
         let patch_value = format!("{provider}/{requested_model}");
+        self.patch_session_model_override(session_key, Some(&patch_value))
+            .await?;
         let patch_result = self
             .gateway_rpc_call(
-                "sessions.patch",
+                "session.status",
                 json!({
-                    "sessionKey": session_key,
-                    "model": patch_value
+                    "sessionKey": session_key
                 }),
                 Duration::from_secs(15),
                 &["operator.admin"],
@@ -1575,6 +1616,7 @@ impl TelegramBridge {
             }
         }
 
+        let original_model_override = self.read_session_model_override(session_key).await;
         let mut last_error = "agent execution failed".to_owned();
         for candidate in &settings.candidates {
             let key = (candidate.provider.clone(), candidate.model.clone());
@@ -1582,17 +1624,9 @@ impl TelegramBridge {
                 continue;
             }
             attempted.insert(key);
+            let patch_value = format!("{}/{}", candidate.provider, candidate.model);
             if let Err(err) = self
-                .gateway_rpc_call(
-                    "sessions.patch",
-                    json!({
-                        "sessionKey": session_key,
-                        "modelProvider": candidate.provider,
-                        "model": candidate.model
-                    }),
-                    Duration::from_secs(15),
-                    &["operator.admin"],
-                )
+                .patch_session_model_override(session_key, Some(&patch_value))
                 .await
             {
                 last_error = format!(
@@ -1613,11 +1647,34 @@ impl TelegramBridge {
                 )
                 .await
             {
-                Ok(reply) => return Ok(reply),
+                Ok(reply) => {
+                    if let Err(err) = self
+                        .patch_session_model_override(
+                            session_key,
+                            original_model_override.as_deref(),
+                        )
+                        .await
+                    {
+                        debug!(
+                            "telegram fallback restore skipped after success for session {}: {}",
+                            session_key, err
+                        );
+                    }
+                    return Ok(reply);
+                }
                 Err(err) => {
                     last_error = err;
                 }
             }
+        }
+        if let Err(err) = self
+            .patch_session_model_override(session_key, original_model_override.as_deref())
+            .await
+        {
+            debug!(
+                "telegram fallback restore skipped after failure for session {}: {}",
+                session_key, err
+            );
         }
         Err(last_error)
     }
@@ -2104,6 +2161,7 @@ mod tests {
         assert_eq!(normalize_provider_alias("novita-ai"), "novita");
         assert_eq!(normalize_provider_alias("opencode-go"), "opencode");
         assert_eq!(normalize_provider_alias("kimi-for-coding"), "kimi-coding");
+        assert_eq!(normalize_provider_alias("zaiweb"), "zai");
     }
 
     #[test]

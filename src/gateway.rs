@@ -4062,7 +4062,7 @@ impl RpcDispatcher {
         }
         let snapshot = self.config.get_snapshot().await;
         RpcDispatchOutcome::Handled(json!({
-            "models": self.models.resolve_catalog(Some(&snapshot.config))
+            "models": self.models.resolve_catalog_for_listing(Some(&snapshot.config))
         }))
     }
 
@@ -5522,7 +5522,7 @@ impl RpcDispatcher {
         let Some(provider_id) = resolve_oauth_provider_param(params.provider_id, params.provider)
         else {
             return RpcDispatchOutcome::bad_request(
-                "invalid auth.oauth.start params: provider required",
+                "invalid auth.oauth.start params: provider is required and must be a supported OAuth provider",
             );
         };
         let result = match self
@@ -10700,6 +10700,22 @@ impl ModelRegistry {
                 fallback_providers: model_provider_failover_chain("openai-codex"),
             },
             ModelChoice {
+                id: "llama-3.3-70b-versatile".to_owned(),
+                name: "Llama 3.3 70B Versatile".to_owned(),
+                provider: "groq".to_owned(),
+                context_window: Some(131_072),
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("groq"),
+            },
+            ModelChoice {
+                id: "llama-3.1-8b-instant".to_owned(),
+                name: "Llama 3.1 8B Instant".to_owned(),
+                provider: "groq".to_owned(),
+                context_window: Some(131_072),
+                reasoning: Some(false),
+                fallback_providers: model_provider_failover_chain("groq"),
+            },
+            ModelChoice {
                 id: "glm-5-free".to_owned(),
                 name: "GLM-5-Free".to_owned(),
                 provider: "opencode".to_owned(),
@@ -10813,6 +10829,24 @@ impl ModelRegistry {
             }
         }
         self.list()
+    }
+
+    fn resolve_catalog_for_listing(&self, config: Option<&Value>) -> Vec<ModelChoice> {
+        let mut combined = self.list();
+        if let Some(config) = config {
+            for configured in model_catalog_from_config(config) {
+                if let Some(existing) = combined.iter_mut().find(|entry| {
+                    entry.id.eq_ignore_ascii_case(&configured.id)
+                        && entry.provider.eq_ignore_ascii_case(&configured.provider)
+                }) {
+                    *existing = configured;
+                } else {
+                    combined.push(configured);
+                }
+            }
+        }
+        Self::sort_models(&mut combined);
+        combined
     }
 
     fn sort_models(models: &mut Vec<ModelChoice>) {
@@ -22381,7 +22415,7 @@ const OAUTH_PROVIDER_CATALOG: &[OAuthProviderCatalogEntry] = &[
     OAuthProviderCatalogEntry {
         id: "google-gemini-cli",
         display_name: "Gemini",
-        aliases: &["gemini", "gemini-cli", "google-gemini"],
+        aliases: &["google", "gemini", "gemini-cli", "google-gemini"],
         verification_url: "https://aistudio.google.com",
     },
     OAuthProviderCatalogEntry {
@@ -22436,7 +22470,7 @@ fn normalize_oauth_provider_id(provider: &str) -> Option<String> {
     if normalized.is_empty() {
         return None;
     }
-    Some(normalized)
+    oauth_provider_catalog_entry(&normalized).map(|entry| entry.id.to_owned())
 }
 
 fn resolve_oauth_provider_param(
@@ -28890,7 +28924,7 @@ fn parse_patch_model(
 
 fn normalize_provider_id(provider: &str) -> String {
     match normalize(provider).as_str() {
-        "z.ai" | "z-ai" => "zai".to_owned(),
+        "z.ai" | "z-ai" | "zaiweb" | "zai-web" => "zai".to_owned(),
         "zhipu-coding" | "zhipuai-coding" | "bigmodel-coding" => "zhipuai-coding".to_owned(),
         "zhipu" | "zhipu-ai" | "zhipuai" | "bigmodel" | "bigmodel-cn" => "zhipuai".to_owned(),
         "opencode-zen" | "opencodefree" | "opencode_free" => "opencode".to_owned(),
@@ -29114,7 +29148,7 @@ fn provider_runtime_defaults(provider: &str) -> Option<ProviderRuntimeDefaults> 
             api_mode: "openai-completions",
             base_url: "https://api.inceptionlabs.ai/v1",
             env_vars: &["INCEPTION_API_KEY", "MERCURY_API_KEY"],
-            allow_missing_api_key: false,
+            allow_missing_api_key: true,
         }),
         "zai" => Some(ProviderRuntimeDefaults {
             api_mode: "openai-completions",
@@ -31204,6 +31238,7 @@ mod tests {
     #[test]
     fn normalize_provider_id_maps_major_aliases() {
         assert_eq!(super::normalize_provider_id("z.ai"), "zai");
+        assert_eq!(super::normalize_provider_id("zaiweb"), "zai");
         assert_eq!(super::normalize_provider_id("doubao"), "volcengine");
         assert_eq!(super::normalize_provider_id("Bytedance"), "volcengine");
         assert_eq!(super::normalize_provider_id("fireworks-ai"), "fireworks");
@@ -31240,7 +31275,7 @@ mod tests {
     }
 
     #[test]
-    fn model_registry_defaults_include_opencode_and_zhipuai_choices() {
+    fn model_registry_defaults_include_opencode_zhipuai_and_groq_choices() {
         let registry = super::ModelRegistry::new();
         let models = registry.list();
         assert!(models.iter().any(|entry| {
@@ -31277,6 +31312,10 @@ mod tests {
                 && entry
                     .id
                     .eq_ignore_ascii_case("qwen/qwen3-next-80b-a3b-instruct:free")
+        }));
+        assert!(models.iter().any(|entry| {
+            entry.provider.eq_ignore_ascii_case("groq")
+                && entry.id.eq_ignore_ascii_case("llama-3.3-70b-versatile")
         }));
     }
 
@@ -31382,7 +31421,7 @@ mod tests {
             resolved.website_url.as_deref(),
             Some("https://chat.inceptionlabs.ai")
         );
-        assert!(!resolved.allow_missing_api_key);
+        assert!(resolved.allow_missing_api_key);
     }
 
     #[test]
@@ -31694,6 +31733,10 @@ mod tests {
             Some("google-gemini-cli".to_owned())
         );
         assert_eq!(
+            super::normalize_oauth_provider_id("google"),
+            Some("google-gemini-cli".to_owned())
+        );
+        assert_eq!(
             super::normalize_oauth_provider_id("kimi"),
             Some("kimi-coding".to_owned())
         );
@@ -31705,6 +31748,7 @@ mod tests {
             super::normalize_oauth_provider_id("zhipu"),
             Some("zhipuai".to_owned())
         );
+        assert_eq!(super::normalize_oauth_provider_id("unknown-oauth"), None);
     }
 
     #[tokio::test]
@@ -40493,6 +40537,9 @@ mod tests {
                 let mut sorted = providers.clone();
                 sorted.sort();
                 assert_eq!(providers, sorted);
+                assert!(providers.iter().any(|provider| provider == "qwen-portal"));
+                assert!(providers.iter().any(|provider| provider == "inception"));
+                assert!(providers.iter().any(|provider| provider == "groq"));
             }
             _ => panic!("expected models.list handled"),
         }
@@ -40553,18 +40600,21 @@ mod tests {
                     .and_then(serde_json::Value::as_array)
                     .cloned()
                     .unwrap_or_default();
-                assert_eq!(models.len(), 1);
+                assert!(models.len() > 1);
+                let custom = models
+                    .iter()
+                    .find(|entry| {
+                        entry
+                            .get("id")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|id| id.eq_ignore_ascii_case("ops-custom-1"))
+                    })
+                    .expect("custom model should be present");
                 assert_eq!(
-                    models[0].get("id").and_then(serde_json::Value::as_str),
-                    Some("ops-custom-1")
-                );
-                assert_eq!(
-                    models[0]
-                        .get("provider")
-                        .and_then(serde_json::Value::as_str),
+                    custom.get("provider").and_then(serde_json::Value::as_str),
                     Some("zai")
                 );
-                assert!(models[0]
+                assert!(custom
                     .get("fallbackProviders")
                     .and_then(serde_json::Value::as_array)
                     .is_some());
