@@ -1,6 +1,6 @@
 # Provider Support Matrix (Rust Runtime)
 
-Last audited: 2026-02-24
+Last audited: 2026-02-25
 
 This matrix is generated from the runtime implementation, not marketing labels:
 
@@ -14,7 +14,7 @@ Status legend:
 - `Bridge default`: runtime seeds website bridge hints (`websiteUrl` and/or `bridgeBaseUrls`).
 - `OAuth catalog`: appears in `auth.oauth.providers/start/wait/complete/logout/import`.
 
-Runtime security note (`v1.6.2`):
+Runtime security note (`v1.7.0`):
 
 - Provider routing/output now flows through the expanded tool runtime safety stack (`security.wasm`, dynamic WIT registry, credential leak redaction, and SafetyLayer output controls).
 

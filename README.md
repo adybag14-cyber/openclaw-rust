@@ -11,13 +11,13 @@ provider runtime, persistence, performance strategy, and release layout), see:
 
 - `PROJECT_OVERVIEW.md`
 
-## Current parity status (February 24, 2026)
+## Current parity status (February 25, 2026)
 
 - End-to-end Rust parity program status: **complete**.
 - Feature audit scoreboard: `22 implemented`, `0 partial`, `0 deferred`.
 - RPC method-surface parity: `103` Rust methods, `100%` coverage vs upstream base + handlers.
 - Runtime audit: blanket dead-code suppression removed; only targeted transcript-entry allowance remains in `tool_runtime` for parity/test inspection fields.
-- 1.6.6 release-track integrations added:
+- Memory integrations shipped in the `1.6.6` baseline:
   - Added a native Rust `zvec`-style persistent vector memory engine (`src/persistent_memory.rs`) with bounded on-disk storage and cosine top-k recall.
   - Added a native Rust `graphlite`-style persistent graph memory store (session/concept nodes + mention/co-occurrence edges) with synthesized graph facts for recall.
   - Wired memory ingestion into the live `agent` runtime path for both user turns and assistant outputs.
@@ -39,6 +39,8 @@ provider runtime, persistence, performance strategy, and release layout), see:
   - `cargo fmt --all -- --check` + `cargo clippy --all-targets -- -D warnings` pass
   - Windows release builds pass: `cargo +1.83.0-x86_64-pc-windows-msvc build --release` and `cargo +1.83.0-x86_64-pc-windows-gnu build --release`
   - Ubuntu 20.04 WSL checks pass: `cargo +1.83.0 check`, `cargo +1.83.0 test --no-run`, `cargo +1.83.0 build --release`
+  - Docker parity smoke passes with workstation Docker memory profile updated: `./scripts/run-docker-parity-smoke.ps1`
+  - Current release tags: `v1.7.0-core`, `v1.7.0-edge`
 
 ## Implemented runtime coverage
 
