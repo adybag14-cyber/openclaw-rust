@@ -10748,6 +10748,22 @@ impl ModelRegistry {
                 fallback_providers: model_provider_failover_chain("zhipuai"),
             },
             ModelChoice {
+                id: "glm-5".to_owned(),
+                name: "GLM-5 (Z.ai)".to_owned(),
+                provider: "zai".to_owned(),
+                context_window: Some(128_000),
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("zai"),
+            },
+            ModelChoice {
+                id: "glm-4.5-air".to_owned(),
+                name: "GLM-4.5 Air (Z.ai)".to_owned(),
+                provider: "zai".to_owned(),
+                context_window: Some(128_000),
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("zai"),
+            },
+            ModelChoice {
                 id: "qwen3.5-397b-a17b".to_owned(),
                 name: "Qwen 3.5 397B A17B".to_owned(),
                 provider: "qwen-portal".to_owned(),
@@ -29154,7 +29170,7 @@ fn provider_runtime_defaults(provider: &str) -> Option<ProviderRuntimeDefaults> 
             api_mode: "openai-completions",
             base_url: "https://api.z.ai/v1",
             env_vars: &["ZAI_API_KEY", "Z_AI_API_KEY"],
-            allow_missing_api_key: false,
+            allow_missing_api_key: true,
         }),
         "zhipuai" => Some(ProviderRuntimeDefaults {
             api_mode: "openai-completions",
@@ -29165,7 +29181,7 @@ fn provider_runtime_defaults(provider: &str) -> Option<ProviderRuntimeDefaults> 
                 "ZAI_API_KEY",
                 "Z_AI_API_KEY",
             ],
-            allow_missing_api_key: false,
+            allow_missing_api_key: true,
         }),
         "zhipuai-coding" => Some(ProviderRuntimeDefaults {
             api_mode: "openai-completions",
@@ -29176,7 +29192,7 @@ fn provider_runtime_defaults(provider: &str) -> Option<ProviderRuntimeDefaults> 
                 "ZAI_API_KEY",
                 "Z_AI_API_KEY",
             ],
-            allow_missing_api_key: false,
+            allow_missing_api_key: true,
         }),
         "opencode" => Some(ProviderRuntimeDefaults {
             api_mode: "openai-completions",
@@ -29317,7 +29333,7 @@ fn provider_runtime_bridge_defaults(
             &["https://opencode.ai/zen/v1", "https://api.opencode.ai/v1"],
         ),
         "qwen-portal" => (Some("https://chat.qwen.ai"), &["https://chat.qwen.ai"]),
-        "zhipuai" | "zhipuai-coding" | "zai" => (Some("https://chat.z.ai"), &[]),
+        "zhipuai" | "zhipuai-coding" | "zai" => (Some("https://chat.z.ai"), &["https://chat.z.ai"]),
         "kimi-coding" => (Some("https://www.kimi.com"), &[]),
         "minimax-portal" => (Some("https://chat.minimax.io"), &[]),
         "inception" => (
@@ -31294,6 +31310,9 @@ mod tests {
             entry.provider.eq_ignore_ascii_case("zhipuai") && entry.id.eq_ignore_ascii_case("glm-5")
         }));
         assert!(models.iter().any(|entry| {
+            entry.provider.eq_ignore_ascii_case("zai") && entry.id.eq_ignore_ascii_case("glm-5")
+        }));
+        assert!(models.iter().any(|entry| {
             entry.provider.eq_ignore_ascii_case("openrouter")
                 && entry
                     .id
@@ -31387,7 +31406,28 @@ mod tests {
         assert_eq!(resolved.provider, "zhipuai");
         assert_eq!(resolved.api_mode, "openai-completions");
         assert_eq!(resolved.base_url, "https://open.bigmodel.cn/api/paas/v4");
-        assert!(!resolved.allow_missing_api_key);
+        assert_eq!(resolved.website_url.as_deref(), Some("https://chat.z.ai"));
+        assert!(resolved.allow_missing_api_key);
+        assert!(resolved
+            .bridge_candidates
+            .iter()
+            .all(|candidate| candidate.starts_with("https://")));
+    }
+
+    #[test]
+    fn resolve_provider_runtime_config_supports_zai_guest_bridge_defaults() {
+        let config = json!({});
+        let resolved =
+            super::resolve_provider_runtime_config(&config, "zai").expect("zai runtime config");
+        assert_eq!(resolved.provider, "zai");
+        assert_eq!(resolved.api_mode, "openai-completions");
+        assert_eq!(resolved.base_url, "https://api.z.ai/v1");
+        assert_eq!(resolved.website_url.as_deref(), Some("https://chat.z.ai"));
+        assert!(resolved.allow_missing_api_key);
+        assert!(resolved
+            .bridge_candidates
+            .iter()
+            .all(|candidate| candidate.starts_with("https://")));
     }
 
     #[test]
@@ -31422,6 +31462,10 @@ mod tests {
             Some("https://chat.inceptionlabs.ai")
         );
         assert!(resolved.allow_missing_api_key);
+        assert!(resolved
+            .bridge_candidates
+            .iter()
+            .all(|candidate| candidate.starts_with("https://")));
     }
 
     #[test]

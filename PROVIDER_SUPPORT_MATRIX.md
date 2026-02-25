@@ -5,7 +5,7 @@ Last audited: 2026-02-25
 This matrix is generated from the runtime implementation, not marketing labels:
 
 - `src/gateway.rs`: `normalize_provider_id`, `provider_runtime_defaults`, `provider_runtime_bridge_defaults`, `OAUTH_PROVIDER_CATALOG`
-- `src/website_bridge.rs`: `should_use_zai_guest_bridge` and bridge request path selection
+- `src/website_bridge.rs`: guest bridge routing (`zai`, `qwen`, `inception`) and bridge request path selection
 
 Status legend:
 
@@ -74,6 +74,7 @@ Notes:
 
 - `zai` / `zhipuai` guest website bridge is implemented (`chat.z.ai` path support).
 - `qwen-portal` guest website bridge fallback is implemented (`chat.qwen.ai` path support).
+- `inception` / `mercury` guest website bridge fallback is implemented (`chat.inceptionlabs.ai` path support).
 - `kimi-coding` has a built-in API endpoint default and OAuth catalog support, but guest bridge is login/session-gated in practice.
 
 ## Exhaustive Built-in Runtime Defaults (Canonical IDs)
@@ -95,7 +96,7 @@ All entries below resolve to `api_mode = openai-completions` in runtime.
 | `huggingface` | `https://api-inference.huggingface.co/v1` | no |
 | `hyperbolic` | `https://api.hyperbolic.xyz/v1` | no |
 | `inference-net` | `https://api.inference.net/v1` | no |
-| `inception` | `https://api.inceptionlabs.ai/v1` | no |
+| `inception` | `https://api.inceptionlabs.ai/v1` | yes (bridge fallback) |
 | `kimi-coding` | `https://api.kimi.com/coding` | no |
 | `koboldcpp` | `http://127.0.0.1:5001/v1` | yes |
 | `litellm` | `http://127.0.0.1:4000/v1` | yes |
@@ -123,9 +124,9 @@ All entries below resolve to `api_mode = openai-completions` in runtime.
 | `vllm` | `http://127.0.0.1:8000/v1` | yes |
 | `volcengine` | `https://ark.cn-beijing.volces.com/api/v3` | no |
 | `xai` | `https://api.x.ai/v1` | no |
-| `zai` | `https://api.z.ai/v1` | no |
-| `zhipuai` | `https://open.bigmodel.cn/api/paas/v4` | no |
-| `zhipuai-coding` | `https://open.bigmodel.cn/api/coding/paas/v4` | no |
+| `zai` | `https://api.z.ai/v1` | yes (bridge fallback) |
+| `zhipuai` | `https://open.bigmodel.cn/api/paas/v4` | yes (bridge fallback) |
+| `zhipuai-coding` | `https://open.bigmodel.cn/api/coding/paas/v4` | yes (bridge fallback) |
 
 ## Alias + Config Required Providers
 
@@ -148,16 +149,16 @@ These canonical IDs are normalized from aliases, but do not have built-in defaul
 |---|---|---|
 | `opencode` | `https://opencode.ai` | `https://opencode.ai/zen/v1`, `https://api.opencode.ai/v1` |
 | `qwen-portal` | `https://chat.qwen.ai` | `https://chat.qwen.ai` |
-| `zai` | `https://chat.z.ai` | none pre-seeded |
-| `zhipuai` | `https://chat.z.ai` | none pre-seeded |
-| `zhipuai-coding` | `https://chat.z.ai` | none pre-seeded |
+| `zai` | `https://chat.z.ai` | `https://chat.z.ai` |
+| `zhipuai` | `https://chat.z.ai` | `https://chat.z.ai` |
+| `zhipuai-coding` | `https://chat.z.ai` | `https://chat.z.ai` |
 | `kimi-coding` | `https://www.kimi.com` | none pre-seeded |
 | `minimax-portal` | `https://chat.minimax.io` | none pre-seeded |
 | `inception` | `https://chat.inceptionlabs.ai` | `https://api.inceptionlabs.ai/v1` |
 
 Implementation detail:
 
-- Zhipu/Z.ai and Qwen guest bridge fallbacks are explicitly recognized in `src/website_bridge.rs`.
+- Zhipu/Z.ai, Qwen, and Inception guest bridge fallbacks are explicitly recognized in `src/website_bridge.rs`.
 - Kimi/Minimax website hints are surfaced for configured bridge mode, but practical usage is login/session dependent.
 
 ## OAuth Provider Catalog (RPC Surface)
