@@ -123,6 +123,9 @@ Wave coverage includes mainstream and extended adapters (telegram/discord/slack/
 - Runs `agent` + `agent.wait` and extracts assistant output from history.
 - Emits `telegram.status`, inbound, and outbound runtime events.
 - Uses provider fallback candidates when the base run fails.
+- Supports operator control commands in Telegram:
+  - `/model list [provider]` and `/model <provider>/<model>`
+  - `/set api key <provider> <key>` (config patch to `models.providers.<provider>.apiKey`)
 
 This closes the previously observed "configured but no reply" failure mode where Telegram was not actually running as a native runtime worker.
 

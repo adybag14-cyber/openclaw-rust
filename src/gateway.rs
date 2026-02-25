@@ -28115,14 +28115,19 @@ fn normalize_provider_id(provider: &str) -> String {
         "z.ai" | "z-ai" => "zai".to_owned(),
         "zhipu-coding" | "zhipuai-coding" | "bigmodel-coding" => "zhipuai-coding".to_owned(),
         "zhipu" | "zhipu-ai" | "zhipuai" | "bigmodel" | "bigmodel-cn" => "zhipuai".to_owned(),
-        "opencode-zen" => "opencode".to_owned(),
+        "opencode-zen" | "opencodefree" | "opencode_free" => "opencode".to_owned(),
+        "opencode-go" => "opencode".to_owned(),
         "qwen" | "qwen3.5" | "qwen-3.5" | "qwen35" | "qwen-chat" => "qwen-portal".to_owned(),
         "inception-labs" | "inceptionlabs" | "mercury" | "mercury2" | "mercury-2" => {
             "inception".to_owned()
         }
-        "kimi-code" => "kimi-coding".to_owned(),
+        "kimi-code" | "kimi-for-coding" => "kimi-coding".to_owned(),
         "gemini" | "google-gemini-cli" => "google".to_owned(),
         "bytedance" | "doubao" => "volcengine".to_owned(),
+        "fireworks-ai" => "fireworks".to_owned(),
+        "moonshotai" | "moonshotai-cn" => "moonshot".to_owned(),
+        "novita-ai" => "novita".to_owned(),
+        "inference" => "inference-net".to_owned(),
         "claude" | "claude-code" | "claude-code-cli" | "claude-desktop" => "anthropic".to_owned(),
         "lm-studio" => "lmstudio".to_owned(),
         "local-ai" => "localai".to_owned(),
@@ -28133,7 +28138,6 @@ fn normalize_provider_id(provider: &str) -> String {
         "text-generation-webui" | "oobabooga-webui" => "oobabooga".to_owned(),
         "deep-infra" => "deepinfra".to_owned(),
         "silicon-flow" => "siliconflow".to_owned(),
-        "novita-ai" => "novita".to_owned(),
         "inference.net" | "inferencenet" => "inference-net".to_owned(),
         "aimlapi.com" => "aimlapi".to_owned(),
         "vercel-ai" | "ai-gateway" => "vercel-ai-gateway".to_owned(),
@@ -30424,6 +30428,17 @@ mod tests {
         assert_eq!(super::normalize_provider_id("z.ai"), "zai");
         assert_eq!(super::normalize_provider_id("doubao"), "volcengine");
         assert_eq!(super::normalize_provider_id("Bytedance"), "volcengine");
+        assert_eq!(super::normalize_provider_id("fireworks-ai"), "fireworks");
+        assert_eq!(super::normalize_provider_id("moonshotai"), "moonshot");
+        assert_eq!(super::normalize_provider_id("moonshotai-cn"), "moonshot");
+        assert_eq!(super::normalize_provider_id("novita-ai"), "novita");
+        assert_eq!(super::normalize_provider_id("inference"), "inference-net");
+        assert_eq!(super::normalize_provider_id("opencode-go"), "opencode");
+        assert_eq!(super::normalize_provider_id("opencode_free"), "opencode");
+        assert_eq!(
+            super::normalize_provider_id("kimi-for-coding"),
+            "kimi-coding"
+        );
         assert_eq!(super::normalize_provider_id("chatgpt"), "openai");
         assert_eq!(super::normalize_provider_id("codex-cli"), "openai-codex");
         assert_eq!(super::normalize_provider_id("qwen"), "qwen-portal");

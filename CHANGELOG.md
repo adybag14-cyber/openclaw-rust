@@ -5,6 +5,34 @@
 ### Highlights
 - No unreleased changes.
 
+## v1.7.1 - 2026-02-25
+
+### Highlights
+- Added Telegram model control command support in `src/telegram_bridge.rs`:
+  - `/model list`
+  - `/model list <provider>`
+  - `/model <provider>/<model>`
+  - `/model <provider> <model>`
+- Added Telegram provider key patch command:
+  - `/set api key <provider> <key>`
+  - Applies hashed/base-protected config updates via `config.get` + `config.patch` into `models.providers.<provider>.apiKey`.
+- Added catalog-aware command UX for Telegram model selection (provider/model validation and custom override hinting when model IDs are not present in current catalog).
+- Extended provider alias normalization in `src/gateway.rs` and Telegram command parsing for key models.dev variants:
+  - `fireworks-ai`, `moonshotai`, `moonshotai-cn`, `novita-ai`, `opencode-go`, `kimi-for-coding`, `inference`.
+- Normalized `opencode_free`/`opencodefree` aliases to canonical runtime provider `opencode`.
+
+### Validation
+- `cargo +1.83.0-x86_64-pc-windows-gnu fmt --all -- --check`
+- `cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings`
+- `cargo +1.83.0-x86_64-pc-windows-gnu test`
+- `cargo +1.83.0-x86_64-pc-windows-gnu build --release`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu build --release --features sqlite-state"`
+- `./scripts/parity/run-cp0-gate.ps1`
+- `./scripts/parity/run-cp6-gate.ps1`
+- Ubuntu 20.04 (WSL): `cargo +1.83.0 check`, `cargo +1.83.0 test --no-run`, `cargo +1.83.0 build --release`
+- Docker parity smoke attempted via `./scripts/run-docker-parity-smoke.ps1`, but Docker engine was not reachable on this workstation (`//./pipe/dockerDesktopLinuxEngine` not found).
+
 ## v1.6.6 - 2026-02-24
 
 ### Highlights

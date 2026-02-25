@@ -17,6 +17,13 @@ Status legend:
 Runtime security note (`v1.7.0`):
 
 - Provider routing/output now flows through the expanded tool runtime safety stack (`security.wasm`, dynamic WIT registry, credential leak redaction, and SafetyLayer output controls).
+- models.dev naming variants are normalized to canonical runtime IDs for configured providers, including:
+  - `fireworks-ai -> fireworks`
+  - `moonshotai` / `moonshotai-cn -> moonshot`
+  - `novita-ai -> novita`
+  - `opencode-go -> opencode`
+  - `kimi-for-coding -> kimi-coding`
+  - `inference -> inference-net`
 
 ## Requested Coverage Matrix
 

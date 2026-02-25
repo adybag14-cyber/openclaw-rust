@@ -57,6 +57,9 @@ provider runtime, persistence, performance strategy, and release layout), see:
 - Typed protocol frame foundation (`req`/`resp`/`event` classification).
 - Gateway RPC parity scaffold for `sessions.list`, `sessions.preview`, `sessions.patch`, `sessions.resolve`, `sessions.reset`, `sessions.delete`, `sessions.compact`, `sessions.usage`, `sessions.usage.timeseries`, `sessions.usage.logs`, `sessions.history`, `sessions.send`, and `session.status`.
 - Channel adapter scaffold (`telegram`, `whatsapp`, `discord`, `irc`, `slack`, `signal`, `imessage`, `webchat`, `bluebubbles`, `googlechat`, `msteams`, `matrix`, `zalo`, `zalouser`, `feishu`, `mattermost`, `line`, `nextcloud-talk`, `nostr`, `tlon`, generic) with wave-1/wave-2/wave-3/wave-4 channel-runtime helpers (chat-type normalization, mention gating, chunking, retry/backoff, alias canonicalization) and event-driven runtime snapshot ingestion for `channels.status`.
+- Telegram bridge operator commands for live runtime control:
+  - `/model list [provider]` and `/model <provider>/<model>` for session model selection.
+  - `/set api key <provider> <key>` for provider credential patching into `models.providers.<provider>.apiKey`.
 - Runtime defender hardening extensions including EDR telemetry ingestion and runtime binary attestation checks.
 
 Rust is now the primary runtime implementation for required parity surfaces; this

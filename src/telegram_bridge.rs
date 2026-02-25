@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,6 +22,8 @@ const BRIDGE_IDLE_DELAY_SECS: u64 = 5;
 const BRIDGE_STATUS_REFRESH_SECS: u64 = 60;
 const AGENT_WAIT_TIMEOUT_MS: u64 = 70_000;
 const TELEGRAM_REPLY_MAX_CHARS: usize = 3_500;
+const TELEGRAM_MODEL_HELP_MAX_MODELS: usize = 80;
+const TELEGRAM_MODEL_LIST_MAX_MODELS: usize = 120;
 const TELEGRAM_OFFSET_FILE_NAME: &str = "update-offset-default.json";
 const TELEGRAM_ACCOUNT_ID: &str = "default";
 
@@ -28,6 +31,19 @@ const TELEGRAM_ACCOUNT_ID: &str = "default";
 struct ModelCandidate {
     provider: String,
     model: String,
+}
+
+#[derive(Debug, Clone)]
+struct CatalogModel {
+    provider: String,
+    id: String,
+    name: String,
+}
+
+#[derive(Debug, Clone)]
+enum TelegramControlCommand {
+    Model { raw_args: String },
+    SetApiKey { raw_args: String },
 }
 
 #[derive(Debug, Clone)]
@@ -492,10 +508,10 @@ fn extract_model_candidates(config: &Value) -> Vec<ModelCandidate> {
 
 fn provider_priority(provider: &str) -> usize {
     match provider {
-        "opencodefree" => 0,
-        "opencode" => 1,
+        "opencode" => 0,
         "openrouter" => 2,
         "qwen-portal" => 3,
+        "zai" => 4,
         "zhipuai" => 4,
         "inception" => 5,
         "openai" => 6,
@@ -507,14 +523,188 @@ fn provider_priority(provider: &str) -> usize {
 fn normalize_provider_alias(provider: &str) -> String {
     let normalized = provider.trim().to_ascii_lowercase();
     match normalized.as_str() {
-        "zai" | "z.ai" | "zhipu" => "zhipuai".to_owned(),
-        "qwen" | "qwen3.5" | "qwen-3.5" => "qwen-portal".to_owned(),
+        "z.ai" | "z-ai" => "zai".to_owned(),
+        "zhipu-coding" | "zhipuai-coding" | "bigmodel-coding" => "zhipuai-coding".to_owned(),
+        "zhipu" | "zhipu-ai" | "zhipuai" | "bigmodel" | "bigmodel-cn" => "zhipuai".to_owned(),
+        "opencode-zen" | "opencodefree" | "opencode_free" | "opencode-free" | "opencode-go" => {
+            "opencode".to_owned()
+        }
+        "qwen" | "qwen3.5" | "qwen-3.5" | "qwen35" | "qwen-chat" => "qwen-portal".to_owned(),
         "inception-labs" | "inceptionlabs" | "mercury" | "mercury2" | "mercury-2" => {
             "inception".to_owned()
         }
-        "opencode-free" | "opencode_free" => "opencodefree".to_owned(),
+        "kimi-code" | "kimi-for-coding" => "kimi-coding".to_owned(),
+        "gemini" | "google-gemini-cli" => "google".to_owned(),
+        "bytedance" | "doubao" => "volcengine".to_owned(),
+        "fireworks-ai" => "fireworks".to_owned(),
+        "moonshotai" | "moonshotai-cn" => "moonshot".to_owned(),
+        "novita-ai" => "novita".to_owned(),
+        "inference" => "inference-net".to_owned(),
+        "chatgpt" => "openai".to_owned(),
+        "codex" | "codex-cli" => "openai-codex".to_owned(),
+        "claude" | "claude-cli" | "claude-code" => "anthropic".to_owned(),
         value => value.to_owned(),
     }
+}
+
+fn command_token_without_mention(token: &str) -> String {
+    let lowered = token.trim().to_ascii_lowercase();
+    if let Some((prefix, _)) = lowered.split_once('@') {
+        prefix.to_owned()
+    } else {
+        lowered
+    }
+}
+
+fn parse_telegram_control_command(text: &str) -> Option<TelegramControlCommand> {
+    let trimmed = text.trim();
+    if !trimmed.starts_with('/') {
+        return None;
+    }
+    let mut parts = trimmed.split_whitespace();
+    let command = command_token_without_mention(parts.next()?);
+    let raw_args = parts.collect::<Vec<_>>().join(" ");
+    match command.as_str() {
+        "/model" => Some(TelegramControlCommand::Model { raw_args }),
+        "/set" => Some(TelegramControlCommand::SetApiKey { raw_args }),
+        _ => None,
+    }
+}
+
+fn resolve_model_selection(
+    catalog: &[CatalogModel],
+    args: &[&str],
+) -> Result<(String, String, bool), String> {
+    if args.is_empty() {
+        return Err("model command requires arguments".to_owned());
+    }
+    let (provider_raw, model_raw) = if args.len() == 1 {
+        if let Some((provider, model)) = args[0].split_once('/') {
+            (provider, Some(model.to_owned()))
+        } else {
+            (args[0], None)
+        }
+    } else {
+        (args[0], Some(args[1..].join(" ")))
+    };
+    let normalized_provider = normalize_provider_alias(provider_raw);
+    let Some(provider) = normalize_optional_text(&normalized_provider) else {
+        return Err("provider is required".to_owned());
+    };
+    let provider_catalog = catalog
+        .iter()
+        .filter(|entry| entry.provider.eq_ignore_ascii_case(&provider))
+        .collect::<Vec<_>>();
+    if let Some(requested_raw) = model_raw {
+        let Some(requested_model) = normalize_optional_text(&requested_raw) else {
+            return Err("model id is required".to_owned());
+        };
+        if let Some(entry) = provider_catalog
+            .iter()
+            .find(|entry| {
+                entry.id.eq_ignore_ascii_case(&requested_model)
+                    || entry.name.eq_ignore_ascii_case(&requested_model)
+            })
+            .copied()
+        {
+            return Ok((provider, entry.id.clone(), true));
+        }
+        return Ok((provider, requested_model, false));
+    }
+    let Some(default_entry) = provider_catalog.first() else {
+        return Err(format!(
+            "provider `{provider}` has no catalog models. Use `/model list` first."
+        ));
+    };
+    Ok((provider, default_entry.id.clone(), true))
+}
+
+fn format_model_help(catalog: &[CatalogModel]) -> String {
+    let mut by_provider: BTreeMap<String, usize> = BTreeMap::new();
+    for entry in catalog {
+        *by_provider.entry(entry.provider.clone()).or_insert(0) += 1;
+    }
+    let mut out = String::new();
+    out.push_str("Model command usage:\n");
+    out.push_str("/model list\n");
+    out.push_str("/model list <provider>\n");
+    out.push_str("/model <provider>/<model>\n");
+    out.push_str("/model <provider> <model>\n");
+    out.push_str("/set api key <provider> <key>\n");
+    if !by_provider.is_empty() {
+        out.push_str("\nProviders in catalog:\n");
+        for (index, (provider, count)) in by_provider.iter().enumerate() {
+            if index >= TELEGRAM_MODEL_HELP_MAX_MODELS {
+                let remaining = by_provider
+                    .len()
+                    .saturating_sub(TELEGRAM_MODEL_HELP_MAX_MODELS);
+                let _ = writeln!(out, "... and {remaining} more");
+                break;
+            }
+            let _ = writeln!(out, "- {provider} ({count})");
+        }
+    }
+    out.trim_end().to_owned()
+}
+
+fn format_model_list(catalog: &[CatalogModel], provider_filter: Option<&str>) -> String {
+    if let Some(provider_raw) = provider_filter {
+        let provider = normalize_provider_alias(provider_raw);
+        let models = catalog
+            .iter()
+            .filter(|entry| entry.provider.eq_ignore_ascii_case(&provider))
+            .collect::<Vec<_>>();
+        if models.is_empty() {
+            return format!("No models found for provider `{provider}`.");
+        }
+        let mut out = format!("Models for `{provider}`:\n");
+        for (index, entry) in models.iter().enumerate() {
+            if index >= TELEGRAM_MODEL_LIST_MAX_MODELS {
+                let remaining = models.len().saturating_sub(TELEGRAM_MODEL_LIST_MAX_MODELS);
+                let _ = writeln!(out, "... and {remaining} more");
+                break;
+            }
+            if entry.name.eq_ignore_ascii_case(&entry.id) {
+                let _ = writeln!(out, "- {}", entry.id);
+            } else {
+                let _ = writeln!(out, "- {} ({})", entry.id, entry.name);
+            }
+        }
+        out.push_str("Use: /model ");
+        out.push_str(&provider);
+        out.push_str("/<model>");
+        return out.trim_end().to_owned();
+    }
+
+    let mut grouped: BTreeMap<String, Vec<&CatalogModel>> = BTreeMap::new();
+    for entry in catalog {
+        grouped
+            .entry(entry.provider.clone())
+            .or_default()
+            .push(entry);
+    }
+    if grouped.is_empty() {
+        return "No models are currently available.".to_owned();
+    }
+    let mut out = String::from("Providers:\n");
+    for (index, (provider, models)) in grouped.iter().enumerate() {
+        if index >= TELEGRAM_MODEL_LIST_MAX_MODELS {
+            let remaining = grouped.len().saturating_sub(TELEGRAM_MODEL_LIST_MAX_MODELS);
+            let _ = writeln!(out, "... and {remaining} more");
+            break;
+        }
+        let sample = models
+            .first()
+            .map(|entry| entry.id.as_str())
+            .unwrap_or("<none>");
+        let _ = writeln!(
+            out,
+            "- {provider}: {} models (example: {sample})",
+            models.len()
+        );
+    }
+    out.push_str("Use `/model list <provider>` for full model IDs.");
+    out.trim_end().to_owned()
 }
 
 fn extract_message_text(message: &Value) -> Option<String> {
@@ -804,6 +994,20 @@ impl TelegramBridge {
             }
             return Ok(());
         }
+        if let Some(command) = parse_telegram_control_command(&text) {
+            let response = self
+                .handle_control_command(&session_key, command)
+                .await
+                .unwrap_or_else(|err| {
+                    format!("OpenClaw Rust command error: {}", truncate_text(&err, 350))
+                });
+            self.send_message(&settings.bot_token, chat_id, &response, message_id)
+                .await?;
+            if let Err(err) = self.emit_outbound_event(update_id).await {
+                debug!("telegram outbound event skipped: {err}");
+            }
+            return Ok(());
+        }
 
         let thread_id = message
             .get("message_thread_id")
@@ -820,6 +1024,188 @@ impl TelegramBridge {
             debug!("telegram outbound event skipped: {err}");
         }
         Ok(())
+    }
+
+    async fn handle_control_command(
+        &self,
+        session_key: &str,
+        command: TelegramControlCommand,
+    ) -> Result<String, String> {
+        match command {
+            TelegramControlCommand::Model { raw_args } => {
+                self.handle_model_command(session_key, &raw_args).await
+            }
+            TelegramControlCommand::SetApiKey { raw_args } => {
+                self.handle_set_api_key_command(&raw_args).await
+            }
+        }
+    }
+
+    async fn handle_model_command(
+        &self,
+        session_key: &str,
+        raw_args: &str,
+    ) -> Result<String, String> {
+        let catalog = self.fetch_model_catalog().await?;
+        let args = raw_args
+            .split_whitespace()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if args.is_empty() || args[0].eq_ignore_ascii_case("help") {
+            return Ok(format_model_help(&catalog));
+        }
+        if args[0].eq_ignore_ascii_case("list") {
+            let provider_filter = args
+                .get(1)
+                .map(|value| normalize_provider_alias(value))
+                .and_then(|value| normalize_optional_text(&value));
+            return Ok(format_model_list(&catalog, provider_filter.as_deref()));
+        }
+
+        let (provider, requested_model, matched_catalog_model) =
+            resolve_model_selection(&catalog, &args)?;
+        let patch_value = format!("{provider}/{requested_model}");
+        let patch_result = self
+            .gateway_rpc_call(
+                "sessions.patch",
+                json!({
+                    "sessionKey": session_key,
+                    "model": patch_value
+                }),
+                Duration::from_secs(15),
+                &["operator.admin"],
+            )
+            .await?;
+        let resolved_provider = patch_result
+            .pointer("/resolved/modelProvider")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+            .unwrap_or(provider);
+        let resolved_model = patch_result
+            .pointer("/resolved/model")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+            .unwrap_or(requested_model);
+        let mut response = format!("Model set: {resolved_provider}/{resolved_model}");
+        if !matched_catalog_model {
+            response.push_str("\nNote: custom model override was applied (not found in catalog).");
+        }
+        Ok(response)
+    }
+
+    async fn handle_set_api_key_command(&self, raw_args: &str) -> Result<String, String> {
+        let args = raw_args
+            .split_whitespace()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if args.len() < 4
+            || !args[0].eq_ignore_ascii_case("api")
+            || !args[1].eq_ignore_ascii_case("key")
+        {
+            return Ok(
+                "Usage: /set api key <provider> <key>\nExample: /set api key openrouter sk-..."
+                    .to_owned(),
+            );
+        }
+        let provider = normalize_provider_alias(args[2]);
+        let key = args[3..].join(" ");
+        let Some(api_key) = normalize_optional_text(&key) else {
+            return Ok(
+                "Usage: /set api key <provider> <key>\nExample: /set api key groq gsk_..."
+                    .to_owned(),
+            );
+        };
+        if api_key.contains('\n') || api_key.contains('\r') {
+            return Err("api key must be a single line".to_owned());
+        }
+
+        let config_result = self
+            .gateway_rpc_call(
+                "config.get",
+                json!({}),
+                Duration::from_secs(15),
+                &["operator.read", "operator.write"],
+            )
+            .await?;
+        let Some(base_hash) = config_result
+            .get("hash")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+        else {
+            return Err("config.get response missing hash".to_owned());
+        };
+        let patch = json!({
+            "models": {
+                "providers": {
+                    provider: {
+                        "apiKey": api_key
+                    }
+                }
+            }
+        });
+        let raw_patch = serde_json::to_string(&patch)
+            .map_err(|err| format!("failed serializing patch: {err}"))?;
+        self.gateway_rpc_call(
+            "config.patch",
+            json!({
+                "raw": raw_patch,
+                "baseHash": base_hash
+            }),
+            Duration::from_secs(20),
+            &["operator.admin"],
+        )
+        .await?;
+        Ok(
+            "Provider API key saved. You can now set a model with /model <provider>/<model>."
+                .to_owned(),
+        )
+    }
+
+    async fn fetch_model_catalog(&self) -> Result<Vec<CatalogModel>, String> {
+        let result = self
+            .gateway_rpc_call(
+                "models.list",
+                json!({}),
+                Duration::from_secs(15),
+                &["operator.read"],
+            )
+            .await?;
+        let models = result
+            .get("models")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "models.list result missing models array".to_owned())?;
+        let mut out = Vec::new();
+        for entry in models {
+            let Some(provider_raw) = entry.get("provider").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(id_raw) = entry.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let provider = normalize_provider_alias(provider_raw);
+            let Some(id) = normalize_optional_text(id_raw) else {
+                continue;
+            };
+            let name = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .and_then(normalize_optional_text)
+                .unwrap_or_else(|| id.clone());
+            out.push(CatalogModel { provider, id, name });
+        }
+        out.sort_by(|left, right| {
+            left.provider
+                .cmp(&right.provider)
+                .then_with(|| left.name.cmp(&right.name))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        out.dedup_by(|left, right| {
+            left.provider.eq_ignore_ascii_case(&right.provider)
+                && left.id.eq_ignore_ascii_case(&right.id)
+        });
+        Ok(out)
     }
 
     async fn run_agent_with_fallback(
@@ -1181,6 +1567,8 @@ mod tests {
     use super::{
         allows_group_message, build_session_key, derive_gateway_ws_url, extract_assistant_reply,
         extract_model_candidates, extract_telegram_settings, is_allowed_by_dm_policy,
+        normalize_provider_alias, parse_telegram_control_command, resolve_model_selection,
+        CatalogModel, TelegramControlCommand,
     };
     use crate::config::Config;
     use serde_json::json;
@@ -1225,7 +1613,7 @@ mod tests {
         assert!(settings.allow_from.contains(&"telegram:42".to_owned()));
         assert!(settings.allow_from.contains(&"@alice".to_owned()));
         assert_eq!(settings.candidates.len(), 3);
-        assert_eq!(settings.candidates[0].provider, "opencodefree");
+        assert_eq!(settings.candidates[0].provider, "opencode");
     }
 
     #[test]
@@ -1338,9 +1726,58 @@ mod tests {
         });
         let candidates = extract_model_candidates(&config);
         assert_eq!(candidates.len(), 4);
-        assert_eq!(candidates[0].provider, "opencodefree");
+        assert_eq!(candidates[0].provider, "opencode");
         assert_eq!(candidates[1].provider, "qwen-portal");
-        assert_eq!(candidates[2].provider, "zhipuai");
+        assert_eq!(candidates[2].provider, "zai");
         assert_eq!(candidates[3].provider, "inception");
+    }
+
+    #[test]
+    fn parse_telegram_control_commands_support_model_and_set_api_key() {
+        let model =
+            parse_telegram_control_command("/model@OpenClawBot list qwen").expect("model command");
+        match model {
+            TelegramControlCommand::Model { raw_args } => assert_eq!(raw_args, "list qwen"),
+            _ => panic!("expected model command"),
+        }
+
+        let set =
+            parse_telegram_control_command("/set api key openrouter sk-123").expect("set command");
+        match set {
+            TelegramControlCommand::SetApiKey { raw_args } => {
+                assert_eq!(raw_args, "api key openrouter sk-123")
+            }
+            _ => panic!("expected set api key command"),
+        }
+    }
+
+    #[test]
+    fn normalize_provider_alias_maps_models_dev_variants() {
+        assert_eq!(normalize_provider_alias("fireworks-ai"), "fireworks");
+        assert_eq!(normalize_provider_alias("moonshotai"), "moonshot");
+        assert_eq!(normalize_provider_alias("novita-ai"), "novita");
+        assert_eq!(normalize_provider_alias("opencode-go"), "opencode");
+        assert_eq!(normalize_provider_alias("kimi-for-coding"), "kimi-coding");
+    }
+
+    #[test]
+    fn resolve_model_selection_defaults_to_provider_first_catalog_entry() {
+        let catalog = vec![
+            CatalogModel {
+                provider: "openrouter".to_owned(),
+                id: "qwen/qwen3-coder:free".to_owned(),
+                name: "Qwen3 Coder".to_owned(),
+            },
+            CatalogModel {
+                provider: "openrouter".to_owned(),
+                id: "inception/mercury".to_owned(),
+                name: "Inception Mercury".to_owned(),
+            },
+        ];
+        let (provider, model, from_catalog) =
+            resolve_model_selection(&catalog, &["openrouter"]).expect("resolve");
+        assert_eq!(provider, "openrouter");
+        assert_eq!(model, "qwen/qwen3-coder:free");
+        assert!(from_catalog);
     }
 }
