@@ -15,7 +15,7 @@ provider runtime, persistence, performance strategy, and release layout), see:
 
 - End-to-end Rust parity program status: **complete**.
 - Feature audit scoreboard: `22 implemented`, `0 partial`, `0 deferred`.
-- RPC method-surface parity: `103` Rust methods, `100%` coverage vs upstream base + handlers.
+- RPC method-surface parity: `111` Rust methods, `100%` coverage vs upstream base + handlers.
 - Runtime audit: blanket dead-code suppression removed; only targeted transcript-entry allowance remains in `tool_runtime` for parity/test inspection fields.
 - Memory integrations shipped in the `1.6.6` baseline:
   - Added a native Rust `zvec`-style persistent vector memory engine (`src/persistent_memory.rs`) with bounded on-disk storage and cosine top-k recall.
@@ -33,14 +33,16 @@ provider runtime, persistence, performance strategy, and release layout), see:
   - Added executable enclave attestation bridge flow for `edge.enclave.prove` via configurable binary runtime (`OPENCLAW_RS_ENCLAVE_ATTEST_BIN`) with persisted proof records exposed on `edge.enclave.status`.
   - Added executable fine-tune trainer flow for `edge.finetune.run` (`dryRun=false`) with bounded trainer timeout/log capture and persisted per-job state exposed through `edge.finetune.status`.
   - Added live mesh runtime probes to `edge.mesh.status` using `mesh.ping` invoke waits, returning probe success/timeout telemetry and failed-peer summaries.
+  - Added table-8 edge capability surfaces (excluding autonomous self-forking): decentralized identity trust (`edge.identity.trust.status`), personality engine (`edge.personality.profile`), cross-device handoff planning (`edge.handoff.plan`), marketplace revenue preview (`edge.marketplace.revenue.preview`), cluster finetune planning (`edge.finetune.cluster.plan`), ethical alignment evaluation (`edge.alignment.evaluate`), quantum-safe status (`edge.quantum.status`), and mixed-initiative collaboration planning (`edge.collaboration.plan`).
 - Latest full validation matrix:
-  - `cargo +1.83.0-x86_64-pc-windows-gnu test` -> `368` passed (`1` ignored)
-  - `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"` -> `372` passed (`1` ignored)
+  - `cargo +1.83.0-x86_64-pc-windows-gnu test` -> `371` passed (`1` ignored)
+  - `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"` -> `375` passed (`1` ignored)
   - `cargo fmt --all -- --check` + `cargo clippy --all-targets -- -D warnings` pass
   - Windows release builds pass: `cargo +1.83.0-x86_64-pc-windows-msvc build --release` and `cargo +1.83.0-x86_64-pc-windows-gnu build --release`
   - Ubuntu 20.04 WSL checks pass: `cargo +1.83.0 check`, `cargo +1.83.0 test --no-run`, `cargo +1.83.0 build --release`
   - Docker parity smoke passes with workstation Docker memory profile updated: `./scripts/run-docker-parity-smoke.ps1`
-  - Current release tags: `v1.7.0-core`, `v1.7.0-edge`
+  - Ubuntu 20.04 runtime RSS probe peak (active RPC traffic): `15.38 MB` (`MAX_RSS_KB=15744`)
+  - Current release tag: `v1.7.2`
 
 ## Implemented runtime coverage
 
@@ -60,6 +62,7 @@ provider runtime, persistence, performance strategy, and release layout), see:
 - Telegram bridge operator commands for live runtime control:
   - `/model list [provider]` and `/model <provider>/<model>` for session model selection.
   - `/set api key <provider> <key>` for provider credential patching into `models.providers.<provider>.apiKey`.
+  - `/auth providers`, `/auth start <provider> [account]`, and `/auth wait ...` for OAuth login handoff.
 - Runtime defender hardening extensions including EDR telemetry ingestion and runtime binary attestation checks.
 
 Rust is now the primary runtime implementation for required parity surfaces; this

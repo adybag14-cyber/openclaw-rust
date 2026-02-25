@@ -24,6 +24,7 @@ const AGENT_WAIT_TIMEOUT_MS: u64 = 70_000;
 const TELEGRAM_REPLY_MAX_CHARS: usize = 3_500;
 const TELEGRAM_MODEL_HELP_MAX_MODELS: usize = 80;
 const TELEGRAM_MODEL_LIST_MAX_MODELS: usize = 120;
+const TELEGRAM_AUTH_LIST_MAX_PROVIDERS: usize = 80;
 const TELEGRAM_OFFSET_FILE_NAME: &str = "update-offset-default.json";
 const TELEGRAM_ACCOUNT_ID: &str = "default";
 
@@ -44,6 +45,7 @@ struct CatalogModel {
 enum TelegramControlCommand {
     Model { raw_args: String },
     SetApiKey { raw_args: String },
+    Auth { raw_args: String },
 }
 
 #[derive(Debug, Clone)]
@@ -567,6 +569,7 @@ fn parse_telegram_control_command(text: &str) -> Option<TelegramControlCommand> 
     match command.as_str() {
         "/model" => Some(TelegramControlCommand::Model { raw_args }),
         "/set" => Some(TelegramControlCommand::SetApiKey { raw_args }),
+        "/auth" => Some(TelegramControlCommand::Auth { raw_args }),
         _ => None,
     }
 }
@@ -631,6 +634,9 @@ fn format_model_help(catalog: &[CatalogModel]) -> String {
     out.push_str("/model <provider>/<model>\n");
     out.push_str("/model <provider> <model>\n");
     out.push_str("/set api key <provider> <key>\n");
+    out.push_str("/auth providers\n");
+    out.push_str("/auth start <provider> [account]\n");
+    out.push_str("/auth wait <provider> [session_id]\n");
     if !by_provider.is_empty() {
         out.push_str("\nProviders in catalog:\n");
         for (index, (provider, count)) in by_provider.iter().enumerate() {
@@ -704,6 +710,89 @@ fn format_model_list(catalog: &[CatalogModel], provider_filter: Option<&str>) ->
         );
     }
     out.push_str("Use `/model list <provider>` for full model IDs.");
+    out.trim_end().to_owned()
+}
+
+fn format_auth_help() -> String {
+    let mut out = String::new();
+    out.push_str("Auth command usage:\n");
+    out.push_str("/auth providers\n");
+    out.push_str("/auth start <provider> [account] [--force]\n");
+    out.push_str("/auth wait <provider> [session_id] [account]\n");
+    out.push_str("/auth wait session <session_id> [account]\n");
+    out.push_str("/auth help\n");
+    out.push_str("\nExamples:\n");
+    out.push_str("/auth start kimi\n");
+    out.push_str("/auth wait kimi\n");
+    out.push_str("/auth wait session <session_id>\n");
+    out.trim_end().to_owned()
+}
+
+fn format_auth_provider_list(result: &Value) -> String {
+    let providers = result
+        .get("providers")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if providers.is_empty() {
+        return "No OAuth providers are currently configured.".to_owned();
+    }
+
+    let mut out = String::from("OAuth providers:\n");
+    for (index, entry) in providers.iter().enumerate() {
+        if index >= TELEGRAM_AUTH_LIST_MAX_PROVIDERS {
+            let remaining = providers
+                .len()
+                .saturating_sub(TELEGRAM_AUTH_LIST_MAX_PROVIDERS);
+            let _ = writeln!(out, "... and {remaining} more");
+            break;
+        }
+        let provider_id = entry
+            .get("providerId")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+            .unwrap_or_else(|| "<unknown>".to_owned());
+        let display_name = entry
+            .get("displayName")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+            .unwrap_or_else(|| provider_id.clone());
+        let connected_accounts = entry
+            .get("connectedAccounts")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if display_name.eq_ignore_ascii_case(&provider_id) {
+            let _ = writeln!(out, "- {provider_id} (connected: {connected_accounts})");
+        } else {
+            let _ = writeln!(
+                out,
+                "- {provider_id} ({display_name}, connected: {connected_accounts})"
+            );
+        }
+
+        let aliases = entry
+            .get("aliases")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter_map(normalize_optional_text)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if !aliases.is_empty() {
+            let _ = writeln!(out, "  aliases: {}", aliases.join(", "));
+        }
+        if let Some(url) = entry
+            .get("verificationUrl")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+        {
+            let _ = writeln!(out, "  verify: {url}");
+        }
+    }
+    out.push_str("Use `/auth start <provider>` to begin OAuth login.");
     out.trim_end().to_owned()
 }
 
@@ -1038,7 +1127,257 @@ impl TelegramBridge {
             TelegramControlCommand::SetApiKey { raw_args } => {
                 self.handle_set_api_key_command(&raw_args).await
             }
+            TelegramControlCommand::Auth { raw_args } => self.handle_auth_command(&raw_args).await,
         }
+    }
+
+    async fn handle_auth_command(&self, raw_args: &str) -> Result<String, String> {
+        let args = raw_args
+            .split_whitespace()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if args.is_empty() || args[0].eq_ignore_ascii_case("help") {
+            return Ok(format_auth_help());
+        }
+        if args[0].eq_ignore_ascii_case("providers") || args[0].eq_ignore_ascii_case("list") {
+            let result = self
+                .gateway_rpc_call(
+                    "auth.oauth.providers",
+                    json!({}),
+                    Duration::from_secs(15),
+                    &["operator.read"],
+                )
+                .await?;
+            return Ok(format_auth_provider_list(&result));
+        }
+        if args[0].eq_ignore_ascii_case("start") {
+            return self.handle_auth_start_command(&args).await;
+        }
+        if args[0].eq_ignore_ascii_case("wait") {
+            return self.handle_auth_wait_command(&args).await;
+        }
+        Ok(format!(
+            "Unknown /auth subcommand `{}`.\n\n{}",
+            args[0],
+            format_auth_help()
+        ))
+    }
+
+    async fn handle_auth_start_command(&self, args: &[&str]) -> Result<String, String> {
+        if args.len() < 2 {
+            return Ok(
+                "Usage: /auth start <provider> [account] [--force]\nExample: /auth start kimi"
+                    .to_owned(),
+            );
+        }
+        let provider = normalize_provider_alias(args[1]);
+        let mut account_id = TELEGRAM_ACCOUNT_ID.to_owned();
+        let mut force = false;
+        for token in args.iter().skip(2) {
+            if token.eq_ignore_ascii_case("--force") {
+                force = true;
+                continue;
+            }
+            if account_id == TELEGRAM_ACCOUNT_ID {
+                if let Some(account) = normalize_optional_text(token) {
+                    account_id = account;
+                }
+            }
+        }
+
+        let result = self
+            .gateway_rpc_call(
+                "auth.oauth.start",
+                json!({
+                    "provider": provider.clone(),
+                    "accountId": account_id.clone(),
+                    "timeoutMs": 300_000,
+                    "force": force
+                }),
+                Duration::from_secs(20),
+                &["operator.read", "operator.write"],
+            )
+            .await?;
+        let resolved_provider = result
+            .get("providerId")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+            .unwrap_or_else(|| provider.clone());
+        let resolved_account = result
+            .get("accountId")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+            .unwrap_or_else(|| account_id.clone());
+        let session_id = result
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text);
+        let verification_url = result
+            .get("verificationUrl")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text);
+        let user_code = result
+            .get("userCode")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text);
+        let poll_interval_ms = result.get("pollIntervalMs").and_then(Value::as_u64);
+        let expires_at_ms = result.get("expiresAtMs").and_then(Value::as_u64);
+        let message = result
+            .get("message")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text);
+
+        let mut out = format!(
+            "OAuth login started for `{resolved_provider}` (account `{resolved_account}`)."
+        );
+        if let Some(url) = verification_url {
+            let _ = writeln!(out, "\nOpen: {url}");
+        }
+        if let Some(code) = user_code {
+            let _ = writeln!(out, "Code: {code}");
+        }
+        if let Some(session) = &session_id {
+            let _ = writeln!(out, "Session: {session}");
+        }
+        if let Some(interval) = poll_interval_ms {
+            let _ = writeln!(out, "Suggested wait poll interval: {}s", interval / 1_000);
+        }
+        if let Some(expires_at) = expires_at_ms {
+            let _ = writeln!(out, "ExpiresAtMs: {expires_at}");
+        }
+        if let Some(value) = message {
+            let _ = writeln!(out, "{value}");
+        }
+        if let Some(session) = session_id {
+            let _ = write!(
+                out,
+                "Run `/auth wait {resolved_provider} {session}` after login."
+            );
+        } else {
+            let _ = write!(out, "Run `/auth wait {resolved_provider}` after login.");
+        }
+        Ok(out.trim_end().to_owned())
+    }
+
+    async fn handle_auth_wait_command(&self, args: &[&str]) -> Result<String, String> {
+        if args.len() < 2 {
+            return Ok(
+                "Usage: /auth wait <provider> [session_id] [account]\nOr: /auth wait session <session_id> [account]"
+                    .to_owned(),
+            );
+        }
+        let mut provider: Option<String> = None;
+        let mut session_id: Option<String> = None;
+        let mut account_id = TELEGRAM_ACCOUNT_ID.to_owned();
+
+        if args[1].eq_ignore_ascii_case("session") {
+            if args.len() < 3 {
+                return Ok("Usage: /auth wait session <session_id> [account]".to_owned());
+            }
+            session_id = normalize_optional_text(args[2]);
+            if let Some(account) = args.get(3).and_then(|value| normalize_optional_text(value)) {
+                account_id = account;
+            }
+        } else {
+            let normalized_provider = normalize_provider_alias(args[1]);
+            provider = normalize_optional_text(&normalized_provider);
+            if let Some(value) = args.get(2).and_then(|value| normalize_optional_text(value)) {
+                session_id = Some(value);
+            }
+            if let Some(value) = args.get(3).and_then(|value| normalize_optional_text(value)) {
+                account_id = value;
+            }
+        }
+        if provider.is_none() && session_id.is_none() {
+            return Ok(
+                "Usage: /auth wait <provider> [session_id] [account]\nOr: /auth wait session <session_id> [account]"
+                    .to_owned(),
+            );
+        }
+
+        let result = self
+            .gateway_rpc_call(
+                "auth.oauth.wait",
+                json!({
+                    "provider": provider.clone(),
+                    "sessionId": session_id.clone(),
+                    "accountId": account_id.clone(),
+                    "timeoutMs": 30_000
+                }),
+                Duration::from_secs(45),
+                &["operator.read", "operator.write"],
+            )
+            .await?;
+        let resolved_provider = result
+            .get("providerId")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+            .or(provider)
+            .unwrap_or_else(|| "unknown".to_owned());
+        let resolved_account = result
+            .get("accountId")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+            .unwrap_or_else(|| account_id.clone());
+        let resolved_session = result
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+            .or(session_id);
+        let connected = result
+            .get("connected")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let status = result
+            .get("status")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+            .unwrap_or_else(|| "unknown".to_owned());
+        let message = result
+            .get("message")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text);
+        let retry_after_ms = result.get("retryAfterMs").and_then(Value::as_u64);
+        let expires_at_ms = result.get("expiresAtMs").and_then(Value::as_u64);
+        let profile_id = result
+            .get("profileId")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text);
+
+        let mut out = format!(
+            "OAuth wait result for `{resolved_provider}` (account `{resolved_account}`): {status}"
+        );
+        if let Some(session) = &resolved_session {
+            let _ = writeln!(out, "\nSession: {session}");
+        }
+        let _ = writeln!(out, "Connected: {}", if connected { "yes" } else { "no" });
+        if let Some(profile) = profile_id {
+            let _ = writeln!(out, "Profile: {profile}");
+        }
+        if let Some(retry_after) = retry_after_ms {
+            let _ = writeln!(out, "RetryAfterMs: {retry_after}");
+        }
+        if let Some(expires_at) = expires_at_ms {
+            let _ = writeln!(out, "ExpiresAtMs: {expires_at}");
+        }
+        if let Some(value) = message {
+            let _ = writeln!(out, "{value}");
+        }
+        if !connected {
+            if let Some(session) = resolved_session {
+                let _ = write!(
+                    out,
+                    "If login is still pending, run `/auth wait {resolved_provider} {session}`."
+                );
+            } else {
+                let _ = write!(
+                    out,
+                    "If login is still pending, run `/auth wait {resolved_provider}`."
+                );
+            }
+        }
+        Ok(out.trim_end().to_owned())
     }
 
     async fn handle_model_command(
@@ -1733,7 +2072,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_telegram_control_commands_support_model_and_set_api_key() {
+    fn parse_telegram_control_commands_support_model_set_api_key_and_auth() {
         let model =
             parse_telegram_control_command("/model@OpenClawBot list qwen").expect("model command");
         match model {
@@ -1748,6 +2087,13 @@ mod tests {
                 assert_eq!(raw_args, "api key openrouter sk-123")
             }
             _ => panic!("expected set api key command"),
+        }
+
+        let auth =
+            parse_telegram_control_command("/auth start kimi --force").expect("auth command");
+        match auth {
+            TelegramControlCommand::Auth { raw_args } => assert_eq!(raw_args, "start kimi --force"),
+            _ => panic!("expected auth command"),
         }
     }
 

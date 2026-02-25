@@ -5,6 +5,39 @@
 ### Highlights
 - No unreleased changes.
 
+## v1.7.2 - 2026-02-25
+
+### Highlights
+- Added table (8) edge feature implementations (excluding autonomous self-forking) in `src/gateway.rs` and `src/gateway_server.rs`:
+  - `edge.identity.trust.status`
+  - `edge.personality.profile`
+  - `edge.handoff.plan`
+  - `edge.marketplace.revenue.preview`
+  - `edge.finetune.cluster.plan`
+  - `edge.alignment.evaluate`
+  - `edge.quantum.status`
+  - `edge.collaboration.plan`
+- Added deterministic identity/reputation/trust synthesis helpers for decentralized trust snapshots and route summaries.
+- Added Telegram OAuth control command support in `src/telegram_bridge.rs`:
+  - `/auth providers`
+  - `/auth start <provider> [account] [--force]`
+  - `/auth wait <provider> [session_id] [account]`
+  - `/auth wait session <session_id> [account]`
+- Extended gateway and Telegram tests for the new edge methods and `/auth` command parsing.
+- Bumped package version to `1.7.2`.
+
+### Validation
+- `cargo +1.83.0-x86_64-pc-windows-gnu fmt --all -- --check`
+- `cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings`
+- `cargo +1.83.0-x86_64-pc-windows-gnu test`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"`
+- `cargo +1.83.0-x86_64-pc-windows-gnu build --release`
+- `wsl -d Ubuntu-20.04 -- bash -lc 'source $HOME/.cargo/env && cd /mnt/c/Users/adyba/openclaw-rust && CARGO_TARGET_DIR=target-linux-ubuntu20 cargo +1.83.0 build --release'`
+- `./scripts/run-docker-parity-smoke.ps1`
+- Ubuntu 20.04 RSS probe under active RPC traffic:
+  - `MAX_RSS_KB=15744`
+  - `MAX_RSS_MB=15.38`
+
 ## v1.7.1 - 2026-02-25
 
 ### Highlights

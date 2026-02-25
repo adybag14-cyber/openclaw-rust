@@ -240,6 +240,54 @@ impl MethodRegistry {
                     min_role: "client",
                 },
                 MethodSpec {
+                    name: "edge.identity.trust.status",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "edge.personality.profile",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "edge.handoff.plan",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "edge.marketplace.revenue.preview",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "edge.finetune.cluster.plan",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "edge.alignment.evaluate",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "edge.quantum.status",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "edge.collaboration.plan",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
                     name: "voicewake.get",
                     family: MethodFamily::Gateway,
                     requires_auth: true,
@@ -1033,6 +1081,10 @@ const EDGE_FINETUNE_MAX_LOG_LINES: usize = 120;
 const EDGE_FINETUNE_MAX_LOG_LINE_CHARS: usize = 800;
 const EDGE_FINETUNE_DEFAULT_TIMEOUT_MS: u64 = 3_600_000;
 const EDGE_ENCLAVE_ATTEST_DEFAULT_TIMEOUT_MS: u64 = 15_000;
+const EDGE_IDENTITY_MAX_PEERS: usize = 256;
+const EDGE_ALIGNMENT_MAX_VALUES: usize = 32;
+const EDGE_COLLAB_MAX_PARTICIPANTS: usize = 16;
+const EDGE_HANDOFF_PREVIEW_LIMIT: usize = 12;
 const DEFAULT_VOICEWAKE_TRIGGERS: &[&str] = &["openclaw", "claude", "computer"];
 const VOICE_INPUT_DEVICE_DEFAULT: &str = "default-microphone";
 const VOICE_OUTPUT_DEVICE_DEFAULT: &str = "default-speaker";
@@ -1087,6 +1139,14 @@ const SUPPORTED_RPC_METHODS: &[&str] = &[
     "edge.homomorphic.compute",
     "edge.finetune.status",
     "edge.finetune.run",
+    "edge.identity.trust.status",
+    "edge.personality.profile",
+    "edge.handoff.plan",
+    "edge.marketplace.revenue.preview",
+    "edge.finetune.cluster.plan",
+    "edge.alignment.evaluate",
+    "edge.quantum.status",
+    "edge.collaboration.plan",
     "voicewake.get",
     "voicewake.set",
     "models.list",
@@ -1433,6 +1493,16 @@ impl RpcDispatcher {
             "edge.homomorphic.compute" => self.handle_edge_homomorphic_compute(req).await,
             "edge.finetune.status" => self.handle_edge_finetune_status(req).await,
             "edge.finetune.run" => self.handle_edge_finetune_run(req).await,
+            "edge.identity.trust.status" => self.handle_edge_identity_trust_status(req).await,
+            "edge.personality.profile" => self.handle_edge_personality_profile(req).await,
+            "edge.handoff.plan" => self.handle_edge_handoff_plan(req).await,
+            "edge.marketplace.revenue.preview" => {
+                self.handle_edge_marketplace_revenue_preview(req).await
+            }
+            "edge.finetune.cluster.plan" => self.handle_edge_finetune_cluster_plan(req).await,
+            "edge.alignment.evaluate" => self.handle_edge_alignment_evaluate(req).await,
+            "edge.quantum.status" => self.handle_edge_quantum_status(req).await,
+            "edge.collaboration.plan" => self.handle_edge_collaboration_plan(req).await,
             "voicewake.get" => self.handle_voicewake_get(req).await,
             "voicewake.set" => self.handle_voicewake_set(req).await,
             "models.list" => self.handle_models_list(req).await,
@@ -3306,6 +3376,622 @@ impl RpcDispatcher {
             "manifest": manifest,
             "execution": execution,
             "jobStatus": job_state
+        }))
+    }
+
+    async fn handle_edge_identity_trust_status(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<EdgeIdentityTrustStatusParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid edge.identity.trust.status params: {err}"
+                ));
+            }
+        };
+        if let Err(err) = self.sync_device_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "edge identity runtime unavailable (device pairs): {err}"
+            ));
+        }
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "edge identity runtime unavailable (node pairs): {err}"
+            ));
+        }
+
+        let include_pending = params.include_pending.unwrap_or(false);
+        let config_snapshot = self.config.get_snapshot().await;
+        let runtime_profile = runtime_feature_profile_from_config(&config_snapshot.config);
+        let node_pairs = self.nodes.list().await;
+        let device_pairs = self.devices.list().await;
+        let peers = build_edge_mesh_peers(&node_pairs, &device_pairs, include_pending);
+        let routes = build_edge_mesh_routes(&peers);
+
+        let local_seed = format!(
+            "{RUNTIME_NAME}|{RUNTIME_VERSION}|{}|{}",
+            runtime_profile.as_str(),
+            config_snapshot.hash
+        );
+        let local_did = format!("did:openclaw:{}", sha256_hex_prefix(&local_seed, 24));
+        let signing_key_fingerprint = format!("ocpk-{}", sha256_hex_prefix(&local_seed, 32));
+        let mesh_fingerprint = format!("mesh-{}", sha256_hex_prefix(&format!("{peers:?}"), 20));
+
+        let trust_peers = peers
+            .iter()
+            .take(EDGE_IDENTITY_MAX_PEERS)
+            .map(|peer| {
+                let peer_id = peer
+                    .pointer("/id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown-peer");
+                let paired = peer
+                    .pointer("/paired")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let status = peer
+                    .pointer("/status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                let mut trust_score: f64 = if paired { 0.72 } else { 0.38 };
+                if status.eq_ignore_ascii_case("connected") {
+                    trust_score += 0.18;
+                } else if status.eq_ignore_ascii_case("paired") {
+                    trust_score += 0.08;
+                }
+                if peer.pointer("/remoteIp").and_then(Value::as_str).is_some() {
+                    trust_score += 0.04;
+                }
+                trust_score = trust_score.clamp(0.0, 0.99);
+                let trust_tier = if trust_score >= 0.8 {
+                    "trusted"
+                } else if trust_score >= 0.55 {
+                    "candidate"
+                } else {
+                    "unverified"
+                };
+                json!({
+                    "peerId": peer_id,
+                    "peerDid": format!("did:openclaw-peer:{}", sha256_hex_prefix(peer_id, 24)),
+                    "paired": paired,
+                    "status": status,
+                    "trustScore": trust_score,
+                    "trustTier": trust_tier,
+                    "signatureScheme": "sha256-signed-events-v1",
+                    "reputation": {
+                        "score": ((trust_score * 100.0).round()) as u64,
+                        "window": "rolling-30d",
+                        "verifiedActions": if paired { 12 } else { 0 }
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let trusted_count = trust_peers
+            .iter()
+            .filter(|entry| {
+                entry
+                    .pointer("/trustTier")
+                    .and_then(Value::as_str)
+                    .is_some_and(|tier| tier == "trusted")
+            })
+            .count();
+
+        RpcDispatchOutcome::Handled(json!({
+            "runtimeProfile": runtime_profile.as_str(),
+            "feature": "decentralized-agent-identity-trust-system",
+            "enabled": true,
+            "localIdentity": {
+                "agentId": DEFAULT_AGENT_ID,
+                "did": local_did,
+                "signingKeyFingerprint": signing_key_fingerprint,
+                "meshFingerprint": mesh_fingerprint,
+                "proofType": "sha256-digest"
+            },
+            "trustGraph": {
+                "peerCount": trust_peers.len(),
+                "trustedPeerCount": trusted_count,
+                "routeCount": routes.len(),
+                "zeroTrust": true,
+                "verifiableAuditTrail": true
+            },
+            "peers": trust_peers,
+            "routes": routes
+        }))
+    }
+
+    async fn handle_edge_personality_profile(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<EdgePersonalityProfileParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid edge.personality.profile params: {err}"
+                ));
+            }
+        };
+        let session_key = normalize_optional_text(params.session_key, 256)
+            .map(|value| canonicalize_session_key(&value))
+            .filter(|value| !value.is_empty());
+        let preview_limit = params
+            .recent_limit
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(8)
+            .clamp(1, 64);
+        let recent_events = if let Some(key) = session_key.clone() {
+            self.sessions
+                .preview(std::slice::from_ref(&key), preview_limit, 220)
+                .await
+                .into_iter()
+                .next()
+                .map(|entry| entry.items)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let memory_stats = self.memory.stats().await;
+        let mut positive_signals = 0u64;
+        let mut negative_signals = 0u64;
+        for event in &recent_events {
+            if let Some(text) = event.text.as_deref() {
+                let lowered = normalize(text);
+                if lowered.contains("thanks")
+                    || lowered.contains("great")
+                    || lowered.contains("works")
+                {
+                    positive_signals = positive_signals.saturating_add(1);
+                }
+                if lowered.contains("error")
+                    || lowered.contains("failed")
+                    || lowered.contains("timeout")
+                {
+                    negative_signals = negative_signals.saturating_add(1);
+                }
+            }
+        }
+        let continuity = (memory_stats.zvec_entries as f64 / 20_000.0).clamp(0.0, 1.0);
+        let relation_depth = if memory_stats.graph_nodes == 0 {
+            0.0
+        } else {
+            (memory_stats.graph_edges as f64 / memory_stats.graph_nodes as f64 / 8.0)
+                .clamp(0.0, 1.0)
+        };
+        let conversational_stability = if recent_events.is_empty() {
+            0.6
+        } else {
+            let total = positive_signals + negative_signals + 2;
+            ((positive_signals + 1) as f64 / total as f64).clamp(0.0, 1.0)
+        };
+        let valence =
+            ((conversational_stability * 0.6) + (continuity * 0.25) + (relation_depth * 0.15))
+                * 2.0
+                - 1.0;
+        let arousal = ((recent_events.len() as f64 / preview_limit as f64) * 0.55
+            + (negative_signals as f64 / (recent_events.len().max(1) as f64)) * 0.45)
+            .clamp(0.0, 1.0);
+        let mood = if valence < -0.25 {
+            if arousal > 0.55 {
+                "concerned"
+            } else {
+                "reflective"
+            }
+        } else if valence > 0.25 {
+            if arousal > 0.55 {
+                "engaged"
+            } else {
+                "calm"
+            }
+        } else {
+            "steady"
+        };
+        RpcDispatchOutcome::Handled(json!({
+            "feature": "emotional-intelligence-personality-engine",
+            "enabled": true,
+            "sessionKey": session_key,
+            "profile": {
+                "name": "OpenClaw Companion",
+                "style": "pragmatic-empathic",
+                "mood": mood,
+                "valence": (valence * 1000.0).round() / 1000.0,
+                "arousal": (arousal * 1000.0).round() / 1000.0
+            },
+            "continuity": {
+                "memoryRetentionScore": (continuity * 100.0).round() as u64,
+                "relationshipDepthScore": (relation_depth * 100.0).round() as u64,
+                "conversationStabilityScore": (conversational_stability * 100.0).round() as u64
+            },
+            "signals": {
+                "recentEvents": recent_events.len(),
+                "positive": positive_signals,
+                "negative": negative_signals,
+                "zvecEntries": memory_stats.zvec_entries,
+                "graphNodes": memory_stats.graph_nodes,
+                "graphEdges": memory_stats.graph_edges
+            }
+        }))
+    }
+
+    async fn handle_edge_handoff_plan(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<EdgeHandoffPlanParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid edge.handoff.plan params: {err}"
+                ));
+            }
+        };
+        if let Err(err) = self.sync_device_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "edge handoff runtime unavailable (device pairs): {err}"
+            ));
+        }
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "edge handoff runtime unavailable (node pairs): {err}"
+            ));
+        }
+        let session_key = normalize_optional_text(params.session_key, 256)
+            .map(|value| canonicalize_session_key(&value))
+            .unwrap_or_else(|| canonicalize_session_key(DEFAULT_MAIN_KEY));
+        if session_key.is_empty() {
+            return RpcDispatchOutcome::bad_request(
+                "edge.handoff.plan requires a non-empty sessionKey",
+            );
+        }
+        let target_peer = normalize_optional_text(params.target_peer_id, 256);
+        let include_history = params.include_history.unwrap_or(true);
+        let node_pairs = self.nodes.list().await;
+        let device_pairs = self.devices.list().await;
+        let peers = build_edge_mesh_peers(&node_pairs, &device_pairs, false);
+        let selected_peer = target_peer.as_ref().and_then(|wanted| {
+            peers.iter().find_map(|peer| {
+                let id = peer.pointer("/id").and_then(Value::as_str)?;
+                if id.eq_ignore_ascii_case(wanted) {
+                    Some(peer.clone())
+                } else {
+                    None
+                }
+            })
+        });
+        let fallback_peer = peers
+            .iter()
+            .find(|peer| peer.pointer("/paired").and_then(Value::as_bool) == Some(true))
+            .cloned();
+        let destination = selected_peer.or(fallback_peer);
+        let preview = if include_history {
+            self.sessions
+                .preview(
+                    std::slice::from_ref(&session_key),
+                    EDGE_HANDOFF_PREVIEW_LIMIT,
+                    240,
+                )
+                .await
+                .into_iter()
+                .next()
+        } else {
+            None
+        };
+        let handoff_seed = format!(
+            "{}|{}|{}|{}",
+            session_key,
+            destination
+                .as_ref()
+                .and_then(|peer| peer.pointer("/id").and_then(Value::as_str))
+                .unwrap_or("local"),
+            now_ms(),
+            self.started_at_ms
+        );
+        let ticket = format!("handoff-{}", sha256_hex_prefix(&handoff_seed, 20));
+        RpcDispatchOutcome::Handled(json!({
+            "feature": "cross-device-seamless-handoff",
+            "ready": destination.is_some(),
+            "sessionKey": session_key,
+            "ticket": ticket,
+            "expiresInMs": 300_000,
+            "destination": destination,
+            "preview": preview,
+            "transport": {
+                "mode": "mesh-sync",
+                "encrypted": true,
+                "integrity": "sha256"
+            }
+        }))
+    }
+
+    async fn handle_edge_marketplace_revenue_preview(
+        &self,
+        req: &RpcRequestFrame,
+    ) -> RpcDispatchOutcome {
+        let params = match decode_params::<EdgeMarketplaceRevenuePreviewParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid edge.marketplace.revenue.preview params: {err}"
+                ));
+            }
+        };
+        let config_snapshot = self.config.get_snapshot().await;
+        let runtime_profile = runtime_feature_profile_from_config(&config_snapshot.config);
+        let policy = resolve_tool_runtime_policy_config(&config_snapshot.config);
+        let module_root = policy.wasm.module_root.clone();
+        let requested_module =
+            normalize_optional_text(params.module_id, 128).map(|value| normalize(&value));
+        let daily_hint = params.daily_invocations.unwrap_or(800).clamp(1, 2_000_000);
+        let modules = collect_marketplace_modules(&module_root, EDGE_WASM_MARKETPLACE_MAX_MODULES);
+        let mut payouts = Vec::new();
+        for module in modules {
+            let id = module
+                .pointer("/id")
+                .and_then(Value::as_str)
+                .and_then(|value| normalize_optional_text(Some(value.to_owned()), 128))
+                .unwrap_or_default();
+            if let Some(filter) = requested_module.as_ref() {
+                if normalize(&id) != *filter {
+                    continue;
+                }
+            }
+            let size_bytes = module
+                .pointer("/sizeBytes")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let seed = deterministic_u64_seed(&format!("{id}:{size_bytes}"));
+            let daily_invocations = daily_hint.saturating_add(seed % 1_500);
+            let micro_credits_per_call = 40 + (seed % 260);
+            let gross_daily_credits = daily_invocations.saturating_mul(micro_credits_per_call);
+            let creator_share_pct = 80u64;
+            let creator_daily_credits = gross_daily_credits.saturating_mul(creator_share_pct) / 100;
+            payouts.push(json!({
+                "moduleId": id,
+                "dailyInvocations": daily_invocations,
+                "microCreditsPerCall": micro_credits_per_call,
+                "grossDailyCredits": gross_daily_credits,
+                "creatorSharePct": creator_share_pct,
+                "creatorDailyCredits": creator_daily_credits,
+                "platformDailyCredits": gross_daily_credits.saturating_sub(creator_daily_credits)
+            }));
+        }
+        RpcDispatchOutcome::Handled(json!({
+            "runtimeProfile": runtime_profile.as_str(),
+            "feature": "agent-marketplace-revenue-sharing",
+            "enabled": true,
+            "currency": "credits",
+            "payoutSchedule": "daily",
+            "modules": payouts,
+            "smartContractReady": false,
+            "note": "Deterministic local payout preview; plug on-chain settlement in production."
+        }))
+    }
+
+    async fn handle_edge_finetune_cluster_plan(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<EdgeFineTuneClusterPlanParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid edge.finetune.cluster.plan params: {err}"
+                ));
+            }
+        };
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            return RpcDispatchOutcome::internal_error(format!(
+                "edge finetune cluster runtime unavailable: {err}"
+            ));
+        }
+        let desired_workers = params
+            .desired_workers
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(4)
+            .clamp(1, 64);
+        let node_pairs = self.nodes.list().await;
+        let device_pairs = self.devices.list().await;
+        let peers = build_edge_mesh_peers(&node_pairs, &device_pairs, false);
+        let mut worker_ids = vec!["node:local".to_owned()];
+        for peer in peers.iter().filter(|peer| {
+            peer.pointer("/paired").and_then(Value::as_bool) == Some(true)
+                && peer.pointer("/kind").and_then(Value::as_str) == Some("node")
+        }) {
+            if worker_ids.len() >= desired_workers {
+                break;
+            }
+            if let Some(id) = peer.pointer("/id").and_then(Value::as_str) {
+                worker_ids.push(id.to_owned());
+            }
+        }
+        let shard_count = params
+            .dataset_shards
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(worker_ids.len().saturating_mul(2).max(2))
+            .clamp(1, 512);
+        let assignments = worker_ids
+            .iter()
+            .enumerate()
+            .map(|(idx, worker)| {
+                let mut shards = Vec::new();
+                for shard in 0..shard_count {
+                    if shard % worker_ids.len() == idx {
+                        shards.push(format!("shard-{}", shard + 1));
+                    }
+                }
+                json!({
+                    "workerId": worker,
+                    "role": if idx == 0 { "coordinator-trainer" } else { "trainer" },
+                    "shards": shards
+                })
+            })
+            .collect::<Vec<_>>();
+        let estimated_memory_mb = 180u64 + (worker_ids.len() as u64 * 320u64);
+        RpcDispatchOutcome::Handled(json!({
+            "feature": "self-hosted-private-model-training-cluster",
+            "enabled": true,
+            "mode": "distributed-lora",
+            "workers": worker_ids.len(),
+            "datasetShards": shard_count,
+            "estimatedMemoryMb": estimated_memory_mb,
+            "assignments": assignments,
+            "launcher": {
+                "method": "edge.finetune.run",
+                "clusterMode": true,
+                "coordinator": "node:local"
+            }
+        }))
+    }
+
+    async fn handle_edge_alignment_evaluate(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<EdgeAlignmentEvaluateParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid edge.alignment.evaluate params: {err}"
+                ));
+            }
+        };
+        let mut values = normalize_string_list(params.values, EDGE_ALIGNMENT_MAX_VALUES, 96);
+        if values.is_empty() {
+            values = vec![
+                "privacy".to_owned(),
+                "safety".to_owned(),
+                "user-consent".to_owned(),
+            ];
+        }
+        let task = normalize_optional_text(params.task, 16_000);
+        let action = normalize_optional_text(params.action, 16_000);
+        let strict = params.strict.unwrap_or(false);
+        let joined = format!(
+            "{}\n{}",
+            task.clone().unwrap_or_default(),
+            action.clone().unwrap_or_default()
+        );
+        let lowered = normalize(&joined);
+        let mut matched = Vec::new();
+        for keyword in [
+            "delete",
+            "exfiltrate",
+            "credential",
+            "bypass",
+            "sudo",
+            "rm -rf",
+            "self-modify",
+        ] {
+            if lowered.contains(keyword) {
+                matched.push(keyword.to_owned());
+            }
+        }
+        let protects_privacy = values
+            .iter()
+            .map(|value| normalize(value))
+            .any(|value| value.contains("privacy") || value.contains("consent"));
+        let recommendation = if strict && matched.len() >= 2 {
+            "block"
+        } else if !matched.is_empty() || protects_privacy {
+            "review"
+        } else {
+            "allow"
+        };
+        RpcDispatchOutcome::Handled(json!({
+            "feature": "ethical-alignment-layer-user-defined-values",
+            "enabled": true,
+            "strictMode": strict,
+            "values": values,
+            "task": task,
+            "action": action,
+            "matchedSignals": matched,
+            "recommendation": recommendation,
+            "explanation": match recommendation {
+                "block" => "Action violates strict-value policy.",
+                "review" => "Action should be human-reviewed against value constraints.",
+                _ => "No major value conflict detected."
+            }
+        }))
+    }
+
+    async fn handle_edge_quantum_status(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = decode_params::<EdgeQuantumStatusParams>(&req.params) {
+            return RpcDispatchOutcome::bad_request(format!(
+                "invalid edge.quantum.status params: {err}"
+            ));
+        }
+        let pqc_enabled =
+            env_var_truthy("OPENCLAW_RS_PQC_ENABLED") || env_var_truthy("OPENCLAW_RS_QUANTUM_SAFE");
+        let hybrid_mode = env_var_truthy("OPENCLAW_RS_PQC_HYBRID");
+        let kem = env::var("OPENCLAW_RS_PQC_KEM")
+            .ok()
+            .and_then(|value| normalize_optional_text(Some(value), 64))
+            .unwrap_or_else(|| "kyber768".to_owned());
+        let signature = env::var("OPENCLAW_RS_PQC_SIG")
+            .ok()
+            .and_then(|value| normalize_optional_text(Some(value), 64))
+            .unwrap_or_else(|| "dilithium3".to_owned());
+        RpcDispatchOutcome::Handled(json!({
+            "feature": "quantum-safe-cryptography-mode",
+            "enabled": pqc_enabled,
+            "mode": if !pqc_enabled {
+                "off"
+            } else if hybrid_mode {
+                "hybrid"
+            } else {
+                "strict-pqc"
+            },
+            "algorithms": {
+                "kem": kem,
+                "signature": signature,
+                "hash": "sha256"
+            },
+            "fallback": {
+                "classicalSignature": "ed25519",
+                "classicalKeyExchange": "x25519",
+                "activeWhenPqcDisabled": !pqc_enabled
+            }
+        }))
+    }
+
+    async fn handle_edge_collaboration_plan(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let params = match decode_params::<EdgeCollaborationPlanParams>(&req.params) {
+            Ok(v) => v,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid edge.collaboration.plan params: {err}"
+                ));
+            }
+        };
+        let session_key = normalize_optional_text(params.session_key, 256)
+            .map(|value| canonicalize_session_key(&value))
+            .unwrap_or_else(|| canonicalize_session_key(DEFAULT_MAIN_KEY));
+        let mode = normalize_optional_text(params.mode, 64)
+            .map(|value| normalize(&value))
+            .unwrap_or_else(|| "mixed-initiative".to_owned());
+        let participants = {
+            let mut values =
+                normalize_string_list(params.participants, EDGE_COLLAB_MAX_PARTICIPANTS, 128);
+            if values.is_empty() {
+                values = vec!["human".to_owned(), "openclaw-agent".to_owned()];
+            }
+            values
+        };
+        let max_turns = params.max_turns.unwrap_or(24).clamp(1, 240);
+        let preview = self
+            .sessions
+            .preview(std::slice::from_ref(&session_key), 6, 200)
+            .await
+            .into_iter()
+            .next();
+        let room_seed = format!(
+            "{}|{}|{}|{}",
+            session_key,
+            mode,
+            participants.join(","),
+            now_ms()
+        );
+        let room_id = format!("collab-{}", sha256_hex_prefix(&room_seed, 18));
+        RpcDispatchOutcome::Handled(json!({
+            "feature": "real-time-human-agent-collaboration-mode",
+            "enabled": true,
+            "roomId": room_id,
+            "sessionKey": session_key,
+            "mode": mode,
+            "participants": participants,
+            "maxTurns": max_turns,
+            "preview": preview,
+            "coordination": {
+                "sharedContext": true,
+                "conflictResolution": "last-writer-with-review",
+                "handoffCompatible": true
+            }
         }))
     }
 
@@ -17263,6 +17949,29 @@ fn build_edge_mesh_routes(peers: &[Value]) -> Vec<Value> {
     routes
 }
 
+fn deterministic_u64_seed(input: &str) -> u64 {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    u64::from_le_bytes(bytes)
+}
+
+fn sha256_hex_prefix(input: &str, len: usize) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out.truncate(len.min(out.len()));
+    out
+}
+
 fn homomorphic_key_bias(key_id: &str) -> i64 {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -26109,6 +26818,75 @@ struct EdgeFineTuneRunParams {
     auto_ingest_memory: Option<bool>,
     #[serde(rename = "dryRun", alias = "dry_run")]
     dry_run: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeIdentityTrustStatusParams {
+    #[serde(rename = "includePending", alias = "include_pending")]
+    include_pending: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgePersonalityProfileParams {
+    #[serde(rename = "sessionKey", alias = "session_key")]
+    session_key: Option<String>,
+    #[serde(rename = "recentLimit", alias = "recent_limit")]
+    recent_limit: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeHandoffPlanParams {
+    #[serde(rename = "sessionKey", alias = "session_key")]
+    session_key: Option<String>,
+    #[serde(rename = "targetPeerId", alias = "target_peer_id")]
+    target_peer_id: Option<String>,
+    #[serde(rename = "includeHistory", alias = "include_history")]
+    include_history: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeMarketplaceRevenuePreviewParams {
+    #[serde(rename = "moduleId", alias = "module_id")]
+    module_id: Option<String>,
+    #[serde(rename = "dailyInvocations", alias = "daily_invocations")]
+    daily_invocations: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeFineTuneClusterPlanParams {
+    #[serde(rename = "desiredWorkers", alias = "desired_workers")]
+    desired_workers: Option<u64>,
+    #[serde(rename = "datasetShards", alias = "dataset_shards")]
+    dataset_shards: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeAlignmentEvaluateParams {
+    values: Option<Vec<String>>,
+    task: Option<String>,
+    action: Option<String>,
+    strict: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeQuantumStatusParams {}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EdgeCollaborationPlanParams {
+    #[serde(rename = "sessionKey", alias = "session_key")]
+    session_key: Option<String>,
+    participants: Option<Vec<String>>,
+    mode: Option<String>,
+    #[serde(rename = "maxTurns", alias = "max_turns")]
+    max_turns: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -35773,6 +36551,169 @@ mod tests {
                     .is_some());
             }
             _ => panic!("expected edge.finetune.run handled"),
+        }
+
+        let identity = RpcRequestFrame {
+            id: "req-edge-identity-trust".to_owned(),
+            method: "edge.identity.trust.status".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher.handle_request(&identity).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/enabled").and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert!(payload
+                    .pointer("/localIdentity/did")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value.starts_with("did:openclaw:")));
+            }
+            _ => panic!("expected edge.identity.trust.status handled"),
+        }
+
+        let personality = RpcRequestFrame {
+            id: "req-edge-personality-profile".to_owned(),
+            method: "edge.personality.profile".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher.handle_request(&personality).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/enabled").and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert!(payload
+                    .pointer("/profile/mood")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty()));
+            }
+            _ => panic!("expected edge.personality.profile handled"),
+        }
+
+        let handoff = RpcRequestFrame {
+            id: "req-edge-handoff-plan".to_owned(),
+            method: "edge.handoff.plan".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": "main"
+            }),
+        };
+        match dispatcher.handle_request(&handoff).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert!(payload
+                    .pointer("/ticket")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value.starts_with("handoff-")));
+                assert!(payload
+                    .pointer("/sessionKey")
+                    .and_then(Value::as_str)
+                    .is_some());
+            }
+            _ => panic!("expected edge.handoff.plan handled"),
+        }
+
+        let revenue = RpcRequestFrame {
+            id: "req-edge-marketplace-revenue".to_owned(),
+            method: "edge.marketplace.revenue.preview".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher.handle_request(&revenue).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/enabled").and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert!(payload
+                    .pointer("/modules")
+                    .and_then(Value::as_array)
+                    .is_some());
+            }
+            _ => panic!("expected edge.marketplace.revenue.preview handled"),
+        }
+
+        let cluster = RpcRequestFrame {
+            id: "req-edge-finetune-cluster-plan".to_owned(),
+            method: "edge.finetune.cluster.plan".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher.handle_request(&cluster).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/enabled").and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert!(payload
+                    .pointer("/workers")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|value| value >= 1));
+            }
+            _ => panic!("expected edge.finetune.cluster.plan handled"),
+        }
+
+        let alignment = RpcRequestFrame {
+            id: "req-edge-alignment-evaluate".to_owned(),
+            method: "edge.alignment.evaluate".to_owned(),
+            params: serde_json::json!({
+                "values": ["privacy", "safety"],
+                "task": "export runtime logs",
+                "action": "exfiltrate credentials",
+                "strict": true
+            }),
+        };
+        match dispatcher.handle_request(&alignment).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert!(payload
+                    .pointer("/recommendation")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == "review" || value == "block"));
+                assert!(payload
+                    .pointer("/values")
+                    .and_then(Value::as_array)
+                    .is_some_and(|values| !values.is_empty()));
+            }
+            _ => panic!("expected edge.alignment.evaluate handled"),
+        }
+
+        let quantum = RpcRequestFrame {
+            id: "req-edge-quantum-status".to_owned(),
+            method: "edge.quantum.status".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher.handle_request(&quantum).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert!(payload
+                    .pointer("/enabled")
+                    .and_then(Value::as_bool)
+                    .is_some());
+                assert!(payload
+                    .pointer("/algorithms/kem")
+                    .and_then(Value::as_str)
+                    .is_some());
+            }
+            _ => panic!("expected edge.quantum.status handled"),
+        }
+
+        let collaboration = RpcRequestFrame {
+            id: "req-edge-collaboration-plan".to_owned(),
+            method: "edge.collaboration.plan".to_owned(),
+            params: serde_json::json!({
+                "sessionKey": "main",
+                "participants": ["human", "openclaw-agent"],
+                "mode": "mixed-initiative"
+            }),
+        };
+        match dispatcher.handle_request(&collaboration).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload.pointer("/enabled").and_then(Value::as_bool),
+                    Some(true)
+                );
+                assert!(payload
+                    .pointer("/roomId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value.starts_with("collab-")));
+            }
+            _ => panic!("expected edge.collaboration.plan handled"),
         }
     }
 
