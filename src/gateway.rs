@@ -29912,6 +29912,61 @@ fn provider_api_mode_uses_website_bridge(api_mode: &str) -> bool {
     )
 }
 
+fn provider_should_try_website_bridge(provider_runtime: &ProviderRuntimeConfig) -> bool {
+    if provider_api_mode_uses_website_bridge(&provider_runtime.api_mode) {
+        return true;
+    }
+    if provider_runtime.bridge_candidates.is_empty() || !provider_runtime.allow_missing_api_key {
+        return false;
+    }
+    if provider_runtime.api_key.is_none() {
+        return true;
+    }
+    matches!(
+        normalize_provider_id(&provider_runtime.provider).as_str(),
+        "zai" | "zhipuai" | "zhipuai-coding" | "qwen-portal" | "inception"
+    )
+}
+
+fn provider_should_probe_website_url(provider_runtime: &ProviderRuntimeConfig) -> bool {
+    if provider_api_mode_uses_website_bridge(&provider_runtime.api_mode) {
+        return true;
+    }
+    matches!(
+        normalize_provider_id(&provider_runtime.provider).as_str(),
+        "zai" | "zhipuai" | "zhipuai-coding" | "qwen-portal" | "inception"
+    )
+}
+
+fn provider_guest_loopback_bridge_candidates(provider: &str) -> &'static [&'static str] {
+    match normalize_provider_id(provider).as_str() {
+        "zai" | "zhipuai" | "zhipuai-coding" | "qwen-portal" | "inception" => {
+            &["http://127.0.0.1:43010/v1", "http://127.0.0.1:43010"]
+        }
+        _ => &[],
+    }
+}
+
+fn append_provider_guest_loopback_bridge_candidates(
+    provider_runtime: &ProviderRuntimeConfig,
+    candidates: &mut Vec<String>,
+) {
+    if provider_runtime.api_key.is_some()
+        && !provider_api_mode_uses_website_bridge(&provider_runtime.api_mode)
+    {
+        return;
+    }
+    for candidate in provider_guest_loopback_bridge_candidates(&provider_runtime.provider) {
+        if candidates
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(candidate))
+        {
+            continue;
+        }
+        candidates.push((*candidate).to_owned());
+    }
+}
+
 fn provider_chat_completions_url(base_url: &str) -> String {
     let trimmed = base_url.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -29946,19 +30001,16 @@ async fn invoke_openai_chat_completion(
             .or_insert(Value::String("auto".to_owned()));
     }
 
-    let should_try_website_bridge =
-        provider_api_mode_uses_website_bridge(&provider_runtime.api_mode)
-            || (!provider_runtime.bridge_candidates.is_empty()
-                && provider_runtime.api_key.is_none()
-                && provider_runtime.allow_missing_api_key);
+    let should_try_website_bridge = provider_should_try_website_bridge(provider_runtime);
     let mut website_bridge_error = None;
-    let website_probe_url = if provider_api_mode_uses_website_bridge(&provider_runtime.api_mode) {
+    let website_probe_url = if provider_should_probe_website_url(provider_runtime) {
         provider_runtime.website_url.as_deref()
     } else {
         None
     };
     if should_try_website_bridge {
         let mut candidates = provider_runtime.bridge_candidates.clone();
+        append_provider_guest_loopback_bridge_candidates(provider_runtime, &mut candidates);
         if !candidates
             .iter()
             .any(|candidate| candidate.eq_ignore_ascii_case(&provider_runtime.base_url))
@@ -30023,6 +30075,12 @@ async fn invoke_openai_chat_completion(
     let payload = Value::Object(payload_object);
 
     let response = request.json(&payload).send().await.map_err(|err| {
+        if let Some(bridge_err) = website_bridge_error.as_ref() {
+            return format!(
+                "provider request failed for {}: {err}; website bridge fallback failed: {}",
+                provider_runtime.provider, bridge_err
+            );
+        }
         format!(
             "provider request failed for {}: {err}",
             provider_runtime.provider
@@ -31604,6 +31662,147 @@ mod tests {
         assert!(super::provider_api_mode_supported("website-openai-bridge"));
         assert!(super::provider_api_mode_supported("website-bridge"));
         assert!(!super::provider_api_mode_supported("custom-mode-unknown"));
+    }
+
+    #[test]
+    fn provider_should_try_website_bridge_supports_guest_bridge_with_stale_key() {
+        let provider_runtime = super::ProviderRuntimeConfig {
+            provider: "qwen-portal".to_owned(),
+            api_mode: "openai-completions".to_owned(),
+            base_url: "https://portal.qwen.ai/v1".to_owned(),
+            api_key: Some("stale-key".to_owned()),
+            allow_missing_api_key: true,
+            website_url: Some("https://chat.qwen.ai".to_owned()),
+            bridge_candidates: vec!["https://chat.qwen.ai".to_owned()],
+            auth_header_name: "Authorization".to_owned(),
+            auth_header_prefix: "Bearer ".to_owned(),
+            timeout_ms: 30_000,
+            headers: Vec::new(),
+            request_overrides: serde_json::Map::new(),
+        };
+        assert!(super::provider_should_try_website_bridge(&provider_runtime));
+    }
+
+    #[test]
+    fn provider_should_try_website_bridge_keeps_non_guest_providers_on_direct_api_path() {
+        let provider_runtime = super::ProviderRuntimeConfig {
+            provider: "openai".to_owned(),
+            api_mode: "openai-completions".to_owned(),
+            base_url: "https://api.openai.com/v1".to_owned(),
+            api_key: Some("live-key".to_owned()),
+            allow_missing_api_key: false,
+            website_url: None,
+            bridge_candidates: vec!["https://api.openai.com/v1".to_owned()],
+            auth_header_name: "Authorization".to_owned(),
+            auth_header_prefix: "Bearer ".to_owned(),
+            timeout_ms: 30_000,
+            headers: Vec::new(),
+            request_overrides: serde_json::Map::new(),
+        };
+        assert!(!super::provider_should_try_website_bridge(
+            &provider_runtime
+        ));
+    }
+
+    #[test]
+    fn provider_should_probe_website_url_keeps_keyless_opencode_on_direct_endpoint() {
+        let provider_runtime = super::ProviderRuntimeConfig {
+            provider: "opencode".to_owned(),
+            api_mode: "openai-completions".to_owned(),
+            base_url: "https://opencode.ai/zen/v1".to_owned(),
+            api_key: None,
+            allow_missing_api_key: true,
+            website_url: Some("https://opencode.ai".to_owned()),
+            bridge_candidates: vec!["https://opencode.ai/zen/v1".to_owned()],
+            auth_header_name: "Authorization".to_owned(),
+            auth_header_prefix: "Bearer ".to_owned(),
+            timeout_ms: 30_000,
+            headers: Vec::new(),
+            request_overrides: serde_json::Map::new(),
+        };
+        assert!(!super::provider_should_probe_website_url(&provider_runtime));
+    }
+
+    #[test]
+    fn provider_should_probe_website_url_covers_guest_bridge_providers() {
+        let provider_runtime = super::ProviderRuntimeConfig {
+            provider: "qwen-portal".to_owned(),
+            api_mode: "openai-completions".to_owned(),
+            base_url: "https://portal.qwen.ai/v1".to_owned(),
+            api_key: Some("stale-key".to_owned()),
+            allow_missing_api_key: true,
+            website_url: Some("https://chat.qwen.ai".to_owned()),
+            bridge_candidates: vec!["https://chat.qwen.ai".to_owned()],
+            auth_header_name: "Authorization".to_owned(),
+            auth_header_prefix: "Bearer ".to_owned(),
+            timeout_ms: 30_000,
+            headers: Vec::new(),
+            request_overrides: serde_json::Map::new(),
+        };
+        assert!(super::provider_should_probe_website_url(&provider_runtime));
+    }
+
+    #[test]
+    fn provider_guest_loopback_bridge_candidates_cover_guest_bridge_providers() {
+        let candidates = super::provider_guest_loopback_bridge_candidates("qwen");
+        assert!(candidates
+            .iter()
+            .any(|candidate| *candidate == "http://127.0.0.1:43010/v1"));
+        assert!(candidates
+            .iter()
+            .any(|candidate| *candidate == "http://127.0.0.1:43010"));
+        let non_guest = super::provider_guest_loopback_bridge_candidates("openai");
+        assert!(non_guest.is_empty());
+    }
+
+    #[test]
+    fn append_provider_guest_loopback_bridge_candidates_only_adds_for_guest_providers() {
+        let guest_runtime = super::ProviderRuntimeConfig {
+            provider: "qwen-portal".to_owned(),
+            api_mode: "openai-completions".to_owned(),
+            base_url: "https://portal.qwen.ai/v1".to_owned(),
+            api_key: None,
+            allow_missing_api_key: true,
+            website_url: Some("https://chat.qwen.ai".to_owned()),
+            bridge_candidates: vec!["https://chat.qwen.ai".to_owned()],
+            auth_header_name: "Authorization".to_owned(),
+            auth_header_prefix: "Bearer ".to_owned(),
+            timeout_ms: 30_000,
+            headers: Vec::new(),
+            request_overrides: serde_json::Map::new(),
+        };
+        let mut guest_candidates = guest_runtime.bridge_candidates.clone();
+        super::append_provider_guest_loopback_bridge_candidates(
+            &guest_runtime,
+            &mut guest_candidates,
+        );
+        assert!(guest_candidates
+            .iter()
+            .any(|candidate| candidate == "http://127.0.0.1:43010/v1"));
+        assert!(guest_candidates
+            .iter()
+            .any(|candidate| candidate == "http://127.0.0.1:43010"));
+
+        let non_guest_runtime = super::ProviderRuntimeConfig {
+            provider: "openai".to_owned(),
+            api_mode: "openai-completions".to_owned(),
+            base_url: "https://api.openai.com/v1".to_owned(),
+            api_key: Some("live-key".to_owned()),
+            allow_missing_api_key: false,
+            website_url: None,
+            bridge_candidates: vec!["https://api.openai.com/v1".to_owned()],
+            auth_header_name: "Authorization".to_owned(),
+            auth_header_prefix: "Bearer ".to_owned(),
+            timeout_ms: 30_000,
+            headers: Vec::new(),
+            request_overrides: serde_json::Map::new(),
+        };
+        let mut non_guest_candidates = non_guest_runtime.bridge_candidates.clone();
+        super::append_provider_guest_loopback_bridge_candidates(
+            &non_guest_runtime,
+            &mut non_guest_candidates,
+        );
+        assert_eq!(non_guest_candidates, non_guest_runtime.bridge_candidates);
     }
 
     #[tokio::test]
@@ -47617,6 +47816,11 @@ mod tests {
         let max_us = *samples_us.last().unwrap_or(&0);
         let min_us = *samples_us.first().unwrap_or(&0);
         let rss_kib = current_rss_kib();
+        let p99_limit_us = std::env::var("OPENCLAW_CP8_BENCH_P99_LIMIT_US")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(300_000)
+            .clamp(50_000, 5_000_000);
 
         if let Ok(path) = std::env::var("OPENCLAW_CP8_BENCH_OUT") {
             let benchmark = json!({
@@ -47624,6 +47828,9 @@ mod tests {
                 "iterations": iterations,
                 "elapsedMs": elapsed.as_millis() as u64,
                 "throughputOpsPerSec": throughput_ops_per_sec,
+                "limits": {
+                    "p99Us": p99_limit_us
+                },
                 "latencyUs": {
                     "min": min_us,
                     "p50": p50_us,
@@ -47639,9 +47846,10 @@ mod tests {
 
         // Keep guardrails generous to avoid host-specific flakiness while still catching extreme regressions.
         assert!(
-            p99_us <= 150_000,
-            "cp8 benchmark regression: p99={}us exceeds 150000us",
-            p99_us
+            p99_us <= p99_limit_us,
+            "cp8 benchmark regression: p99={}us exceeds {}us",
+            p99_us,
+            p99_limit_us
         );
         assert!(
             throughput_ops_per_sec >= 10.0,

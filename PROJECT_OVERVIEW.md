@@ -1,7 +1,7 @@
 # OpenClaw Rust Project Overview
 
-Version: v1.0.2  
-Last updated: 2026-02-22
+Version: v1.7.6  
+Last updated: 2026-02-26
 
 ## 1. Project purpose
 
@@ -113,7 +113,7 @@ Runtime channel model includes:
 
 Wave coverage includes mainstream and extended adapters (telegram/discord/slack/signal/webchat/whatsapp and additional wave-2/3/4 channels documented in audit and tests).
 
-## 8. Telegram native bridge (v1.0.2 fix path)
+## 8. Telegram native bridge
 
 `src/telegram_bridge.rs` provides a Rust-native Telegram integration path in standalone mode:
 
@@ -126,6 +126,7 @@ Wave coverage includes mainstream and extended adapters (telegram/discord/slack/
 - Supports operator control commands in Telegram:
   - `/model list [provider]` and `/model <provider>/<model>`
   - `/set api key <provider> <key>` (config patch to `models.providers.<provider>.apiKey`)
+  - `/auth providers`, `/auth start <provider> [account]`, and `/auth wait ...` for OAuth provider login handoff
 
 This closes the previously observed "configured but no reply" failure mode where Telegram was not actually running as a native runtime worker.
 

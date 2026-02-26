@@ -4,13 +4,13 @@ Generated (UTC): deterministic
 
 ## Summary
 
-- Rust method count: 122
+- Rust method count: 130
 - Surfaces compared: 2
 
 ## Surface: base
 
 - Upstream method count: 91
-- Rust method count: 122
+- Rust method count: 130
 - Shared methods: 89
 - Coverage vs upstream: 97.8%
 
@@ -32,13 +32,21 @@ Generated (UTC): deterministic
 - `chat.inject`
 - `connect`
 - `edge.acceleration.status`
+- `edge.alignment.evaluate`
+- `edge.collaboration.plan`
 - `edge.enclave.prove`
 - `edge.enclave.status`
+- `edge.finetune.cluster.plan`
 - `edge.finetune.run`
 - `edge.finetune.status`
+- `edge.handoff.plan`
 - `edge.homomorphic.compute`
+- `edge.identity.trust.status`
+- `edge.marketplace.revenue.preview`
 - `edge.mesh.status`
 - `edge.multimodal.inspect`
+- `edge.personality.profile`
+- `edge.quantum.status`
 - `edge.router.plan`
 - `edge.swarm.plan`
 - `edge.voice.transcribe`
@@ -58,7 +66,7 @@ Generated (UTC): deterministic
 ## Surface: handlers
 
 - Upstream method count: 101
-- Rust method count: 122
+- Rust method count: 130
 - Shared methods: 99
 - Coverage vs upstream: 98.02%
 
@@ -78,13 +86,21 @@ Generated (UTC): deterministic
 - `browser.open`
 - `canvas.present`
 - `edge.acceleration.status`
+- `edge.alignment.evaluate`
+- `edge.collaboration.plan`
 - `edge.enclave.prove`
 - `edge.enclave.status`
+- `edge.finetune.cluster.plan`
 - `edge.finetune.run`
 - `edge.finetune.status`
+- `edge.handoff.plan`
 - `edge.homomorphic.compute`
+- `edge.identity.trust.status`
+- `edge.marketplace.revenue.preview`
 - `edge.mesh.status`
 - `edge.multimodal.inspect`
+- `edge.personality.profile`
+- `edge.quantum.status`
 - `edge.router.plan`
 - `edge.swarm.plan`
 - `edge.voice.transcribe`

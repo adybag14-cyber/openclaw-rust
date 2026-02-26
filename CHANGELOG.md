@@ -5,6 +5,42 @@
 ### Highlights
 - No unreleased changes.
 
+## v1.7.6 - 2026-02-26
+
+### Highlights
+- Hardened official website bridge routing for guest providers under mixed auth states:
+  - Added explicit bridge-mode matching and loopback endpoint prioritization for `zai`, `qwen-portal`, and `inception`.
+  - Added support for upstream `x-actual-status-code` override handling so HTTP-200 transport envelopes with effective 4xx/5xx statuses are treated correctly.
+- Improved provider runtime fallback decisions in `src/gateway.rs`:
+  - Guest bridge providers can now still attempt website bridge paths when stale/non-functional API keys are configured.
+  - Loopback bridge candidates (`http://127.0.0.1:43010/...`) are auto-appended for guest bridge providers when applicable.
+  - Direct provider request errors now include website bridge fallback failure context for faster debugging.
+- Updated official Inception/Mercury bridge flow in `src/website_bridge.rs`:
+  - Added direct completion-first strategy via `/api/v1/chat/completions` and `/api/chat/completions`.
+  - Kept legacy chat-create completion flow as fallback when direct mode fails.
+  - Relaxed auth token dependency for guest mode where endpoint behavior permits keyless completion.
+- Extended Qwen guest bridge handling in `src/website_bridge.rs`:
+  - Added v2 chat/create + completion path support with robust chat ID extraction from multiple response shapes.
+  - Preserved v1 auth-backed fallback path for compatibility.
+- Added/updated focused bridge and provider tests covering stale-key fallback, loopback endpoint detection, and direct-completion behavior.
+- Added cross-platform test compatibility fix for secret echo assertions in `src/tool_runtime.rs`.
+
+### Validation
+- `cargo +1.83.0-x86_64-pc-windows-gnu fmt --all -- --check`
+- `cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings`
+- `cargo +1.83.0-x86_64-pc-windows-gnu test`
+- `cargo +1.83.0-x86_64-pc-windows-gnu build --release`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"`
+- `./scripts/parity/run-cp6-gate.ps1`
+- `./scripts/parity/run-cp0-gate.ps1`
+- Ubuntu 20.04 (WSL):
+  - `cargo +1.83.0 fmt --all -- --check`
+  - `cargo +1.83.0 clippy --all-targets -- -D warnings`
+  - `cargo +1.83.0 test`
+  - `cargo +1.83.0 build --release`
+- Docker parity smoke:
+  - `./scripts/run-docker-parity-smoke.ps1`
+
 ## v1.7.2 - 2026-02-25
 
 ### Highlights

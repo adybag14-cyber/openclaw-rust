@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use hmac::{Hmac, Mac};
-use reqwest::{Client, Url};
+use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::Sha256;
@@ -84,25 +84,6 @@ pub async fn invoke_openai_compatible(
     let website_online = probe_website_status(&client, request.website_url).await;
 
     let mut attempts = Vec::new();
-    if should_use_zai_guest_bridge(&request) {
-        match invoke_zai_guest_bridge(&client, &request).await {
-            Ok(response) => return Ok(response),
-            Err(err) => attempts.push(format!("official_zai_bridge_error: {err}")),
-        }
-    }
-    if should_use_qwen_guest_bridge(&request) {
-        match invoke_qwen_guest_bridge(&client, &request).await {
-            Ok(response) => return Ok(response),
-            Err(err) => attempts.push(format!("official_qwen_bridge_error: {err}")),
-        }
-    }
-    if should_use_inception_guest_bridge(&request) {
-        match invoke_inception_guest_bridge(&client, &request).await {
-            Ok(response) => return Ok(response),
-            Err(err) => attempts.push(format!("official_inception_bridge_error: {err}")),
-        }
-    }
-
     let mut candidate_endpoints = request
         .candidate_base_urls
         .iter()
@@ -114,9 +95,105 @@ pub async fn invoke_openai_compatible(
         attempts.push("website bridge has no candidate endpoints configured".to_owned());
     }
 
+    // Prefer local loopback bridges first when present. This gives deterministic
+    // E2E behavior on hosts that run a local browser-assisted bridge.
+    let loopback_endpoints = candidate_endpoints
+        .iter()
+        .filter(|endpoint| endpoint_targets_loopback(endpoint))
+        .cloned()
+        .collect::<Vec<_>>();
+    let prioritize_loopback = !loopback_endpoints.is_empty()
+        && (matches_zai_guest_bridge(&request)
+            || matches_qwen_guest_bridge(&request)
+            || matches_inception_guest_bridge(&request));
+    if prioritize_loopback {
+        if let Some(response) =
+            try_candidate_endpoints(&client, &request, &loopback_endpoints, &mut attempts).await
+        {
+            return Ok(response);
+        }
+    }
+
+    let mut zai_guest_attempted = false;
+    let mut qwen_guest_attempted = false;
+    let mut inception_guest_attempted = false;
+    if should_use_zai_guest_bridge(&request) {
+        zai_guest_attempted = true;
+        match invoke_zai_guest_bridge(&client, &request).await {
+            Ok(response) => return Ok(response),
+            Err(err) => attempts.push(format!("official_zai_bridge_error: {err}")),
+        }
+    }
+    if should_use_qwen_guest_bridge(&request) {
+        qwen_guest_attempted = true;
+        match invoke_qwen_guest_bridge(&client, &request).await {
+            Ok(response) => return Ok(response),
+            Err(err) => attempts.push(format!("official_qwen_bridge_error: {err}")),
+        }
+    }
+    if should_use_inception_guest_bridge(&request) {
+        inception_guest_attempted = true;
+        match invoke_inception_guest_bridge(&client, &request).await {
+            Ok(response) => return Ok(response),
+            Err(err) => attempts.push(format!("official_inception_bridge_error: {err}")),
+        }
+    }
+
+    let remaining_endpoints = if prioritize_loopback {
+        candidate_endpoints
+            .iter()
+            .filter(|endpoint| !endpoint_targets_loopback(endpoint))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        candidate_endpoints.clone()
+    };
+    if let Some(response) =
+        try_candidate_endpoints(&client, &request, &remaining_endpoints, &mut attempts).await
+    {
+        return Ok(response);
+    }
+
+    if !zai_guest_attempted && matches_zai_guest_bridge(&request) {
+        match invoke_zai_guest_bridge(&client, &request).await {
+            Ok(response) => return Ok(response),
+            Err(err) => attempts.push(format!("official_zai_bridge_fallback_error: {err}")),
+        }
+    }
+    if !qwen_guest_attempted && matches_qwen_guest_bridge(&request) {
+        match invoke_qwen_guest_bridge(&client, &request).await {
+            Ok(response) => return Ok(response),
+            Err(err) => attempts.push(format!("official_qwen_bridge_fallback_error: {err}")),
+        }
+    }
+    if !inception_guest_attempted && matches_inception_guest_bridge(&request) {
+        match invoke_inception_guest_bridge(&client, &request).await {
+            Ok(response) => return Ok(response),
+            Err(err) => attempts.push(format!("official_inception_bridge_fallback_error: {err}")),
+        }
+    }
+
+    let online_hint = match website_online {
+        Some(true) => "website=online",
+        Some(false) => "website=offline",
+        None => "website=unknown",
+    };
+    Err(format!(
+        "website bridge failed for provider {} ({online_hint}); attempts: {}",
+        request.provider,
+        attempts.join(" | ")
+    ))
+}
+
+async fn try_candidate_endpoints(
+    client: &Client,
+    request: &WebsiteBridgeRequest<'_>,
+    candidate_endpoints: &[String],
+    attempts: &mut Vec<String>,
+) -> Option<WebsiteBridgeResponse> {
     for endpoint in candidate_endpoints {
         let mut request_builder = client
-            .post(&endpoint)
+            .post(endpoint)
             .header("Content-Type", "application/json");
         for (name, value) in request.headers {
             request_builder = request_builder.header(name, value);
@@ -154,7 +231,7 @@ pub async fn invoke_openai_compatible(
                 continue;
             }
         };
-        let status = response.status();
+        let status = resolve_effective_status(&response);
         let body = match response.text().await {
             Ok(value) => value,
             Err(err) => {
@@ -178,24 +255,17 @@ pub async fn invoke_openai_compatible(
             }
         };
         if openai_response_has_usable_assistant_output(&parsed) {
-            return Ok(WebsiteBridgeResponse { body, endpoint });
+            return Some(WebsiteBridgeResponse {
+                body,
+                endpoint: endpoint.to_owned(),
+            });
         }
         attempts.push(format!(
             "{endpoint}: missing_coherent_reply body={}",
             truncate_text(&parsed.to_string(), 240)
         ));
     }
-
-    let online_hint = match website_online {
-        Some(true) => "website=online",
-        Some(false) => "website=offline",
-        None => "website=unknown",
-    };
-    Err(format!(
-        "website bridge failed for provider {} ({online_hint}); attempts: {}",
-        request.provider,
-        attempts.join(" | ")
-    ))
+    None
 }
 
 async fn probe_website_status(client: &Client, website_url: Option<&str>) -> Option<bool> {
@@ -217,6 +287,31 @@ fn resolve_chat_completion_endpoint(base_url: &str) -> String {
         return format!("{trimmed}/chat/completions");
     }
     format!("{trimmed}/v1/chat/completions")
+}
+
+fn resolve_effective_status(response: &reqwest::Response) -> StatusCode {
+    let Some(raw) = response
+        .headers()
+        .get("x-actual-status-code")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u16>().ok())
+    else {
+        return response.status();
+    };
+    StatusCode::from_u16(raw).unwrap_or_else(|_| response.status())
+}
+
+fn endpoint_targets_loopback(endpoint: &str) -> bool {
+    let Ok(url) = Url::parse(endpoint) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let normalized_host = host.trim_matches(['[', ']']);
+    normalized_host.eq_ignore_ascii_case("localhost")
+        || normalized_host == "127.0.0.1"
+        || normalized_host == "::1"
 }
 
 fn normalize_optional_text(value: &str, max_len: usize) -> Option<String> {
@@ -250,13 +345,25 @@ fn truncate_text(value: &str, max_len: usize) -> String {
 }
 
 fn should_use_zai_guest_bridge(request: &WebsiteBridgeRequest<'_>) -> bool {
-    if request
+    !has_api_key(request) && matches_zai_guest_bridge(request)
+}
+
+fn should_use_qwen_guest_bridge(request: &WebsiteBridgeRequest<'_>) -> bool {
+    matches_qwen_guest_bridge(request)
+}
+
+fn should_use_inception_guest_bridge(request: &WebsiteBridgeRequest<'_>) -> bool {
+    !has_api_key(request) && matches_inception_guest_bridge(request)
+}
+
+fn has_api_key(request: &WebsiteBridgeRequest<'_>) -> bool {
+    request
         .api_key
         .and_then(|value| normalize_optional_text(value, 4_096))
         .is_some()
-    {
-        return false;
-    }
+}
+
+fn matches_zai_guest_bridge(request: &WebsiteBridgeRequest<'_>) -> bool {
     let provider = request.provider.trim().to_ascii_lowercase();
     if provider.contains("zai") || provider.contains("zhipu") {
         return true;
@@ -271,7 +378,7 @@ fn should_use_zai_guest_bridge(request: &WebsiteBridgeRequest<'_>) -> bool {
             .any(|url| url.to_ascii_lowercase().contains("chat.z.ai"))
 }
 
-fn should_use_qwen_guest_bridge(request: &WebsiteBridgeRequest<'_>) -> bool {
+fn matches_qwen_guest_bridge(request: &WebsiteBridgeRequest<'_>) -> bool {
     let provider = request.provider.trim().to_ascii_lowercase();
     if provider.contains("qwen") {
         return true;
@@ -289,14 +396,7 @@ fn should_use_qwen_guest_bridge(request: &WebsiteBridgeRequest<'_>) -> bool {
         })
 }
 
-fn should_use_inception_guest_bridge(request: &WebsiteBridgeRequest<'_>) -> bool {
-    if request
-        .api_key
-        .and_then(|value| normalize_optional_text(value, 4_096))
-        .is_some()
-    {
-        return false;
-    }
+fn matches_inception_guest_bridge(request: &WebsiteBridgeRequest<'_>) -> bool {
     let provider = request.provider.trim().to_ascii_lowercase();
     if provider.contains("inception") || provider.contains("mercury") {
         return true;
@@ -360,7 +460,7 @@ async fn invoke_zai_guest_bridge(
         .send()
         .await
         .map_err(|err| format!("zai auth request failed: {err}"))?;
-    let auth_status = auth_response.status();
+    let auth_status = resolve_effective_status(&auth_response);
     let auth_body = auth_response
         .text()
         .await
@@ -439,7 +539,7 @@ async fn invoke_zai_guest_model(
         .send()
         .await
         .map_err(|err| format!("zai chat create request failed: {err}"))?;
-    let create_chat_status = create_chat_response.status();
+    let create_chat_status = resolve_effective_status(&create_chat_response);
     let create_chat_body = create_chat_response
         .text()
         .await
@@ -540,7 +640,7 @@ async fn invoke_zai_guest_model(
         .send()
         .await
         .map_err(|err| format!("zai completion request failed: {err}"))?;
-    let completion_status = completion_response.status();
+    let completion_status = resolve_effective_status(&completion_response);
     let completion_body = completion_response
         .text()
         .await
@@ -626,13 +726,32 @@ async fn invoke_inception_guest_bridge(
     if model_candidates.is_empty() {
         return Err("inception bridge has no candidate models".to_owned());
     }
-    let auth_token = resolve_inception_auth_token(client, request, &origin).await?;
     let mut attempts = Vec::new();
-    for model in model_candidates {
-        match invoke_inception_guest_model(client, request, &origin, &auth_token, &model).await {
+    for model in &model_candidates {
+        match invoke_inception_guest_model_direct(client, request, &origin, model).await {
             Ok(response) => return Ok(response),
-            Err(err) => attempts.push(format!("{model}: {err}")),
+            Err(err) => attempts.push(format!("{model}: direct {err}")),
         }
+    }
+    match resolve_inception_auth_token(client, request, &origin).await {
+        Ok(Some(auth_token)) => {
+            for model in &model_candidates {
+                match invoke_inception_guest_model_legacy(
+                    client,
+                    request,
+                    &origin,
+                    &auth_token,
+                    model,
+                )
+                .await
+                {
+                    Ok(response) => return Ok(response),
+                    Err(err) => attempts.push(format!("{model}: legacy {err}")),
+                }
+            }
+        }
+        Ok(None) => attempts.push("legacy auth token missing".to_owned()),
+        Err(err) => attempts.push(format!("legacy auth {err}")),
     }
     Err(format!(
         "inception bridge exhausted model candidates; attempts: {}",
@@ -657,12 +776,12 @@ async fn resolve_inception_auth_token(
     client: &Client,
     request: &WebsiteBridgeRequest<'_>,
     origin: &str,
-) -> Result<String, String> {
+) -> Result<Option<String>, String> {
     if let Some(token) = request
         .api_key
         .and_then(|value| normalize_optional_text(value, 8_192))
     {
-        return Ok(token);
+        return Ok(Some(token));
     }
     let auth_endpoint = format!("{origin}/api/v1/auths/");
     let auth_response = client
@@ -670,7 +789,7 @@ async fn resolve_inception_auth_token(
         .send()
         .await
         .map_err(|err| format!("inception auth request failed: {err}"))?;
-    let status = auth_response.status();
+    let status = resolve_effective_status(&auth_response);
     let body = auth_response
         .text()
         .await
@@ -684,11 +803,89 @@ async fn resolve_inception_auth_token(
     }
     let auth: InceptionGuestAuthResponse =
         serde_json::from_str(&body).map_err(|err| format!("inception auth parse failed: {err}"))?;
-    normalize_optional_text(&auth.token, 8_192)
-        .ok_or_else(|| "inception auth response missing token".to_owned())
+    Ok(normalize_optional_text(&auth.token, 8_192))
 }
 
-async fn invoke_inception_guest_model(
+async fn invoke_inception_guest_model_direct(
+    client: &Client,
+    request: &WebsiteBridgeRequest<'_>,
+    origin: &str,
+    model: &str,
+) -> Result<WebsiteBridgeResponse, String> {
+    let mut completion_payload = request.request_overrides.clone();
+    completion_payload.insert("model".to_owned(), Value::String(model.to_owned()));
+    completion_payload.insert(
+        "messages".to_owned(),
+        Value::Array(request.messages.to_vec()),
+    );
+    completion_payload
+        .entry("stream".to_owned())
+        .or_insert(Value::Bool(false));
+    if !request.tools.is_empty() {
+        completion_payload.insert("tools".to_owned(), Value::Array(request.tools.to_vec()));
+        completion_payload
+            .entry("tool_choice".to_owned())
+            .or_insert(Value::String("auto".to_owned()));
+    }
+    let mut attempts = Vec::new();
+    let candidate_endpoints = [
+        format!("{origin}/api/v1/chat/completions"),
+        format!("{origin}/api/chat/completions"),
+    ];
+    for completion_endpoint in candidate_endpoints {
+        let mut completion_request = client
+            .post(&completion_endpoint)
+            .header("Content-Type", "application/json")
+            .header("X-Accel-Buffering", "no");
+        for (name, value) in request.headers {
+            completion_request = completion_request.header(name, value);
+        }
+        if let Some(api_key) = request
+            .api_key
+            .and_then(|value| normalize_optional_text(value, 8_192))
+        {
+            completion_request = completion_request.header(
+                request.auth_header_name,
+                format!("{}{}", request.auth_header_prefix, api_key),
+            );
+        }
+        let completion_response = completion_request
+            .json(&Value::Object(completion_payload.clone()))
+            .send()
+            .await
+            .map_err(|err| format!("inception completion request failed: {err}"))?;
+        let completion_status = resolve_effective_status(&completion_response);
+        let completion_body = completion_response
+            .text()
+            .await
+            .map_err(|err| format!("inception completion body read failed: {err}"))?;
+        if !completion_status.is_success() {
+            attempts.push(format!(
+                "{completion_endpoint}: status={} body={}",
+                completion_status.as_u16(),
+                truncate_text(&completion_body, 640)
+            ));
+            continue;
+        }
+        let openai_body =
+            parse_inception_response_to_openai_body(&completion_body).ok_or_else(|| {
+                format!(
+                    "inception completion response missing assistant content: {}",
+                    truncate_text(&completion_body, 640)
+                )
+            })?;
+        return Ok(WebsiteBridgeResponse {
+            body: openai_body,
+            endpoint: completion_endpoint,
+        });
+    }
+    Err(format!(
+        "inception direct completion failed; attempts: {}",
+        attempts.join(" | ")
+    ))
+}
+
+async fn invoke_inception_guest_model_legacy(
     client: &Client,
     request: &WebsiteBridgeRequest<'_>,
     origin: &str,
@@ -723,7 +920,7 @@ async fn invoke_inception_guest_model(
         .send()
         .await
         .map_err(|err| format!("inception chat create request failed: {err}"))?;
-    let create_chat_status = create_chat_response.status();
+    let create_chat_status = resolve_effective_status(&create_chat_response);
     let create_chat_body = create_chat_response
         .text()
         .await
@@ -780,7 +977,7 @@ async fn invoke_inception_guest_model(
         .send()
         .await
         .map_err(|err| format!("inception completion request failed: {err}"))?;
-    let completion_status = completion_response.status();
+    let completion_status = resolve_effective_status(&completion_response);
     let completion_body = completion_response
         .text()
         .await
@@ -815,13 +1012,24 @@ async fn invoke_qwen_guest_bridge(
     if model_candidates.is_empty() {
         return Err("qwen bridge has no candidate models".to_owned());
     }
-    let auth_token = resolve_qwen_auth_token(client, request, &origin).await?;
     let mut attempts = Vec::new();
-    for model in model_candidates {
-        match invoke_qwen_guest_model(client, request, &origin, &auth_token, &model).await {
+    for model in &model_candidates {
+        match invoke_qwen_guest_model_v2(client, request, &origin, model).await {
             Ok(response) => return Ok(response),
-            Err(err) => attempts.push(format!("{model}: {err}")),
+            Err(err) => attempts.push(format!("{model}: v2 {err}")),
         }
+    }
+    match resolve_qwen_auth_token(client, request, &origin).await {
+        Ok(auth_token) => {
+            for model in &model_candidates {
+                match invoke_qwen_guest_model_v1(client, request, &origin, &auth_token, model).await
+                {
+                    Ok(response) => return Ok(response),
+                    Err(err) => attempts.push(format!("{model}: v1 {err}")),
+                }
+            }
+        }
+        Err(err) => attempts.push(format!("v1 auth {err}")),
     }
     Err(format!(
         "qwen bridge exhausted model candidates; attempts: {}",
@@ -859,7 +1067,7 @@ async fn resolve_qwen_auth_token(
         .send()
         .await
         .map_err(|err| format!("qwen auth request failed: {err}"))?;
-    let status = auth_response.status();
+    let status = resolve_effective_status(&auth_response);
     let body = auth_response
         .text()
         .await
@@ -878,7 +1086,170 @@ async fn resolve_qwen_auth_token(
     Ok(token)
 }
 
-async fn invoke_qwen_guest_model(
+fn qwen_extract_primary_prompt(messages: &[Value]) -> Option<String> {
+    extract_signature_prompt(messages)
+}
+
+fn qwen_build_v2_messages(model: &str, prompt: &str, chat_type: &str) -> Vec<Value> {
+    let timestamp_secs = (qwen_now_ms() / 1_000) as u64;
+    let message_id = format!(
+        "qwen-msg-{timestamp_secs}-{}",
+        ZAI_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    vec![json!({
+        "fid": message_id,
+        "parentId": Value::Null,
+        "childrenIds": [],
+        "role": "user",
+        "content": prompt,
+        "user_action": "chat",
+        "files": [],
+        "timestamp": timestamp_secs,
+        "models": [model],
+        "chat_type": chat_type,
+        "feature_config": {
+            "thinking_enabled": true,
+            "output_schema": "phase",
+            "research_mode": "normal",
+            "auto_thinking": true,
+            "thinking_format": "summary",
+            "auto_search": true
+        },
+        "extra": {
+            "meta": {
+                "subChatType": chat_type
+            }
+        },
+        "sub_chat_type": chat_type,
+        "parent_id": Value::Null
+    })]
+}
+
+async fn invoke_qwen_guest_model_v2(
+    client: &Client,
+    request: &WebsiteBridgeRequest<'_>,
+    origin: &str,
+    model: &str,
+) -> Result<WebsiteBridgeResponse, String> {
+    let chat_mode = request
+        .request_overrides
+        .get("chat_mode")
+        .and_then(Value::as_str)
+        .unwrap_or("guest");
+    let chat_type = request
+        .request_overrides
+        .get("chat_type")
+        .and_then(Value::as_str)
+        .unwrap_or("t2t");
+    let prompt = qwen_extract_primary_prompt(request.messages)
+        .ok_or_else(|| "qwen bridge could not extract user prompt".to_owned())?;
+
+    let create_chat_endpoint = format!("{origin}/api/v2/chats/new");
+    let create_chat_payload = json!({
+        "title": "OpenClaw Rust",
+        "models": [model],
+        "chat_mode": chat_mode,
+        "chat_type": chat_type,
+        "timestamp": qwen_now_ms(),
+        "project_id": request
+            .request_overrides
+            .get("project_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    });
+    let mut create_chat_request = client
+        .post(&create_chat_endpoint)
+        .header("Content-Type", "application/json");
+    for (name, value) in request.headers {
+        create_chat_request = create_chat_request.header(name, value);
+    }
+    let create_chat_response = create_chat_request
+        .json(&create_chat_payload)
+        .send()
+        .await
+        .map_err(|err| format!("qwen v2 chat create request failed: {err}"))?;
+    let create_chat_status = resolve_effective_status(&create_chat_response);
+    let create_chat_body = create_chat_response
+        .text()
+        .await
+        .map_err(|err| format!("qwen v2 chat create body read failed: {err}"))?;
+    if !create_chat_status.is_success() {
+        return Err(format!(
+            "qwen v2 chat create failed with status {}: {}",
+            create_chat_status.as_u16(),
+            truncate_text(&create_chat_body, 320)
+        ));
+    }
+    let chat_id = qwen_extract_chat_id(&create_chat_body)
+        .map_err(|err| format!("qwen v2 chat create parse failed: {err}"))?;
+
+    let mut completion_payload = request.request_overrides.clone();
+    completion_payload.insert("chat_id".to_owned(), Value::String(chat_id.clone()));
+    completion_payload.insert("model".to_owned(), Value::String(model.to_owned()));
+    completion_payload.insert("chat_mode".to_owned(), Value::String(chat_mode.to_owned()));
+    completion_payload.insert("parent_id".to_owned(), Value::Null);
+    completion_payload.insert(
+        "messages".to_owned(),
+        Value::Array(qwen_build_v2_messages(model, &prompt, chat_type)),
+    );
+    completion_payload
+        .entry("version".to_owned())
+        .or_insert(Value::String("2.1".to_owned()));
+    completion_payload
+        .entry("incremental_output".to_owned())
+        .or_insert(Value::Bool(true));
+    completion_payload
+        .entry("timestamp".to_owned())
+        .or_insert(json!(qwen_now_ms()));
+    completion_payload
+        .entry("stream".to_owned())
+        .or_insert(Value::Bool(true));
+    if !request.tools.is_empty() {
+        completion_payload.insert("tools".to_owned(), Value::Array(request.tools.to_vec()));
+        completion_payload
+            .entry("tool_choice".to_owned())
+            .or_insert(Value::String("auto".to_owned()));
+    }
+
+    let completion_endpoint = format!("{origin}/api/v2/chat/completions?chat_id={chat_id}");
+    let mut completion_request = client
+        .post(&completion_endpoint)
+        .header("Content-Type", "application/json")
+        .header("Accept", "text/event-stream")
+        .header("X-Accel-Buffering", "no");
+    for (name, value) in request.headers {
+        completion_request = completion_request.header(name, value);
+    }
+    let completion_response = completion_request
+        .json(&Value::Object(completion_payload))
+        .send()
+        .await
+        .map_err(|err| format!("qwen v2 completion request failed: {err}"))?;
+    let completion_status = resolve_effective_status(&completion_response);
+    let completion_body = completion_response
+        .text()
+        .await
+        .map_err(|err| format!("qwen v2 completion body read failed: {err}"))?;
+    if !completion_status.is_success() {
+        return Err(format!(
+            "qwen v2 completion failed with status {}: {}",
+            completion_status.as_u16(),
+            truncate_text(&completion_body, 640)
+        ));
+    }
+    let openai_body = parse_qwen_response_to_openai_body(&completion_body).ok_or_else(|| {
+        format!(
+            "qwen v2 completion response missing assistant content: {}",
+            truncate_text(&completion_body, 640)
+        )
+    })?;
+    Ok(WebsiteBridgeResponse {
+        body: openai_body,
+        endpoint: completion_endpoint,
+    })
+}
+
+async fn invoke_qwen_guest_model_v1(
     client: &Client,
     request: &WebsiteBridgeRequest<'_>,
     origin: &str,
@@ -913,7 +1284,7 @@ async fn invoke_qwen_guest_model(
         .send()
         .await
         .map_err(|err| format!("qwen chat create request failed: {err}"))?;
-    let create_chat_status = create_chat_response.status();
+    let create_chat_status = resolve_effective_status(&create_chat_response);
     let create_chat_body = create_chat_response
         .text()
         .await
@@ -925,10 +1296,8 @@ async fn invoke_qwen_guest_model(
             truncate_text(&create_chat_body, 320)
         ));
     }
-    let chat: QwenChatCreateResponse = serde_json::from_str(&create_chat_body)
+    let chat_id = qwen_extract_chat_id(&create_chat_body)
         .map_err(|err| format!("qwen chat create parse failed: {err}"))?;
-    let chat_id = normalize_optional_text(&chat.id, 512)
-        .ok_or_else(|| "qwen chat create response missing chat id".to_owned())?;
 
     let mut completion_payload = request.request_overrides.clone();
     completion_payload.insert("chat_id".to_owned(), Value::String(chat_id.clone()));
@@ -970,7 +1339,7 @@ async fn invoke_qwen_guest_model(
         .send()
         .await
         .map_err(|err| format!("qwen completion request failed: {err}"))?;
-    let completion_status = completion_response.status();
+    let completion_status = resolve_effective_status(&completion_response);
     let completion_body = completion_response
         .text()
         .await
@@ -992,6 +1361,24 @@ async fn invoke_qwen_guest_model(
         body: openai_body,
         endpoint: completion_endpoint,
     })
+}
+
+fn qwen_extract_chat_id(raw: &str) -> Result<String, String> {
+    if let Ok(parsed) = serde_json::from_str::<QwenChatCreateResponse>(raw) {
+        if let Some(chat_id) = normalize_optional_text(&parsed.id, 512) {
+            return Ok(chat_id);
+        }
+    }
+    let parsed: Value =
+        serde_json::from_str(raw).map_err(|err| format!("invalid qwen chat create JSON: {err}"))?;
+    let chat_id = parsed
+        .pointer("/data/id")
+        .and_then(Value::as_str)
+        .or_else(|| parsed.pointer("/id").and_then(Value::as_str))
+        .or_else(|| parsed.pointer("/chat/id").and_then(Value::as_str))
+        .and_then(|value| normalize_optional_text(value, 512))
+        .ok_or_else(|| "qwen chat create response missing chat id".to_owned())?;
+    Ok(chat_id)
 }
 
 fn build_qwen_model_candidates(model: &str) -> Vec<String> {
@@ -1858,6 +2245,126 @@ data: {"type":"chat:completion","data":{"delta_content":"ok","phase":"done"}}"#;
         server.join().expect("join server");
     }
 
+    #[tokio::test]
+    async fn official_zai_guest_bridge_fallbacks_after_endpoint_failure_with_api_key() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let server = std::thread::spawn(move || {
+            let mut completion_handled = false;
+            while !completion_handled {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                let mut buffer = vec![0_u8; 128 * 1024];
+                let read = stream.read(&mut buffer).expect("read request");
+                let request_text = String::from_utf8_lossy(&buffer[..read]).to_string();
+                let request_line = request_text.lines().next().unwrap_or_default().to_owned();
+                if request_line.starts_with("GET / HTTP/1.1")
+                    || request_line.starts_with("GET / HTTP/1.0")
+                {
+                    let body = "ok";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write root response");
+                    continue;
+                }
+                if request_line.contains("/api/v1/auths/") {
+                    let body = json!({
+                        "id": "guest-123",
+                        "name": "Guest-123",
+                        "token": "guest-token-123"
+                    })
+                    .to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write auth response");
+                    continue;
+                }
+                if request_line.contains("/api/v1/chats/new") {
+                    let body = json!({
+                        "id": "chat-123"
+                    })
+                    .to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write chat response");
+                    continue;
+                }
+                if request_line.contains("/api/v2/chat/completions") {
+                    let body = "data: {\"type\":\"chat:completion\",\"data\":{\"delta_content\":\"ok\",\"phase\":\"done\"}}\n\n";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write completion response");
+                    completion_handled = true;
+                    continue;
+                }
+                let body = "{\"detail\":\"not found\"}";
+                let response = format!(
+                    "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write not found response");
+            }
+        });
+
+        let base = format!("http://{addr}");
+        let candidates = vec!["http://127.0.0.1:9/v1".to_owned()];
+        let messages = vec![json!({
+            "role": "user",
+            "content": "Reply with exactly: ok"
+        })];
+        let request_overrides = serde_json::Map::new();
+        let request = WebsiteBridgeRequest {
+            provider: "zai",
+            model: "glm-5",
+            messages: &messages,
+            tools: &[],
+            timeout_ms: 30_000,
+            website_url: Some(&base),
+            candidate_base_urls: &candidates,
+            headers: &[],
+            auth_header_name: "Authorization",
+            auth_header_prefix: "Bearer ",
+            api_key: Some("stale-local-key"),
+            request_overrides: &request_overrides,
+        };
+        let response = invoke_openai_compatible(request)
+            .await
+            .expect("zai bridge fallback response");
+        let response_json: Value = serde_json::from_str(&response.body).expect("response json");
+        assert_eq!(
+            response_json
+                .pointer("/choices/0/message/content")
+                .and_then(Value::as_str),
+            Some("ok")
+        );
+        assert!(response.endpoint.contains("/api/v2/chat/completions?"));
+
+        server.join().expect("join server");
+    }
+
     #[test]
     fn qwen_model_candidates_include_qwen35_fallback_set() {
         let candidates = build_qwen_model_candidates("qwen3.5");
@@ -1871,6 +2378,22 @@ data: {"type":"chat:completion","data":{"delta_content":"ok","phase":"done"}}"#;
         assert!(provider_prefixed
             .iter()
             .any(|item| item == "qwen3.5-397b-a17b"));
+    }
+
+    #[test]
+    fn endpoint_targets_loopback_identifies_local_bridge_hosts() {
+        assert!(endpoint_targets_loopback(
+            "http://127.0.0.1:43010/v1/chat/completions"
+        ));
+        assert!(endpoint_targets_loopback(
+            "http://localhost:43010/v1/chat/completions"
+        ));
+        assert!(endpoint_targets_loopback(
+            "http://[::1]:43010/v1/chat/completions"
+        ));
+        assert!(!endpoint_targets_loopback(
+            "https://chat.qwen.ai/api/v2/chat/completions"
+        ));
     }
 
     #[test]
@@ -2085,7 +2608,9 @@ data: [DONE]"#;
                         .expect("write chat response");
                     continue;
                 }
-                if request_line.contains("/api/chat/completions") {
+                if request_line.contains("/api/v1/chat/completions")
+                    || request_line.contains("/api/chat/completions")
+                {
                     if let Ok(mut guard) = captured_completion_server.lock() {
                         *guard = request_text.clone();
                     }
@@ -2153,11 +2678,139 @@ data: [DONE]"#;
                 .and_then(Value::as_str),
             Some("ok")
         );
-        assert!(response.endpoint.contains("/api/chat/completions?chat_id="));
+        assert!(response.endpoint.contains("/api/v1/chat/completions"));
 
         let completion_request = captured_completion.lock().expect("lock completion").clone();
-        assert!(completion_request.contains("\r\nauthorization: Bearer inception-guest-token"));
         assert!(completion_request.contains("\"model\":\"mercury-2\""));
+
+        server.join().expect("join server");
+    }
+
+    #[tokio::test]
+    async fn official_inception_guest_bridge_fallbacks_after_endpoint_failure_with_api_key() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let server = std::thread::spawn(move || {
+            let mut completion_handled = false;
+            while !completion_handled {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                let mut buffer = vec![0_u8; 128 * 1024];
+                let read = stream.read(&mut buffer).expect("read request");
+                let request_text = String::from_utf8_lossy(&buffer[..read]).to_string();
+                let request_line = request_text.lines().next().unwrap_or_default().to_owned();
+                if request_line.starts_with("GET / HTTP/1.1")
+                    || request_line.starts_with("GET / HTTP/1.0")
+                {
+                    let body = "ok";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write root response");
+                    continue;
+                }
+                if request_line.contains("/api/v1/auths/") {
+                    let body = json!({
+                        "token": "inception-guest-token"
+                    })
+                    .to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write auth response");
+                    continue;
+                }
+                if request_line.contains("/api/chats/new") {
+                    let body = json!({
+                        "id": "inception-chat-123"
+                    })
+                    .to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write chat response");
+                    continue;
+                }
+                if request_line.contains("/api/v1/chat/completions")
+                    || request_line.contains("/api/chat/completions")
+                {
+                    let body = json!({
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": "ok"
+                                }
+                            }
+                        ]
+                    })
+                    .to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write completion response");
+                    completion_handled = true;
+                    continue;
+                }
+                let body = "{\"detail\":\"not found\"}";
+                let response = format!(
+                    "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write not found response");
+            }
+        });
+
+        let base = format!("http://{addr}");
+        let candidates = vec!["http://127.0.0.1:9/v1".to_owned()];
+        let messages = vec![json!({
+            "role": "user",
+            "content": "Reply with exactly: ok"
+        })];
+        let request_overrides = serde_json::Map::new();
+        let request = WebsiteBridgeRequest {
+            provider: "inception",
+            model: "mercury-2",
+            messages: &messages,
+            tools: &[],
+            timeout_ms: 30_000,
+            website_url: Some(&base),
+            candidate_base_urls: &candidates,
+            headers: &[],
+            auth_header_name: "Authorization",
+            auth_header_prefix: "Bearer ",
+            api_key: Some("stale-local-key"),
+            request_overrides: &request_overrides,
+        };
+        let response = invoke_openai_compatible(request)
+            .await
+            .expect("inception bridge fallback response");
+        let response_json: Value = serde_json::from_str(&response.body).expect("response json");
+        assert_eq!(
+            response_json
+                .pointer("/choices/0/message/content")
+                .and_then(Value::as_str),
+            Some("ok")
+        );
+        assert!(response.endpoint.contains("/api/v1/chat/completions"));
 
         server.join().expect("join server");
     }

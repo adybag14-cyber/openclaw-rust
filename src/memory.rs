@@ -22,7 +22,7 @@ async fn read_linux_rss_kib() -> anyhow::Result<u64> {
     let content = tokio::fs::read_to_string("/proc/self/status").await?;
     for line in content.lines() {
         if let Some(rest) = line.strip_prefix("VmRSS:") {
-            let value = rest.trim().split_whitespace().next().unwrap_or("0");
+            let value = rest.split_whitespace().next().unwrap_or("0");
             let kib = value.parse::<u64>().unwrap_or(0);
             return Ok(kib);
         }

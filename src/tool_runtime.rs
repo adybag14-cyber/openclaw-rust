@@ -5623,13 +5623,18 @@ mod tests {
 
         std::env::set_var("OPENCLAW_RS_TEST_SECRET", "openclaw-secret-777");
         let host = build_host(policy).await;
+        let secret_echo_command = if cfg!(windows) {
+            "echo %OPENCLAW_RS_TEST_SECRET%"
+        } else {
+            "echo $OPENCLAW_RS_TEST_SECRET"
+        };
         let result = host
             .execute(ToolRuntimeRequest {
                 request_id: "credentials-1".to_owned(),
                 session_id: "credentials-session".to_owned(),
                 tool_name: "exec".to_owned(),
                 args: serde_json::json!({
-                    "command": "echo %OPENCLAW_RS_TEST_SECRET%",
+                    "command": secret_echo_command,
                     "injectEnv": ["OPENCLAW_RS_TEST_SECRET"]
                 }),
                 sandboxed: false,
