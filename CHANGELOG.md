@@ -5,6 +5,40 @@
 ### Highlights
 - No unreleased changes.
 
+## v1.7.7 - 2026-02-26
+
+### Highlights
+- Added missing upstream RPC parity surface in `src/gateway.rs`:
+  - `doctor.memory.status`
+  - `tools.catalog`
+- Wired both methods through the full gateway contract:
+  - `MethodRegistry` method declarations
+  - `SUPPORTED_RPC_METHODS` parity list
+  - dispatcher routing and typed request param validation
+- Added new deterministic handlers and response payload shaping:
+  - memory status/pressure snapshot reporting for `doctor.memory.status`
+  - runtime tool-catalog metadata reporting for `tools.catalog`
+- Added strict request-shape regression tests:
+  - `dispatcher_doctor_memory_status_rejects_unknown_params_and_returns_status`
+  - `dispatcher_tools_catalog_rejects_unknown_params_and_returns_catalog`
+- Refreshed parity artifacts and scoreboard:
+  - Rust method count: `132`
+  - method-surface coverage: `100%` (base + handlers)
+- Bumped package version to `1.7.7`.
+
+### Validation
+- `cargo +1.83.0-x86_64-pc-windows-gnu fmt --all -- --check`
+- `cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings`
+- `cargo +1.83.0-x86_64-pc-windows-gnu test`
+- `cargo +1.83.0-x86_64-pc-windows-gnu build --release`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets --features sqlite-state -- -D warnings"`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu build --release --features sqlite-state"`
+- `./scripts/parity/method-surface-diff.ps1 -Surface both -UpstreamRepoPath ..\openclaw`
+- `./scripts/parity/build-scoreboard.ps1 -IncludeGeneratedAt`
+- `./scripts/parity/run-cp0-gate.ps1 -UpstreamRepoPath ..\openclaw`
+- `./scripts/run-docker-parity-smoke.ps1`
+
 ## v1.7.6 - 2026-02-26
 
 ### Highlights

@@ -78,6 +78,12 @@ impl MethodRegistry {
                     min_role: "client",
                 },
                 MethodSpec {
+                    name: "doctor.memory.status",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
                     name: "usage.status",
                     family: MethodFamily::Gateway,
                     requires_auth: true,
@@ -301,6 +307,12 @@ impl MethodRegistry {
                 },
                 MethodSpec {
                     name: "models.list",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
+                    name: "tools.catalog",
                     family: MethodFamily::Gateway,
                     requires_auth: true,
                     min_role: "client",
@@ -1112,6 +1124,7 @@ const SUPPORTED_RPC_METHODS: &[&str] = &[
     "connect",
     "health",
     "status",
+    "doctor.memory.status",
     "usage.status",
     "usage.cost",
     "last-heartbeat",
@@ -1150,6 +1163,7 @@ const SUPPORTED_RPC_METHODS: &[&str] = &[
     "voicewake.get",
     "voicewake.set",
     "models.list",
+    "tools.catalog",
     "agents.list",
     "agents.create",
     "agents.update",
@@ -1239,6 +1253,51 @@ const SUPPORTED_RPC_METHODS: &[&str] = &[
     "sessions.history",
     "sessions.send",
     "session.status",
+];
+
+const TOOLS_CATALOG_METHODS: &[(&str, &str, &str)] = &[
+    ("read", "Read a file from the active workspace.", "fs"),
+    (
+        "write",
+        "Write content to a file in the active workspace.",
+        "fs",
+    ),
+    ("edit", "Apply focused text edits to a file.", "fs"),
+    (
+        "apply_patch",
+        "Apply a structured patch to one or more files.",
+        "fs",
+    ),
+    (
+        "exec",
+        "Run an allowed command in the workspace.",
+        "runtime",
+    ),
+    (
+        "process",
+        "Inspect or control tracked runtime processes.",
+        "runtime",
+    ),
+    ("gateway", "Invoke gateway RPC methods.", "control"),
+    (
+        "sessions",
+        "Inspect and mutate session history/state.",
+        "control",
+    ),
+    ("message", "Invoke channel/message actions.", "channels"),
+    ("browser", "Run browser automation actions.", "browser"),
+    (
+        "canvas",
+        "Render or inspect canvas runtime output.",
+        "canvas",
+    ),
+    ("nodes", "Invoke paired-node commands.", "nodes"),
+    ("wasm", "Inspect and execute wasm tools.", "wasm"),
+    (
+        "routines",
+        "Create and run reusable routine workflows.",
+        "automation",
+    ),
 ];
 
 pub fn supported_rpc_methods() -> &'static [&'static str] {
@@ -1466,6 +1525,7 @@ impl RpcDispatcher {
             "connect" => self.handle_connect().await,
             "health" => self.handle_health().await,
             "status" => self.handle_status().await,
+            "doctor.memory.status" => self.handle_doctor_memory_status(req).await,
             "usage.status" => self.handle_usage_status().await,
             "usage.cost" => self.handle_usage_cost(req).await,
             "last-heartbeat" | "heartbeat" => self.handle_last_heartbeat().await,
@@ -1506,6 +1566,7 @@ impl RpcDispatcher {
             "voicewake.get" => self.handle_voicewake_get(req).await,
             "voicewake.set" => self.handle_voicewake_set(req).await,
             "models.list" => self.handle_models_list(req).await,
+            "tools.catalog" => self.handle_tools_catalog(req).await,
             "agents.list" => self.handle_agents_list(req).await,
             "agents.create" => self.handle_agents_create(req).await,
             "agents.update" => self.handle_agents_update(req).await,
@@ -1810,6 +1871,66 @@ impl RpcDispatcher {
                 "supportedMethods": SUPPORTED_RPC_METHODS,
                 "count": SUPPORTED_RPC_METHODS.len()
             }
+        }))
+    }
+
+    async fn handle_doctor_memory_status(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = decode_params::<DoctorMemoryStatusParams>(&req.params) {
+            return RpcDispatchOutcome::bad_request(format!(
+                "invalid doctor.memory.status params: {err}"
+            ));
+        }
+        if let Err(err) = self.sync_memory_runtime_from_config().await {
+            self.system
+                .log_line(format!("memory.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("memory runtime unavailable");
+        }
+        let memory = self.memory.stats().await;
+        let zvec_store_path = memory.zvec_store_path.clone();
+        let graph_store_path = memory.graph_store_path.clone();
+        let zvec_exists = Path::new(&zvec_store_path).exists();
+        let graph_exists = Path::new(&graph_store_path).exists();
+        let pressure = if memory.max_entries == 0 {
+            0.0
+        } else {
+            (memory.zvec_entries as f64 / memory.max_entries as f64).clamp(0.0, 1.0)
+        };
+        let mut warnings = Vec::new();
+        if !memory.enabled {
+            warnings.push("memory runtime disabled by configuration".to_owned());
+        }
+        if !zvec_exists {
+            warnings.push("zvec store file does not exist yet".to_owned());
+        }
+        if !graph_exists {
+            warnings.push("graph store file does not exist yet".to_owned());
+        }
+        if pressure >= 0.95 {
+            warnings.push(format!(
+                "zvec capacity above 95% ({} / {})",
+                memory.zvec_entries, memory.max_entries
+            ));
+        }
+        RpcDispatchOutcome::Handled(json!({
+            "ok": true,
+            "status": if memory.enabled { "ok" } else { "disabled" },
+            "memory": memory,
+            "stores": {
+                "zvec": {
+                    "path": zvec_store_path,
+                    "exists": zvec_exists
+                },
+                "graphlite": {
+                    "path": graph_store_path,
+                    "exists": graph_exists
+                }
+            },
+            "pressure": {
+                "entryRatio": pressure
+            },
+            "warnings": warnings,
+            "ts": now_ms()
         }))
     }
 
@@ -4063,6 +4184,32 @@ impl RpcDispatcher {
         let snapshot = self.config.get_snapshot().await;
         RpcDispatchOutcome::Handled(json!({
             "models": self.models.resolve_catalog_for_listing(Some(&snapshot.config))
+        }))
+    }
+
+    async fn handle_tools_catalog(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        if let Err(err) = decode_params::<ToolsCatalogParams>(&req.params) {
+            return RpcDispatchOutcome::bad_request(format!("invalid tools.catalog params: {err}"));
+        }
+        let snapshot = self.config.get_snapshot().await;
+        let policy = resolve_tool_runtime_policy_config(&snapshot.config);
+        let policy_payload = serde_json::to_value(policy).unwrap_or_else(|_| json!({}));
+        let tools = TOOLS_CATALOG_METHODS
+            .iter()
+            .map(|(name, description, family)| {
+                json!({
+                    "name": name,
+                    "description": description,
+                    "family": family
+                })
+            })
+            .collect::<Vec<_>>();
+        let count = tools.len();
+        RpcDispatchOutcome::Handled(json!({
+            "tools": tools,
+            "count": count,
+            "policy": policy_payload,
+            "ts": now_ms()
         }))
     }
 
@@ -26955,6 +27102,14 @@ struct ModelsListParams {}
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+struct DoctorMemoryStatusParams {}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ToolsCatalogParams {}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 struct AgentsListParams {}
 
 #[derive(Debug, Clone, Deserialize)]
@@ -40785,6 +40940,88 @@ mod tests {
                 assert!(providers.iter().any(|provider| provider == "groq"));
             }
             _ => panic!("expected models.list handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_doctor_memory_status_rejects_unknown_params_and_returns_status() {
+        let dispatcher = RpcDispatcher::new();
+
+        let invalid = RpcRequestFrame {
+            id: "req-doctor-memory-invalid".to_owned(),
+            method: "doctor.memory.status".to_owned(),
+            params: serde_json::json!({
+                "extra": true
+            }),
+        };
+        let out = dispatcher.handle_request(&invalid).await;
+        assert!(matches!(out, RpcDispatchOutcome::Error { code: 400, .. }));
+
+        let valid = RpcRequestFrame {
+            id: "req-doctor-memory".to_owned(),
+            method: "doctor.memory.status".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher.handle_request(&valid).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(payload.pointer("/ok").and_then(Value::as_bool), Some(true));
+                assert!(payload.pointer("/memory").is_some());
+                assert!(payload.pointer("/stores/zvec").is_some());
+                assert!(payload.pointer("/stores/graphlite").is_some());
+                assert!(payload.pointer("/pressure/entryRatio").is_some());
+            }
+            _ => panic!("expected doctor.memory.status handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_tools_catalog_rejects_unknown_params_and_returns_catalog() {
+        let dispatcher = RpcDispatcher::new();
+
+        let invalid = RpcRequestFrame {
+            id: "req-tools-catalog-invalid".to_owned(),
+            method: "tools.catalog".to_owned(),
+            params: serde_json::json!({
+                "extra": true
+            }),
+        };
+        let out = dispatcher.handle_request(&invalid).await;
+        assert!(matches!(out, RpcDispatchOutcome::Error { code: 400, .. }));
+
+        let valid = RpcRequestFrame {
+            id: "req-tools-catalog".to_owned(),
+            method: "tools.catalog".to_owned(),
+            params: serde_json::json!({}),
+        };
+        match dispatcher.handle_request(&valid).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                let tools = payload
+                    .pointer("/tools")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                assert!(!tools.is_empty());
+                assert!(tools.iter().any(|entry| {
+                    entry
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(|name| name == "read")
+                        .unwrap_or(false)
+                }));
+                assert!(tools.iter().any(|entry| {
+                    entry
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(|name| name == "wasm")
+                        .unwrap_or(false)
+                }));
+                assert_eq!(
+                    payload.pointer("/count").and_then(Value::as_u64),
+                    Some(tools.len() as u64)
+                );
+                assert!(payload.pointer("/policy").is_some());
+            }
+            _ => panic!("expected tools.catalog handled"),
         }
     }
 

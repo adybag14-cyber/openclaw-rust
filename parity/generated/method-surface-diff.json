@@ -1,17 +1,14 @@
 {
   "rustGatewayPath": "src/gateway.rs",
-  "upstreamRepoPath": "..\\\\openclaw",
-  "rustCount": 130,
+  "upstreamRepoPath": "..\\openclaw",
+  "rustCount": 132,
   "surfaces": {
     "base": {
-      "upstreamCount": 91,
-      "rustCount": 130,
+      "upstreamCount": 89,
+      "rustCount": 132,
       "intersectionCount": 89,
-      "coveragePercent": 97.8,
-      "missingInRust": [
-        "doctor.memory.status",
-        "tools.catalog"
-      ],
+      "coveragePercent": 100.0,
+      "missingInRust": [],
       "rustOnly": [
         "auth.oauth.complete",
         "auth.oauth.import",
@@ -23,6 +20,7 @@
         "canvas.present",
         "chat.inject",
         "connect",
+        "doctor.memory.status",
         "edge.acceleration.status",
         "edge.alignment.evaluate",
         "edge.collaboration.plan",
@@ -52,19 +50,17 @@
         "sessions.usage",
         "sessions.usage.logs",
         "sessions.usage.timeseries",
+        "tools.catalog",
         "web.login.start",
         "web.login.wait"
       ]
     },
     "handlers": {
-      "upstreamCount": 101,
-      "rustCount": 130,
-      "intersectionCount": 99,
-      "coveragePercent": 98.02,
-      "missingInRust": [
-        "doctor.memory.status",
-        "tools.catalog"
-      ],
+      "upstreamCount": 98,
+      "rustCount": 132,
+      "intersectionCount": 98,
+      "coveragePercent": 100.0,
+      "missingInRust": [],
       "rustOnly": [
         "auth.oauth.complete",
         "auth.oauth.import",
@@ -74,6 +70,7 @@
         "auth.oauth.wait",
         "browser.open",
         "canvas.present",
+        "doctor.memory.status",
         "edge.acceleration.status",
         "edge.alignment.evaluate",
         "edge.collaboration.plan",
@@ -94,9 +91,11 @@
         "edge.swarm.plan",
         "edge.voice.transcribe",
         "edge.wasm.marketplace.list",
+        "push.test",
         "session.status",
         "sessions.history",
-        "sessions.send"
+        "sessions.send",
+        "tools.catalog"
       ]
     }
   }

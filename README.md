@@ -11,11 +11,11 @@ provider runtime, persistence, performance strategy, and release layout), see:
 
 - `PROJECT_OVERVIEW.md`
 
-## Current parity status (February 25, 2026)
+## Current parity status (February 26, 2026)
 
 - End-to-end Rust parity program status: **complete**.
 - Feature audit scoreboard: `22 implemented`, `0 partial`, `0 deferred`.
-- RPC method-surface parity: `111` Rust methods, `100%` coverage vs upstream base + handlers.
+- RPC method-surface parity: `132` Rust methods, `100%` coverage vs upstream base + handlers.
 - Runtime audit: blanket dead-code suppression removed; only targeted transcript-entry allowance remains in `tool_runtime` for parity/test inspection fields.
 - Memory integrations shipped in the `1.6.6` baseline:
   - Added a native Rust `zvec`-style persistent vector memory engine (`src/persistent_memory.rs`) with bounded on-disk storage and cosine top-k recall.
@@ -42,7 +42,7 @@ provider runtime, persistence, performance strategy, and release layout), see:
   - Ubuntu 20.04 WSL checks pass: `cargo +1.83.0 check`, `cargo +1.83.0 test --no-run`, `cargo +1.83.0 build --release`
   - Docker parity smoke passes with workstation Docker memory profile updated: `./scripts/run-docker-parity-smoke.ps1`
   - Ubuntu 20.04 runtime RSS probe peak (active RPC traffic): `15.38 MB` (`MAX_RSS_KB=15744`)
-  - Current release tag: `v1.7.2`
+  - Current release tag: `v1.7.7`
 
 ## Implemented runtime coverage
 

@@ -2,22 +2,22 @@
   "current": {
     "manifestVersion": "1.0.0",
     "methodSurface": {
-      "rustCount": 130,
+      "rustCount": 132,
       "base": {
-        "upstreamCount": 91,
-        "rustCount": 130,
+        "upstreamCount": 89,
+        "rustCount": 132,
         "intersectionCount": 89,
-        "coveragePercent": 97.8,
-        "missingInRustCount": 2,
-        "rustOnlyCount": 41
+        "coveragePercent": 100.0,
+        "missingInRustCount": 0,
+        "rustOnlyCount": 43
       },
       "handlers": {
-        "upstreamCount": 101,
-        "rustCount": 130,
-        "intersectionCount": 99,
-        "coveragePercent": 98.02,
-        "missingInRustCount": 2,
-        "rustOnlyCount": 31
+        "upstreamCount": 98,
+        "rustCount": 132,
+        "intersectionCount": 98,
+        "coveragePercent": 100.0,
+        "missingInRustCount": 0,
+        "rustOnlyCount": 34
       }
     },
     "audit": {
@@ -64,11 +64,11 @@
       "notStarted": 0
     },
     "methodSurface": {
-      "rustCount": 29,
-      "baseCoveragePercent": -2.2,
-      "handlersCoveragePercent": -1.98,
-      "baseMissingInRustCount": 2,
-      "handlersMissingInRustCount": 2
+      "rustCount": 31,
+      "baseCoveragePercent": 0.0,
+      "handlersCoveragePercent": 0.0,
+      "baseMissingInRustCount": 0,
+      "handlersMissingInRustCount": 0
     },
     "changedSubsystems": [
       {
