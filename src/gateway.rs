@@ -1255,49 +1255,131 @@ const SUPPORTED_RPC_METHODS: &[&str] = &[
     "session.status",
 ];
 
-const TOOLS_CATALOG_METHODS: &[(&str, &str, &str)] = &[
-    ("read", "Read a file from the active workspace.", "fs"),
-    (
-        "write",
-        "Write content to a file in the active workspace.",
-        "fs",
-    ),
-    ("edit", "Apply focused text edits to a file.", "fs"),
-    (
-        "apply_patch",
-        "Apply a structured patch to one or more files.",
-        "fs",
-    ),
-    (
-        "exec",
-        "Run an allowed command in the workspace.",
-        "runtime",
-    ),
-    (
-        "process",
-        "Inspect or control tracked runtime processes.",
-        "runtime",
-    ),
-    ("gateway", "Invoke gateway RPC methods.", "control"),
-    (
-        "sessions",
-        "Inspect and mutate session history/state.",
-        "control",
-    ),
-    ("message", "Invoke channel/message actions.", "channels"),
-    ("browser", "Run browser automation actions.", "browser"),
-    (
-        "canvas",
-        "Render or inspect canvas runtime output.",
-        "canvas",
-    ),
-    ("nodes", "Invoke paired-node commands.", "nodes"),
-    ("wasm", "Inspect and execute wasm tools.", "wasm"),
-    (
-        "routines",
-        "Create and run reusable routine workflows.",
-        "automation",
-    ),
+const TOOLS_CATALOG_PROFILE_OPTIONS: &[(&str, &str)] = &[
+    ("minimal", "Minimal"),
+    ("coding", "Coding"),
+    ("messaging", "Messaging"),
+    ("full", "Full"),
+];
+
+const TOOLS_CATALOG_SECTIONS: &[(&str, &str)] = &[
+    ("fs", "Files"),
+    ("runtime", "Runtime"),
+    ("automation", "Automation"),
+    ("messaging", "Messaging"),
+    ("ui", "UI"),
+    ("nodes", "Nodes"),
+    ("wasm", "Wasm"),
+];
+
+#[derive(Debug, Clone, Copy)]
+struct ToolCatalogEntrySpec {
+    id: &'static str,
+    label: &'static str,
+    description: &'static str,
+    section_id: &'static str,
+    default_profiles: &'static [&'static str],
+}
+
+const TOOLS_CATALOG_CORE_ENTRIES: &[ToolCatalogEntrySpec] = &[
+    ToolCatalogEntrySpec {
+        id: "read",
+        label: "read",
+        description: "Read file contents",
+        section_id: "fs",
+        default_profiles: &["coding"],
+    },
+    ToolCatalogEntrySpec {
+        id: "write",
+        label: "write",
+        description: "Create or overwrite files",
+        section_id: "fs",
+        default_profiles: &["coding"],
+    },
+    ToolCatalogEntrySpec {
+        id: "edit",
+        label: "edit",
+        description: "Make precise edits",
+        section_id: "fs",
+        default_profiles: &["coding"],
+    },
+    ToolCatalogEntrySpec {
+        id: "apply_patch",
+        label: "apply_patch",
+        description: "Patch files",
+        section_id: "fs",
+        default_profiles: &["coding"],
+    },
+    ToolCatalogEntrySpec {
+        id: "exec",
+        label: "exec",
+        description: "Run shell commands",
+        section_id: "runtime",
+        default_profiles: &["coding"],
+    },
+    ToolCatalogEntrySpec {
+        id: "process",
+        label: "process",
+        description: "Manage background processes",
+        section_id: "runtime",
+        default_profiles: &["coding"],
+    },
+    ToolCatalogEntrySpec {
+        id: "gateway",
+        label: "gateway",
+        description: "Gateway control",
+        section_id: "automation",
+        default_profiles: &[],
+    },
+    ToolCatalogEntrySpec {
+        id: "sessions",
+        label: "sessions",
+        description: "Inspect and mutate session history/state",
+        section_id: "automation",
+        default_profiles: &["coding", "messaging"],
+    },
+    ToolCatalogEntrySpec {
+        id: "routines",
+        label: "routines",
+        description: "Create and run reusable routine workflows",
+        section_id: "automation",
+        default_profiles: &["coding"],
+    },
+    ToolCatalogEntrySpec {
+        id: "message",
+        label: "message",
+        description: "Invoke channel/message actions",
+        section_id: "messaging",
+        default_profiles: &["messaging"],
+    },
+    ToolCatalogEntrySpec {
+        id: "browser",
+        label: "browser",
+        description: "Run browser automation actions",
+        section_id: "ui",
+        default_profiles: &[],
+    },
+    ToolCatalogEntrySpec {
+        id: "canvas",
+        label: "canvas",
+        description: "Render or inspect canvas runtime output",
+        section_id: "ui",
+        default_profiles: &[],
+    },
+    ToolCatalogEntrySpec {
+        id: "nodes",
+        label: "nodes",
+        description: "Invoke paired-node commands",
+        section_id: "nodes",
+        default_profiles: &[],
+    },
+    ToolCatalogEntrySpec {
+        id: "wasm",
+        label: "wasm",
+        description: "Inspect and execute wasm tools",
+        section_id: "wasm",
+        default_profiles: &["coding"],
+    },
 ];
 
 pub fn supported_rpc_methods() -> &'static [&'static str] {
@@ -4188,28 +4270,80 @@ impl RpcDispatcher {
     }
 
     async fn handle_tools_catalog(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
-        if let Err(err) = decode_params::<ToolsCatalogParams>(&req.params) {
-            return RpcDispatchOutcome::bad_request(format!("invalid tools.catalog params: {err}"));
+        let params = match decode_params::<ToolsCatalogParams>(&req.params) {
+            Ok(value) => value,
+            Err(err) => {
+                return RpcDispatchOutcome::bad_request(format!(
+                    "invalid tools.catalog params: {err}"
+                ));
+            }
+        };
+        if let Err(err) = self.sync_agents_runtime_from_config().await {
+            self.system
+                .log_line(format!("agents.runtime sync failed: {err}"))
+                .await;
+            return RpcDispatchOutcome::internal_error("agents runtime unavailable");
         }
-        let snapshot = self.config.get_snapshot().await;
-        let policy = resolve_tool_runtime_policy_config(&snapshot.config);
-        let policy_payload = serde_json::to_value(policy).unwrap_or_else(|_| json!({}));
-        let tools = TOOLS_CATALOG_METHODS
+        let agents_snapshot = self.agents.list().await;
+        let requested_agent_id = normalize_optional_text(params.agent_id, 128);
+        let agent_id = match requested_agent_id.as_deref() {
+            Some(raw_agent_id) => {
+                let normalized = normalize_agent_id(raw_agent_id);
+                let known = agents_snapshot
+                    .agents
+                    .iter()
+                    .any(|entry| entry.id.eq_ignore_ascii_case(&normalized));
+                if !known {
+                    return RpcDispatchOutcome::bad_request(format!(
+                        "unknown agent id \"{raw_agent_id}\""
+                    ));
+                }
+                normalized
+            }
+            None => agents_snapshot.default_id,
+        };
+        let _include_plugins = params.include_plugins.unwrap_or(true);
+        let profiles = TOOLS_CATALOG_PROFILE_OPTIONS
             .iter()
-            .map(|(name, description, family)| {
+            .map(|(id, label)| {
                 json!({
-                    "name": name,
-                    "description": description,
-                    "family": family
+                    "id": id,
+                    "label": label
                 })
             })
             .collect::<Vec<_>>();
-        let count = tools.len();
+        let groups = TOOLS_CATALOG_SECTIONS
+            .iter()
+            .filter_map(|(section_id, section_label)| {
+                let tools = TOOLS_CATALOG_CORE_ENTRIES
+                    .iter()
+                    .filter(|entry| entry.section_id == *section_id)
+                    .map(|entry| {
+                        json!({
+                            "id": entry.id,
+                            "label": entry.label,
+                            "description": entry.description,
+                            "source": "core",
+                            "defaultProfiles": entry.default_profiles
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                if tools.is_empty() {
+                    None
+                } else {
+                    Some(json!({
+                        "id": section_id,
+                        "label": section_label,
+                        "source": "core",
+                        "tools": tools
+                    }))
+                }
+            })
+            .collect::<Vec<_>>();
         RpcDispatchOutcome::Handled(json!({
-            "tools": tools,
-            "count": count,
-            "policy": policy_payload,
-            "ts": now_ms()
+            "agentId": agent_id,
+            "profiles": profiles,
+            "groups": groups
         }))
     }
 
@@ -27106,7 +27240,12 @@ struct DoctorMemoryStatusParams {}
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-struct ToolsCatalogParams {}
+struct ToolsCatalogParams {
+    #[serde(rename = "agentId", alias = "agent_id")]
+    agent_id: Option<String>,
+    #[serde(rename = "includePlugins", alias = "include_plugins")]
+    include_plugins: Option<bool>,
+}
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -40988,6 +41127,16 @@ mod tests {
         let out = dispatcher.handle_request(&invalid).await;
         assert!(matches!(out, RpcDispatchOutcome::Error { code: 400, .. }));
 
+        let unknown_agent = RpcRequestFrame {
+            id: "req-tools-catalog-unknown-agent".to_owned(),
+            method: "tools.catalog".to_owned(),
+            params: serde_json::json!({
+                "agentId": "missing-agent"
+            }),
+        };
+        let out = dispatcher.handle_request(&unknown_agent).await;
+        assert!(matches!(out, RpcDispatchOutcome::Error { code: 400, .. }));
+
         let valid = RpcRequestFrame {
             id: "req-tools-catalog".to_owned(),
             method: "tools.catalog".to_owned(),
@@ -40995,31 +41144,79 @@ mod tests {
         };
         match dispatcher.handle_request(&valid).await {
             RpcDispatchOutcome::Handled(payload) => {
-                let tools = payload
-                    .pointer("/tools")
+                assert_eq!(
+                    payload.pointer("/agentId").and_then(Value::as_str),
+                    Some("main")
+                );
+                let profiles = payload
+                    .pointer("/profiles")
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
-                assert!(!tools.is_empty());
+                assert!(!profiles.is_empty());
+                assert!(profiles.iter().any(|entry| {
+                    entry
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(|id| id == "coding")
+                        .unwrap_or(false)
+                }));
+                let groups = payload
+                    .pointer("/groups")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                assert!(!groups.is_empty());
+                let fs_group = groups
+                    .iter()
+                    .find(|entry| entry.get("id").and_then(Value::as_str) == Some("fs"))
+                    .expect("fs group");
+                assert_eq!(fs_group.get("source").and_then(Value::as_str), Some("core"));
+                let tools = fs_group
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
                 assert!(tools.iter().any(|entry| {
                     entry
-                        .get("name")
+                        .get("id")
                         .and_then(Value::as_str)
-                        .map(|name| name == "read")
+                        .map(|id| id == "read")
                         .unwrap_or(false)
                 }));
                 assert!(tools.iter().any(|entry| {
                     entry
-                        .get("name")
+                        .get("id")
                         .and_then(Value::as_str)
-                        .map(|name| name == "wasm")
+                        .map(|id| id == "apply_patch")
                         .unwrap_or(false)
                 }));
-                assert_eq!(
-                    payload.pointer("/count").and_then(Value::as_u64),
-                    Some(tools.len() as u64)
-                );
-                assert!(payload.pointer("/policy").is_some());
+            }
+            _ => panic!("expected tools.catalog handled"),
+        }
+
+        let no_plugins = RpcRequestFrame {
+            id: "req-tools-catalog-no-plugins".to_owned(),
+            method: "tools.catalog".to_owned(),
+            params: serde_json::json!({
+                "includePlugins": false
+            }),
+        };
+        match dispatcher.handle_request(&no_plugins).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                let groups = payload
+                    .pointer("/groups")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                assert!(!groups.is_empty());
+                assert!(groups.iter().all(|entry| {
+                    entry
+                        .get("source")
+                        .and_then(Value::as_str)
+                        .map(|source| source == "core")
+                        .unwrap_or(false)
+                }));
             }
             _ => panic!("expected tools.catalog handled"),
         }

@@ -4,20 +4,20 @@
     "methodSurface": {
       "rustCount": 132,
       "base": {
-        "upstreamCount": 89,
+        "upstreamCount": 91,
         "rustCount": 132,
-        "intersectionCount": 89,
+        "intersectionCount": 91,
         "coveragePercent": 100.0,
         "missingInRustCount": 0,
-        "rustOnlyCount": 43
+        "rustOnlyCount": 41
       },
       "handlers": {
-        "upstreamCount": 98,
+        "upstreamCount": 101,
         "rustCount": 132,
-        "intersectionCount": 98,
+        "intersectionCount": 101,
         "coveragePercent": 100.0,
         "missingInRustCount": 0,
-        "rustOnlyCount": 34
+        "rustOnlyCount": 31
       }
     },
     "audit": {

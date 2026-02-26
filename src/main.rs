@@ -70,12 +70,18 @@ struct Cli {
 enum CliCommand {
     /// Run the Rust OpenClaw runtime.
     Run,
+    /// Query runtime status payload.
+    Status(StatusArgs),
+    /// Query runtime health payload.
+    Health(HealthArgs),
     /// Run non-interactive diagnostics for operator parity checks.
     Doctor(DoctorArgs),
     /// Run security audit and remediation parity surface.
     Security(SecurityArgs),
     /// Run gateway command parity surface.
     Gateway(GatewayArgs),
+    /// Query tools catalog parity surface.
+    Tools(ToolsArgs),
     /// Run agent command parity surface.
     Agent(AgentArgs),
     /// Run message command parity surface.
@@ -92,6 +98,20 @@ struct DoctorArgs {
     #[arg(long)]
     non_interactive: bool,
     /// Emit doctor output as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Clone, Args, Default)]
+struct StatusArgs {
+    /// Emit output as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Clone, Args, Default)]
+struct HealthArgs {
+    /// Emit output as JSON.
     #[arg(long)]
     json: bool,
 }
@@ -140,6 +160,49 @@ enum GatewaySubcommand {
     Health,
     /// List supported RPC methods.
     Methods,
+    /// Call any RPC method directly.
+    Call(GatewayCallArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+struct GatewayCallArgs {
+    /// RPC method name.
+    #[arg(long)]
+    method: String,
+    /// JSON payload for params.
+    #[arg(long, default_value = "{}")]
+    params: String,
+    /// Emit output as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Clone, Args, Default)]
+struct ToolsArgs {
+    #[command(subcommand)]
+    command: Option<ToolsSubcommand>,
+    /// Emit output as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum ToolsSubcommand {
+    /// List available tools grouped by section/profile.
+    Catalog(ToolsCatalogCommandArgs),
+}
+
+#[derive(Debug, Clone, Args, Default)]
+struct ToolsCatalogCommandArgs {
+    /// Optional explicit agent id.
+    #[arg(long = "agent-id")]
+    agent_id: Option<String>,
+    /// Include plugin tools in output.
+    #[arg(long = "include-plugins")]
+    include_plugins: Option<bool>,
+    /// Emit output as JSON.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -312,9 +375,12 @@ async fn main() -> Result<()> {
     let command = cli.command.clone().unwrap_or(CliCommand::Run);
     match command {
         CliCommand::Run => run_runtime(cli).await,
+        CliCommand::Status(args) => run_status_command(args).await,
+        CliCommand::Health(args) => run_health_command(args).await,
         CliCommand::Doctor(args) => run_doctor(&cli.config, args),
         CliCommand::Security(args) => run_security_command(&cli.config, args).await,
         CliCommand::Gateway(args) => run_gateway_command(cli, args).await,
+        CliCommand::Tools(args) => run_tools_command(args).await,
         CliCommand::Agent(args) => run_agent_command(args).await,
         CliCommand::Message(args) => run_message_command(args).await,
         CliCommand::Nodes(args) => run_nodes_command(args).await,
@@ -332,6 +398,52 @@ async fn run_runtime(cli: Cli) -> Result<()> {
 
     let runtime = runtime::AgentRuntime::new(cfg, Some(cli.config.clone())).await?;
     runtime.run().await
+}
+
+async fn run_status_command(args: StatusArgs) -> Result<()> {
+    let dispatcher = RpcDispatcher::new();
+    let payload = dispatch_rpc(&dispatcher, "status", json!({})).await?;
+    if args.json {
+        print_json_value(&payload);
+    } else {
+        let runtime_name = payload
+            .pointer("/runtime/name")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let runtime_version = payload
+            .pointer("/runtime/version")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let uptime_ms = payload
+            .pointer("/runtime/uptimeMs")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let sessions = payload
+            .pointer("/sessions/totalSessions")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        println!(
+            "status: runtime={runtime_name}@{runtime_version} uptime_ms={uptime_ms} total_sessions={sessions}"
+        );
+    }
+    Ok(())
+}
+
+async fn run_health_command(args: HealthArgs) -> Result<()> {
+    let dispatcher = RpcDispatcher::new();
+    let payload = dispatch_rpc(&dispatcher, "health", json!({})).await?;
+    if args.json {
+        print_json_value(&payload);
+    } else {
+        let service = payload
+            .get("service")
+            .and_then(Value::as_str)
+            .unwrap_or("openclaw-agent-rs");
+        let ok = payload.get("ok").and_then(Value::as_bool).unwrap_or(false);
+        let uptime_ms = payload.get("uptimeMs").and_then(Value::as_u64).unwrap_or(0);
+        println!("health: service={service} ok={ok} uptime_ms={uptime_ms}");
+    }
+    Ok(())
 }
 
 fn run_doctor(config_path: &Path, args: DoctorArgs) -> Result<()> {
@@ -394,50 +506,8 @@ async fn run_security_command(config_path: &Path, args: SecurityArgs) -> Result<
 async fn run_gateway_command(cli: Cli, args: GatewayArgs) -> Result<()> {
     match args.command.unwrap_or(GatewaySubcommand::Run) {
         GatewaySubcommand::Run => run_runtime(cli).await,
-        GatewaySubcommand::Status => {
-            let dispatcher = RpcDispatcher::new();
-            let payload = dispatch_rpc(&dispatcher, "status", json!({})).await?;
-            if args.json {
-                print_json_value(&payload);
-            } else {
-                let runtime_name = payload
-                    .pointer("/runtime/name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown");
-                let runtime_version = payload
-                    .pointer("/runtime/version")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown");
-                let uptime_ms = payload
-                    .pointer("/runtime/uptimeMs")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                let sessions = payload
-                    .pointer("/sessions/totalSessions")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                println!(
-                    "gateway status: runtime={runtime_name}@{runtime_version} uptime_ms={uptime_ms} total_sessions={sessions}"
-                );
-            }
-            Ok(())
-        }
-        GatewaySubcommand::Health => {
-            let dispatcher = RpcDispatcher::new();
-            let payload = dispatch_rpc(&dispatcher, "health", json!({})).await?;
-            if args.json {
-                print_json_value(&payload);
-            } else {
-                let service = payload
-                    .get("service")
-                    .and_then(Value::as_str)
-                    .unwrap_or("openclaw-agent-rs");
-                let ok = payload.get("ok").and_then(Value::as_bool).unwrap_or(false);
-                let uptime_ms = payload.get("uptimeMs").and_then(Value::as_u64).unwrap_or(0);
-                println!("gateway health: service={service} ok={ok} uptime_ms={uptime_ms}");
-            }
-            Ok(())
-        }
+        GatewaySubcommand::Status => run_status_command(StatusArgs { json: args.json }).await,
+        GatewaySubcommand::Health => run_health_command(HealthArgs { json: args.json }).await,
         GatewaySubcommand::Methods => {
             let methods = gateway::supported_rpc_methods();
             if args.json {
@@ -453,7 +523,79 @@ async fn run_gateway_command(cli: Cli, args: GatewayArgs) -> Result<()> {
             }
             Ok(())
         }
+        GatewaySubcommand::Call(call) => {
+            let dispatcher = RpcDispatcher::new();
+            let method = call.method.trim();
+            if method.is_empty() {
+                return Err(anyhow!("gateway call requires --method"));
+            }
+            let params: Value = serde_json::from_str(&call.params)
+                .map_err(|err| anyhow!("invalid --params JSON: {err}"))?;
+            let payload = dispatch_rpc(&dispatcher, method, params).await?;
+            if args.json || call.json {
+                print_json_value(&payload);
+            } else {
+                println!("gateway call: method={method}");
+                print_json_value(&payload);
+            }
+            Ok(())
+        }
     }
+}
+
+async fn run_tools_command(args: ToolsArgs) -> Result<()> {
+    match args
+        .command
+        .unwrap_or(ToolsSubcommand::Catalog(ToolsCatalogCommandArgs::default()))
+    {
+        ToolsSubcommand::Catalog(catalog) => run_tools_catalog_command(args.json, catalog).await,
+    }
+}
+
+async fn run_tools_catalog_command(global_json: bool, args: ToolsCatalogCommandArgs) -> Result<()> {
+    let dispatcher = RpcDispatcher::new();
+    let mut params = json!({});
+    if let Some(agent_id) = args.agent_id {
+        params["agentId"] = json!(agent_id);
+    }
+    if let Some(include_plugins) = args.include_plugins {
+        params["includePlugins"] = json!(include_plugins);
+    }
+
+    let payload = dispatch_rpc(&dispatcher, "tools.catalog", params).await?;
+    if global_json || args.json {
+        print_json_value(&payload);
+    } else {
+        let agent_id = payload
+            .get("agentId")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let profile_count = payload
+            .get("profiles")
+            .and_then(Value::as_array)
+            .map(|items| items.len())
+            .unwrap_or(0);
+        let groups = payload
+            .get("groups")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let group_count = groups.len();
+        let tool_count = groups
+            .iter()
+            .map(|group| {
+                group
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .map(|items| items.len())
+                    .unwrap_or(0)
+            })
+            .sum::<usize>();
+        println!(
+            "tools catalog: agent_id={agent_id} profiles={profile_count} groups={group_count} tools={tool_count}"
+        );
+    }
+    Ok(())
 }
 
 async fn run_agent_command(args: AgentArgs) -> Result<()> {
@@ -1027,6 +1169,58 @@ mod tests {
                 assert!(matches!(args.command, Some(GatewaySubcommand::Status)));
             }
             _ => panic!("expected gateway command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_gateway_call_command_with_params() {
+        let cli = Cli::parse_from([
+            "openclaw-agent-rs",
+            "gateway",
+            "call",
+            "--method",
+            "tools.catalog",
+            "--params",
+            "{\"includePlugins\":false}",
+            "--json",
+        ]);
+        match cli.command {
+            Some(CliCommand::Gateway(args)) => match args.command {
+                Some(GatewaySubcommand::Call(call)) => {
+                    assert_eq!(call.method, "tools.catalog");
+                    assert_eq!(call.params, "{\"includePlugins\":false}");
+                    assert!(call.json);
+                }
+                _ => panic!("expected gateway call command"),
+            },
+            _ => panic!("expected gateway command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_tools_catalog_command_with_agent_and_plugin_flag() {
+        let cli = Cli::parse_from([
+            "openclaw-agent-rs",
+            "tools",
+            "--json",
+            "catalog",
+            "--agent-id",
+            "main",
+            "--include-plugins",
+            "false",
+        ]);
+        match cli.command {
+            Some(CliCommand::Tools(args)) => {
+                assert!(args.json);
+                match args.command {
+                    Some(ToolsSubcommand::Catalog(catalog)) => {
+                        assert_eq!(catalog.agent_id.as_deref(), Some("main"));
+                        assert_eq!(catalog.include_plugins, Some(false));
+                    }
+                    _ => panic!("expected tools catalog command"),
+                }
+            }
+            _ => panic!("expected tools command"),
         }
     }
 

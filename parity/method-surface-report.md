@@ -9,9 +9,9 @@ Generated (UTC): deterministic
 
 ## Surface: base
 
-- Upstream method count: 89
+- Upstream method count: 91
 - Rust method count: 132
-- Shared methods: 89
+- Shared methods: 91
 - Coverage vs upstream: 100%
 
 ### Missing In Rust
@@ -30,7 +30,6 @@ Generated (UTC): deterministic
 - `canvas.present`
 - `chat.inject`
 - `connect`
-- `doctor.memory.status`
 - `edge.acceleration.status`
 - `edge.alignment.evaluate`
 - `edge.collaboration.plan`
@@ -60,15 +59,14 @@ Generated (UTC): deterministic
 - `sessions.usage`
 - `sessions.usage.logs`
 - `sessions.usage.timeseries`
-- `tools.catalog`
 - `web.login.start`
 - `web.login.wait`
 
 ## Surface: handlers
 
-- Upstream method count: 98
+- Upstream method count: 101
 - Rust method count: 132
-- Shared methods: 98
+- Shared methods: 101
 - Coverage vs upstream: 100%
 
 ### Missing In Rust
@@ -85,7 +83,6 @@ Generated (UTC): deterministic
 - `auth.oauth.wait`
 - `browser.open`
 - `canvas.present`
-- `doctor.memory.status`
 - `edge.acceleration.status`
 - `edge.alignment.evaluate`
 - `edge.collaboration.plan`
@@ -106,8 +103,6 @@ Generated (UTC): deterministic
 - `edge.swarm.plan`
 - `edge.voice.transcribe`
 - `edge.wasm.marketplace.list`
-- `push.test`
 - `session.status`
 - `sessions.history`
 - `sessions.send`
-- `tools.catalog`

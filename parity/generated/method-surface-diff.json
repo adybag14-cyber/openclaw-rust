@@ -4,9 +4,9 @@
   "rustCount": 132,
   "surfaces": {
     "base": {
-      "upstreamCount": 89,
+      "upstreamCount": 91,
       "rustCount": 132,
-      "intersectionCount": 89,
+      "intersectionCount": 91,
       "coveragePercent": 100.0,
       "missingInRust": [],
       "rustOnly": [
@@ -20,7 +20,6 @@
         "canvas.present",
         "chat.inject",
         "connect",
-        "doctor.memory.status",
         "edge.acceleration.status",
         "edge.alignment.evaluate",
         "edge.collaboration.plan",
@@ -50,15 +49,14 @@
         "sessions.usage",
         "sessions.usage.logs",
         "sessions.usage.timeseries",
-        "tools.catalog",
         "web.login.start",
         "web.login.wait"
       ]
     },
     "handlers": {
-      "upstreamCount": 98,
+      "upstreamCount": 101,
       "rustCount": 132,
-      "intersectionCount": 98,
+      "intersectionCount": 101,
       "coveragePercent": 100.0,
       "missingInRust": [],
       "rustOnly": [
@@ -70,7 +68,6 @@
         "auth.oauth.wait",
         "browser.open",
         "canvas.present",
-        "doctor.memory.status",
         "edge.acceleration.status",
         "edge.alignment.evaluate",
         "edge.collaboration.plan",
@@ -91,11 +88,9 @@
         "edge.swarm.plan",
         "edge.voice.transcribe",
         "edge.wasm.marketplace.list",
-        "push.test",
         "session.status",
         "sessions.history",
-        "sessions.send",
-        "tools.catalog"
+        "sessions.send"
       ]
     }
   }

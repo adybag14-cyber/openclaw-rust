@@ -5,6 +5,39 @@
 ### Highlights
 - No unreleased changes.
 
+## v1.7.8 - 2026-02-26
+
+### Highlights
+- Expanded `tools.catalog` payload parity in `src/gateway.rs`:
+  - Added typed request params (`agentId`, `includePlugins`) with alias support.
+  - Added upstream-shaped response fields (`agentId`, `profiles`, `groups`) with core grouped tool metadata.
+  - Added unknown-agent validation and strict bad-request semantics.
+- Expanded CLI/control parity in `src/main.rs`:
+  - Added top-level `status` and `health` commands.
+  - Added top-level `tools catalog` command with `--agent-id` / `--include-plugins`.
+  - Added `gateway call` for direct arbitrary RPC method invocation (`--method`, `--params`).
+- Added parser/regression coverage for new CLI surfaces:
+  - `cli_parses_gateway_call_command_with_params`
+  - `cli_parses_tools_catalog_command_with_agent_and_plugin_flag`
+- Refreshed parity artifacts and scoreboard:
+  - Rust method count: `132`
+  - method-surface coverage: `100%` (base + handlers)
+- Bumped package version to `1.7.8`.
+
+### Validation
+- `cargo +1.83.0-x86_64-pc-windows-gnu fmt --all -- --check`
+- `cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings`
+- `cargo +1.83.0-x86_64-pc-windows-gnu test`
+- `cargo +1.83.0-x86_64-pc-windows-gnu build --release`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets --features sqlite-state -- -D warnings"`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu build --release --features sqlite-state"`
+- `./scripts/parity/method-surface-diff.ps1 -Surface both -UpstreamRepoPath ..\openclaw`
+- `./scripts/parity/build-scoreboard.ps1 -IncludeGeneratedAt`
+- `./scripts/parity/run-cp0-gate.ps1 -UpstreamRepoPath ..\openclaw`
+- `docker buildx prune -af` (workstation BuildKit snapshot cache reset)
+- `./scripts/run-docker-parity-smoke.ps1`
+
 ## v1.7.7 - 2026-02-26
 
 ### Highlights

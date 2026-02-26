@@ -42,7 +42,7 @@ provider runtime, persistence, performance strategy, and release layout), see:
   - Ubuntu 20.04 WSL checks pass: `cargo +1.83.0 check`, `cargo +1.83.0 test --no-run`, `cargo +1.83.0 build --release`
   - Docker parity smoke passes with workstation Docker memory profile updated: `./scripts/run-docker-parity-smoke.ps1`
   - Ubuntu 20.04 runtime RSS probe peak (active RPC traffic): `15.38 MB` (`MAX_RSS_KB=15744`)
-  - Current release tag: `v1.7.7`
+  - Current release tag: `v1.7.8`
 
 ## Implemented runtime coverage
 
@@ -91,7 +91,10 @@ CP7 CLI parity quick checks:
 cargo run -- doctor --non-interactive
 cargo run -- security audit --json
 cargo run -- security audit --deep --json
-cargo run -- gateway status --json
+cargo run -- status --json
+cargo run -- health --json
+cargo run -- tools catalog --json
+cargo run -- gateway call --method tools.catalog --params '{"includePlugins":false}' --json
 cargo run -- agent --message "status check" --wait --json
 cargo run -- message send --to "+15551234567" --message "hello" --channel telegram --json
 cargo run -- nodes list --json
