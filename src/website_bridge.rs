@@ -36,6 +36,7 @@ pub struct WebsiteBridgeResponse {
 const ZAI_SIGNING_KEY: &str = "key-@@@@)))()((9))-xxxx&&&%%%%%";
 const ZAI_FE_VERSION: &str = "prod-fe-1.0.241";
 static ZAI_COUNTER: AtomicU64 = AtomicU64::new(1);
+static CHATGPT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -93,6 +94,12 @@ pub async fn invoke_openai_compatible(
     candidate_endpoints.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
     if candidate_endpoints.is_empty() && attempts.is_empty() {
         attempts.push("website bridge has no candidate endpoints configured".to_owned());
+    }
+    if should_use_chatgpt_web_bridge(&request) {
+        match invoke_chatgpt_web_bridge(&client, &request).await {
+            Ok(response) => return Ok(response),
+            Err(err) => attempts.push(format!("official_chatgpt_bridge_error: {err}")),
+        }
     }
 
     // Prefer local loopback bridges first when present. This gives deterministic
@@ -356,11 +363,34 @@ fn should_use_inception_guest_bridge(request: &WebsiteBridgeRequest<'_>) -> bool
     !has_api_key(request) && matches_inception_guest_bridge(request)
 }
 
+fn should_use_chatgpt_web_bridge(request: &WebsiteBridgeRequest<'_>) -> bool {
+    has_api_key(request) && matches_chatgpt_web_bridge(request)
+}
+
 fn has_api_key(request: &WebsiteBridgeRequest<'_>) -> bool {
     request
         .api_key
         .and_then(|value| normalize_optional_text(value, 4_096))
         .is_some()
+}
+
+fn matches_chatgpt_web_bridge(request: &WebsiteBridgeRequest<'_>) -> bool {
+    let provider = request.provider.trim().to_ascii_lowercase();
+    if provider != "openai" && !provider.contains("chatgpt") {
+        return false;
+    }
+    request
+        .website_url
+        .is_some_and(chatgpt_url_hint_matches)
+        || request
+            .candidate_base_urls
+            .iter()
+            .any(|url| chatgpt_url_hint_matches(url))
+}
+
+fn chatgpt_url_hint_matches(raw: &str) -> bool {
+    let lowered = raw.trim().to_ascii_lowercase();
+    lowered.contains("chatgpt.com") || lowered.contains("chat.openai.com")
 }
 
 fn matches_zai_guest_bridge(request: &WebsiteBridgeRequest<'_>) -> bool {
@@ -1490,6 +1520,233 @@ fn parse_inception_response_to_openai_body(raw: &str) -> Option<String> {
     parse_qwen_response_to_openai_body(raw)
 }
 
+async fn invoke_chatgpt_web_bridge(
+    client: &Client,
+    request: &WebsiteBridgeRequest<'_>,
+) -> Result<WebsiteBridgeResponse, String> {
+    let origin = resolve_chatgpt_origin(request)
+        .ok_or_else(|| "chatgpt web bridge origin could not be resolved".to_owned())?;
+    let access_token = request
+        .api_key
+        .and_then(|value| normalize_optional_text(value, 8_192))
+        .ok_or_else(|| "chatgpt web bridge requires access token".to_owned())?;
+    let prompt = extract_signature_prompt(request.messages)
+        .ok_or_else(|| "chatgpt web bridge could not extract user prompt".to_owned())?;
+    let model_candidates = build_chatgpt_model_candidates(request.model);
+    if model_candidates.is_empty() {
+        return Err("chatgpt web bridge has no candidate models".to_owned());
+    }
+
+    let mut attempts = Vec::new();
+    for model in model_candidates {
+        let endpoint = format!("{origin}/backend-api/conversation");
+        let user_message_id = chatgpt_next_id("msg-user");
+        let parent_message_id = chatgpt_next_id("msg-parent");
+        let websocket_request_id = chatgpt_next_id("req");
+        let payload = json!({
+            "action": "next",
+            "messages": [
+                {
+                    "id": user_message_id,
+                    "author": { "role": "user" },
+                    "content": {
+                        "content_type": "text",
+                        "parts": [prompt]
+                    }
+                }
+            ],
+            "parent_message_id": parent_message_id,
+            "model": model,
+            "history_and_training_disabled": false,
+            "timezone_offset_min": 0,
+            "conversation_mode": { "kind": "primary_assistant" },
+            "websocket_request_id": websocket_request_id
+        });
+
+        let mut request_builder = client
+            .post(&endpoint)
+            .header("Authorization", format!("Bearer {access_token}"))
+            .header("Accept", "text/event-stream")
+            .header("Content-Type", "application/json")
+            .header("Origin", &origin)
+            .header("Referer", format!("{origin}/"));
+        for (name, value) in request.headers {
+            request_builder = request_builder.header(name, value);
+        }
+
+        let response = match request_builder.json(&payload).send().await {
+            Ok(value) => value,
+            Err(err) => {
+                attempts.push(format!("{model}: transport_error: {err}"));
+                continue;
+            }
+        };
+        let status = resolve_effective_status(&response);
+        let body = match response.text().await {
+            Ok(value) => value,
+            Err(err) => {
+                attempts.push(format!("{model}: body_read_error: {err}"));
+                continue;
+            }
+        };
+        if !status.is_success() {
+            attempts.push(format!(
+                "{model}: status={} body={}",
+                status.as_u16(),
+                truncate_text(&body, 320)
+            ));
+            continue;
+        }
+        let Some(openai_body) = parse_chatgpt_response_to_openai_body(&body) else {
+            attempts.push(format!(
+                "{model}: parse_error body={}",
+                truncate_text(&body, 240)
+            ));
+            continue;
+        };
+        return Ok(WebsiteBridgeResponse {
+            body: openai_body,
+            endpoint: endpoint.clone(),
+        });
+    }
+
+    Err(format!(
+        "chatgpt web bridge exhausted model candidates; attempts: {}",
+        attempts.join(" | ")
+    ))
+}
+
+fn resolve_chatgpt_origin(request: &WebsiteBridgeRequest<'_>) -> Option<String> {
+    for candidate in request.candidate_base_urls {
+        if !chatgpt_url_hint_matches(candidate) {
+            continue;
+        }
+        if let Some(origin) = normalize_origin_url(candidate) {
+            return Some(origin);
+        }
+    }
+    request
+        .website_url
+        .filter(|url| chatgpt_url_hint_matches(url))
+        .and_then(normalize_origin_url)
+}
+
+fn build_chatgpt_model_candidates(model: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(requested) = normalize_optional_text(model, 256) {
+        out.push(requested.clone());
+        if let Some((_, bare_model)) = requested.split_once('/') {
+            if let Some(bare_model) = normalize_optional_text(bare_model, 256) {
+                out.push(bare_model);
+            }
+        }
+    }
+    out.push("gpt-5.2-thinking-extended".to_owned());
+    out.push("gpt-5".to_owned());
+    out.push("gpt-4o".to_owned());
+
+    let mut dedup = Vec::with_capacity(out.len());
+    for model_id in out {
+        if dedup
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(&model_id))
+        {
+            continue;
+        }
+        dedup.push(model_id);
+    }
+    dedup
+}
+
+fn parse_chatgpt_response_to_openai_body(raw: &str) -> Option<String> {
+    if let Ok(parsed) = serde_json::from_str::<Value>(raw) {
+        if openai_response_has_usable_assistant_output(&parsed) {
+            return Some(parsed.to_string());
+        }
+        if let Some(content) = extract_chatgpt_assistant_content_from_value(&parsed) {
+            return Some(
+                json!({
+                    "choices": [
+                        {
+                            "message": {
+                                "content": content
+                            }
+                        }
+                    ]
+                })
+                .to_string(),
+            );
+        }
+    }
+    parse_chatgpt_sse_to_openai_body(raw)
+}
+
+fn extract_chatgpt_assistant_content_from_value(parsed: &Value) -> Option<String> {
+    if let Some(parts) = parsed.pointer("/message/content/parts").and_then(Value::as_array) {
+        let text = parts
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Some(content) = normalize_optional_text(&cleanup_qwen_completion_text(&text), 12_000)
+        {
+            return Some(content);
+        }
+    }
+    parsed
+        .pointer("/message/content/text")
+        .and_then(Value::as_str)
+        .and_then(|value| normalize_optional_text(value, 12_000))
+}
+
+fn parse_chatgpt_sse_to_openai_body(raw: &str) -> Option<String> {
+    let mut content = String::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("data:") {
+            continue;
+        }
+        let payload = trimmed.trim_start_matches("data:").trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            continue;
+        }
+        let parsed: Value = match serde_json::from_str(payload) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if let Some(delta) = extract_chatgpt_assistant_content_from_value(&parsed) {
+            content = delta;
+        }
+    }
+    let content = normalize_optional_text(&content, 12_000)?;
+    Some(
+        json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": content
+                    }
+                }
+            ]
+        })
+        .to_string(),
+    )
+}
+
+fn chatgpt_next_id(prefix: &str) -> String {
+    let seq = CHATGPT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{}-{seq}", chatgpt_now_ms())
+}
+
+fn chatgpt_now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0)
+}
+
 fn extract_qwen_assistant_content_from_value(parsed: &Value) -> Option<String> {
     let content = parsed
         .pointer("/data/content")
@@ -2421,6 +2678,36 @@ data: [DONE]"#;
                 .and_then(Value::as_str),
             Some("ok")
         );
+    }
+
+    #[test]
+    fn chatgpt_sse_payload_converts_to_openai_shape() {
+        let sse = r#"data: {"message":{"author":{"role":"assistant"},"content":{"parts":["thinking"]}}}
+
+data: {"message":{"author":{"role":"assistant"},"content":{"parts":["final answer"]}}}
+
+data: [DONE]"#;
+        let parsed = parse_chatgpt_sse_to_openai_body(sse).expect("parse chatgpt sse");
+        let json: Value = serde_json::from_str(&parsed).expect("openai json");
+        assert_eq!(
+            json.pointer("/choices/0/message/content")
+                .and_then(Value::as_str),
+            Some("final answer")
+        );
+    }
+
+    #[test]
+    fn chatgpt_model_candidates_include_extended_fallback() {
+        let candidates = build_chatgpt_model_candidates("openai/gpt-5.2-thinking-extended");
+        assert_eq!(
+            candidates.first().map(String::as_str),
+            Some("openai/gpt-5.2-thinking-extended")
+        );
+        assert!(candidates
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case("gpt-5.2-thinking-extended")));
+        assert!(candidates.iter().any(|item| item.eq_ignore_ascii_case("gpt-5")));
+        assert!(candidates.iter().any(|item| item.eq_ignore_ascii_case("gpt-4o")));
     }
 
     #[tokio::test]

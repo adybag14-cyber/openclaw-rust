@@ -5,6 +5,38 @@
 ### Highlights
 - No unreleased changes.
 
+## v1.7.9 - 2026-02-27
+
+### Highlights
+- Added ChatGPT browser-session OAuth capture flow for OpenAI provider usage without API keys:
+  - New helper script: `scripts/chatgpt-browser-auth.mjs`.
+  - Playwright-first auth capture with Puppeteer fallback.
+  - OAuth runtime settings now support configurable browser-auth command/args/profile directory.
+  - `/auth start openai` now guides browser-session flow and `/auth wait openai` performs login capture + credential completion.
+- Added OpenAI runtime OAuth credential binding:
+  - When API key is missing and OAuth browser credential is present, runtime now routes OpenAI through website bridge with ChatGPT session auth.
+  - Provider runtime override now injects ChatGPT bridge defaults/candidates automatically for authenticated browser sessions.
+- Added ChatGPT official website bridge path in `src/website_bridge.rs`:
+  - Native bridge invoke path for `chatgpt.com/backend-api/conversation`.
+  - SSE/JSON parsing into OpenAI-compatible response shape.
+  - Candidate model fallback chain for ChatGPT web invocation.
+- Added model catalog entry for `gpt-5.2-thinking-extended` (provider: `openai`).
+- Added regression coverage for:
+  - OAuth runtime ChatGPT browser settings parsing.
+  - Browser helper JSON output parsing.
+  - OAuth credential selection by auth profile.
+  - ChatGPT website bridge SSE parsing/model fallback candidates.
+- Bumped package version to `1.7.9`.
+
+### Validation
+- `cargo +1.83.0-x86_64-pc-windows-gnu test`
+- `cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings`
+- `cargo +1.83.0-x86_64-pc-windows-gnu build --release`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets --features sqlite-state -- -D warnings"`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu build --release --features sqlite-state"`
+- `node --check scripts/chatgpt-browser-auth.mjs`
+
 ## v1.7.8 - 2026-02-26
 
 ### Highlights

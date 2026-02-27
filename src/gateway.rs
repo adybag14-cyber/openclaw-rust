@@ -973,6 +973,10 @@ const NODE_PAIR_STORE_PATH: &str = "memory://nodes/pairs.json";
 const CONFIG_STORE_PATH: &str = "memory://config.json";
 const WEB_LOGIN_STORE_PATH: &str = "memory://web-login/sessions.json";
 const OAUTH_STORE_PATH: &str = "memory://auth/oauth/sessions.json";
+const CHATGPT_BROWSER_AUTH_SCRIPT_PATH: &str = "scripts/chatgpt-browser-auth.mjs";
+const CHATGPT_BROWSER_AUTH_DEFAULT_COMMAND: &str = "node";
+const CHATGPT_BROWSER_AUTH_DEFAULT_TIMEOUT_MS: u64 = 300_000;
+const CHATGPT_BROWSER_AUTH_DEFAULT_PROFILE_DIR: &str = ".openclaw-rs/chatgpt-browser-profile";
 const WIZARD_STORE_PATH: &str = "memory://wizard/sessions.json";
 const DEFAULT_SEND_CHANNEL: &str = "whatsapp";
 const TTS_PREFS_PATH: &str = "memory://tts/prefs.json";
@@ -4712,8 +4716,12 @@ impl RpcDispatcher {
         let mut run_completed = false;
 
         let config_snapshot = self.config.get_snapshot().await;
-        let provider_runtime =
+        let mut provider_runtime =
             resolve_provider_runtime_config(&config_snapshot.config, &resolved.model_provider);
+        if let Some(runtime) = provider_runtime.as_mut() {
+            self.apply_oauth_provider_runtime(runtime, resolved.auth_profile.as_deref())
+                .await;
+        }
         if let Some(provider_runtime) = provider_runtime {
             runtime_payload.api_mode = Some(provider_runtime.api_mode.clone());
             runtime_payload.reason = None;
@@ -4837,7 +4845,7 @@ impl RpcDispatcher {
                                     .map(|entry| entry.id)
                                     .unwrap_or_else(|| resolved.model.clone());
 
-                                let Some(fallback_runtime) = resolve_provider_runtime_config(
+                                let Some(mut fallback_runtime) = resolve_provider_runtime_config(
                                     &config_snapshot.config,
                                     &fallback_provider,
                                 ) else {
@@ -4849,6 +4857,11 @@ impl RpcDispatcher {
                                     });
                                     continue;
                                 };
+                                self.apply_oauth_provider_runtime(
+                                    &mut fallback_runtime,
+                                    resolved.auth_profile.as_deref(),
+                                )
+                                .await;
 
                                 if fallback_runtime.api_key.is_none()
                                     && !fallback_runtime.allow_missing_api_key
@@ -5806,7 +5819,7 @@ impl RpcDispatcher {
                 "invalid auth.oauth.start params: provider is required and must be a supported OAuth provider",
             );
         };
-        let result = match self
+        let mut result = match self
             .oauth
             .start(OAuthStartInput {
                 provider_id,
@@ -5820,6 +5833,12 @@ impl RpcDispatcher {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(err),
         };
+        if result.provider_id.eq_ignore_ascii_case("openai") {
+            result.message = format!(
+                "{} Run /auth wait {} {} to open browser login and capture ChatGPT session auth.",
+                result.message, result.provider_id, result.session_id
+            );
+        }
         self.system
             .log_line(format!(
                 "auth.oauth.start provider={} account={}",
@@ -5845,19 +5864,81 @@ impl RpcDispatcher {
             }
         };
         let provider_id = resolve_oauth_provider_param(params.provider_id, params.provider);
-        let result = match self
+        let timeout_ms = params.timeout_ms.unwrap_or(30_000);
+        let mut result = match self
             .oauth
             .wait(OAuthWaitInput {
                 provider_id,
                 account_id: normalize_optional_text(params.account_id, 128),
                 session_id: normalize_optional_text(params.session_id, 128),
-                timeout_ms: params.timeout_ms.unwrap_or(30_000),
+                timeout_ms,
             })
             .await
         {
             Ok(v) => v,
             Err(err) => return RpcDispatchOutcome::bad_request(err),
         };
+        if result.provider_id.eq_ignore_ascii_case("openai") && !result.connected {
+            if result.session_id.is_none() || result.status.eq_ignore_ascii_case("expired") {
+                let force_start = result.status.eq_ignore_ascii_case("expired");
+                if let Ok(start) = self
+                    .oauth
+                    .start(OAuthStartInput {
+                        provider_id: result.provider_id.clone(),
+                        account_id: result.account_id.clone(),
+                        timeout_ms: timeout_ms.max(60_000),
+                        force: force_start,
+                    })
+                    .await
+                {
+                    result.session_id = Some(start.session_id.clone());
+                    result.expires_at_ms = Some(start.expires_at_ms);
+                    result.status = "pending".to_owned();
+                }
+            }
+            if let Some(session_id) = result.session_id.clone() {
+                match self
+                    .attempt_chatgpt_browser_oauth_completion(
+                        &result.provider_id,
+                        &result.account_id,
+                        &session_id,
+                        timeout_ms,
+                    )
+                    .await
+                {
+                    Ok(Some(_complete)) => {
+                        if let Ok(connected) = self
+                            .oauth
+                            .wait(OAuthWaitInput {
+                                provider_id: Some(result.provider_id.clone()),
+                                account_id: Some(result.account_id.clone()),
+                                session_id: Some(session_id),
+                                timeout_ms: 1_000,
+                            })
+                            .await
+                        {
+                            result = connected;
+                        }
+                    }
+                    Ok(None) => {
+                        result.message = format!(
+                            "{} Browser login still pending; complete sign-in in the opened browser and run /auth wait {} {} again.",
+                            result.message, result.provider_id, result.session_id.clone().unwrap_or_default()
+                        );
+                    }
+                    Err(err) => {
+                        let trimmed = truncate_text(&err, 240);
+                        self.system
+                            .log_line(format!("chatgpt browser auth attempt failed: {trimmed}"))
+                            .await;
+                        result.message = format!(
+                            "{} Browser auth helper error: {}",
+                            result.message, trimmed
+                        );
+                    }
+                }
+            }
+        }
         self.system
             .log_line(format!(
                 "auth.oauth.wait provider={} account={} connected={}",
@@ -5865,6 +5946,66 @@ impl RpcDispatcher {
             ))
             .await;
         RpcDispatchOutcome::Handled(json!(result))
+    }
+
+    async fn attempt_chatgpt_browser_oauth_completion(
+        &self,
+        provider_id: &str,
+        account_id: &str,
+        session_id: &str,
+        timeout_ms: u64,
+    ) -> Result<Option<OAuthCompleteResult>, String> {
+        if !provider_id.eq_ignore_ascii_case("openai") {
+            return Ok(None);
+        }
+        let runtime = self.config.oauth_runtime_config().await;
+        let output = run_chatgpt_browser_auth_command(
+            &runtime,
+            provider_id,
+            account_id,
+            session_id,
+            timeout_ms,
+        )
+        .await?;
+        let normalized_status = normalize_optional_text(output.status.clone(), 64)
+            .unwrap_or_else(|| "error".to_owned())
+            .to_ascii_lowercase();
+        if !output.ok {
+            let details = output
+                .error
+                .or(output.message)
+                .unwrap_or_else(|| "browser auth helper returned ok=false".to_owned());
+            return Err(details);
+        }
+        if normalized_status == "pending" {
+            return Ok(None);
+        }
+        if normalized_status != "connected" {
+            return Err(format!(
+                "unexpected browser auth helper status: {}",
+                output.status.unwrap_or_else(|| "unknown".to_owned())
+            ));
+        }
+        let access_token = normalize_optional_text(output.access_token, 8_192)
+            .ok_or_else(|| "browser auth helper did not return access token".to_owned())?;
+        let source = normalize_optional_text(output.source, 128)
+            .unwrap_or_else(|| "chatgpt-browser-session".to_owned());
+        let account_id = normalize_optional_text(output.account_id, 128)
+            .unwrap_or_else(|| account_id.to_owned());
+        let complete = self
+            .oauth
+            .complete(OAuthCompleteInput {
+                session_id: session_id.to_owned(),
+                account_id: Some(account_id),
+                access_token: Some(access_token),
+                refresh_token: None,
+                token_type: Some("Bearer".to_owned()),
+                expires_at_ms: output.expires_at_ms,
+                scopes: vec!["chatgpt:web".to_owned()],
+                source: Some(source),
+            })
+            .await?;
+        Ok(Some(complete))
     }
 
     async fn handle_auth_oauth_complete(&self, req: &RpcRequestFrame) -> RpcDispatchOutcome {
@@ -10045,6 +10186,47 @@ impl RpcDispatcher {
         }
     }
 
+    async fn apply_oauth_provider_runtime(
+        &self,
+        provider_runtime: &mut ProviderRuntimeConfig,
+        auth_profile: Option<&str>,
+    ) {
+        if provider_runtime.api_key.is_some() {
+            return;
+        }
+        let provider_id = normalize_provider_id(&provider_runtime.provider);
+        if !provider_id.eq_ignore_ascii_case("openai") {
+            return;
+        }
+        let Some(credential) = self
+            .oauth
+            .credential_for_provider(&provider_id, auth_profile)
+            .await
+        else {
+            return;
+        };
+        let Some(access_token) =
+            normalize_optional_text(credential.access_token.clone(), 8_192)
+        else {
+            return;
+        };
+
+        provider_runtime.api_mode = "website-bridge".to_owned();
+        provider_runtime.base_url = "https://chatgpt.com".to_owned();
+        provider_runtime.allow_missing_api_key = true;
+        provider_runtime.website_url = Some("https://chatgpt.com".to_owned());
+        provider_runtime.api_key = Some(access_token);
+        provider_runtime.auth_header_name = "Authorization".to_owned();
+        provider_runtime.auth_header_prefix = "Bearer ".to_owned();
+        provider_runtime
+            .bridge_candidates
+            .push("https://chatgpt.com".to_owned());
+        provider_runtime
+            .bridge_candidates
+            .push("https://chat.openai.com".to_owned());
+        sort_and_dedup_strings(&mut provider_runtime.bridge_candidates);
+    }
+
     async fn execute_agent_runtime_turn(
         &self,
         input: AgentRuntimeTurnRequest,
@@ -10967,6 +11149,14 @@ impl ModelRegistry {
             ModelChoice {
                 id: "gpt-5.3".to_owned(),
                 name: "gpt-5.3".to_owned(),
+                provider: "openai".to_owned(),
+                context_window: Some(200_000),
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("openai"),
+            },
+            ModelChoice {
+                id: "gpt-5.2-thinking-extended".to_owned(),
+                name: "gpt-5.2-thinking-extended".to_owned(),
                 provider: "openai".to_owned(),
                 context_window: Some(200_000),
                 reasoning: Some(true),
@@ -13123,6 +13313,9 @@ struct WebLoginRuntimeConfig {
 #[derive(Debug, Clone, Default)]
 struct OAuthRuntimeConfig {
     store_path: Option<String>,
+    chatgpt_auth_command: Option<String>,
+    chatgpt_auth_args: Vec<String>,
+    chatgpt_profile_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -21373,6 +21566,26 @@ struct OAuthImportedCredential {
     scopes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+struct ChatGptBrowserAuthOutput {
+    ok: bool,
+    status: Option<String>,
+    #[serde(rename = "providerId", alias = "provider_id")]
+    provider_id: Option<String>,
+    #[serde(rename = "accountId", alias = "account_id")]
+    account_id: Option<String>,
+    #[serde(rename = "sessionId", alias = "session_id")]
+    session_id: Option<String>,
+    #[serde(rename = "accessToken", alias = "access_token")]
+    access_token: Option<String>,
+    #[serde(rename = "expiresAtMs", alias = "expires_at_ms")]
+    expires_at_ms: Option<u64>,
+    source: Option<String>,
+    message: Option<String>,
+    error: Option<String>,
+}
+
 impl OAuthRegistry {
     fn new() -> Self {
         Self {
@@ -21462,6 +21675,30 @@ impl OAuthRegistry {
             generated_at_ms: now_ms(),
             providers,
         }
+    }
+
+    async fn credential_for_provider(
+        &self,
+        provider_id: &str,
+        auth_profile: Option<&str>,
+    ) -> Option<OAuthCredential> {
+        let provider_id = normalize_oauth_provider_id(provider_id)?;
+        let account_hint = auth_profile.and_then(|profile_id| {
+            oauth_account_id_from_profile(&provider_id, profile_id)
+        });
+        let guard = self.state.lock().await;
+        if let Some(account_id) = account_hint {
+            let key = oauth_state_key(&provider_id, &account_id);
+            if let Some(credential) = guard.credentials.get(&key) {
+                return Some(credential.clone());
+            }
+        }
+        guard
+            .credentials
+            .values()
+            .filter(|credential| credential.provider_id.eq_ignore_ascii_case(&provider_id))
+            .max_by_key(|credential| credential.updated_at_ms)
+            .cloned()
     }
 
     async fn start(&self, input: OAuthStartInput) -> Result<OAuthStartResult, String> {
@@ -22088,6 +22325,120 @@ fn persist_oauth_store_disk_state(path: &str, state: &OAuthState) -> Result<(), 
             store_path.display()
         )
     })
+}
+
+async fn run_chatgpt_browser_auth_command(
+    runtime: &OAuthRuntimeConfig,
+    provider_id: &str,
+    account_id: &str,
+    session_id: &str,
+    timeout_ms: u64,
+) -> Result<ChatGptBrowserAuthOutput, String> {
+    let command = runtime
+        .chatgpt_auth_command
+        .clone()
+        .and_then(|value| normalize_optional_text(Some(value), 1_024))
+        .unwrap_or_else(|| CHATGPT_BROWSER_AUTH_DEFAULT_COMMAND.to_owned());
+    let mut args = runtime
+        .chatgpt_auth_args
+        .iter()
+        .filter_map(|value| normalize_optional_text(Some(value.clone()), 512))
+        .collect::<Vec<_>>();
+    if args.is_empty() {
+        args.push(CHATGPT_BROWSER_AUTH_SCRIPT_PATH.to_owned());
+    }
+    let profile_dir = runtime
+        .chatgpt_profile_dir
+        .clone()
+        .and_then(|value| normalize_optional_text(Some(value), 2_048))
+        .unwrap_or_else(|| CHATGPT_BROWSER_AUTH_DEFAULT_PROFILE_DIR.to_owned());
+
+    args.push("--provider".to_owned());
+    args.push(provider_id.to_owned());
+    args.push("--account-id".to_owned());
+    args.push(account_id.to_owned());
+    args.push("--session-id".to_owned());
+    args.push(session_id.to_owned());
+    args.push("--profile-dir".to_owned());
+    args.push(profile_dir);
+    args.push("--timeout-ms".to_owned());
+    args.push(
+        timeout_ms
+            .clamp(5_000, CHATGPT_BROWSER_AUTH_DEFAULT_TIMEOUT_MS)
+            .to_string(),
+    );
+
+    let mut process = TokioCommand::new(&command);
+    process
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null())
+        .env("OPENCLAW_OAUTH_PROVIDER", provider_id)
+        .env("OPENCLAW_OAUTH_ACCOUNT_ID", account_id)
+        .env("OPENCLAW_OAUTH_SESSION_ID", session_id);
+    let child = process
+        .spawn()
+        .map_err(|err| format!("failed spawning chatgpt browser auth helper {}: {err}", command))?;
+
+    let timeout = Duration::from_millis(timeout_ms.clamp(5_000, CHATGPT_BROWSER_AUTH_DEFAULT_TIMEOUT_MS));
+    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(err)) => {
+            return Err(format!(
+                "chatgpt browser auth helper failed while waiting for output: {err}"
+            ));
+        }
+        Err(_) => {
+            return Err(format!(
+                "chatgpt browser auth helper timed out after {}ms",
+                timeout.as_millis()
+            ));
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if !output.status.success() {
+        return Err(format!(
+            "chatgpt browser auth helper exited with code {:?}: {}",
+            output.status.code(),
+            if stderr.is_empty() {
+                truncate_text(&stdout, 320)
+            } else {
+                truncate_text(&stderr, 320)
+            }
+        ));
+    }
+    parse_chatgpt_browser_auth_output(&stdout).map_err(|err| {
+        if stderr.is_empty() {
+            err
+        } else {
+            format!("{err}; stderr={}", truncate_text(&stderr, 240))
+        }
+    })
+}
+
+fn parse_chatgpt_browser_auth_output(stdout: &str) -> Result<ChatGptBrowserAuthOutput, String> {
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return Err("chatgpt browser auth helper returned empty stdout".to_owned());
+    }
+    if let Ok(parsed) = serde_json::from_str::<ChatGptBrowserAuthOutput>(trimmed) {
+        return Ok(parsed);
+    }
+    for line in trimmed.lines().rev() {
+        let candidate = line.trim();
+        if candidate.is_empty() {
+            continue;
+        }
+        if let Ok(parsed) = serde_json::from_str::<ChatGptBrowserAuthOutput>(candidate) {
+            return Ok(parsed);
+        }
+    }
+    Err(format!(
+        "chatgpt browser auth helper returned invalid JSON: {}",
+        truncate_text(trimmed, 320)
+    ))
 }
 
 fn resolve_home_path(home_override: Option<&str>) -> Option<PathBuf> {
@@ -22828,6 +23179,16 @@ fn oauth_default_profile_id(provider: &str, account_id: &str) -> String {
         "zhipuai" => "zhipuai:default".to_owned(),
         _ => format!("{provider}:{account_id}"),
     }
+}
+
+fn oauth_account_id_from_profile(provider_id: &str, profile_id: &str) -> Option<String> {
+    let profile_id = normalize_optional_text(Some(profile_id.to_owned()), 256)?;
+    let (profile_provider, account_id) = profile_id.split_once(':')?;
+    let normalized_profile_provider = normalize_oauth_provider_id(profile_provider)?;
+    if !normalized_profile_provider.eq_ignore_ascii_case(provider_id) {
+        return None;
+    }
+    normalize_optional_text(Some(account_id.to_owned()), 128)
 }
 
 fn oauth_token_preview(token: Option<&String>) -> Option<String> {
@@ -24195,6 +24556,31 @@ fn oauth_runtime_config_from_config(config: &Value) -> OAuthRuntimeConfig {
         .and_then(Value::as_object)
         .and_then(|auth| auth.get("oauth").and_then(Value::as_object))
         .or_else(|| config.get("oauth").and_then(Value::as_object));
+    let chatgpt_browser = auth_oauth
+        .and_then(|obj| {
+            read_config_object(
+                obj,
+                &[
+                    "chatgptBrowser",
+                    "chatgpt_browser",
+                    "openaiBrowser",
+                    "openai_browser",
+                ],
+            )
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_object(
+                    obj,
+                    &[
+                        "chatgptBrowser",
+                        "chatgpt_browser",
+                        "openaiBrowser",
+                        "openai_browser",
+                    ],
+                )
+            })
+        });
     let store_path = auth_oauth
         .and_then(|obj| {
             read_config_string(
@@ -24208,7 +24594,125 @@ fn oauth_runtime_config_from_config(config: &Value) -> OAuthRuntimeConfig {
                 read_config_string(obj, &["oauthStorePath", "oauth_store_path"], 2048)
             })
         });
-    OAuthRuntimeConfig { store_path }
+    let chatgpt_auth_command = chatgpt_browser
+        .and_then(|obj| {
+            read_config_string(
+                obj,
+                &["command", "authCommand", "auth_command", "loginCommand"],
+                1_024,
+            )
+        })
+        .or_else(|| {
+            auth_oauth.and_then(|obj| {
+                read_config_string(
+                    obj,
+                    &[
+                        "chatgptAuthCommand",
+                        "chatgpt_auth_command",
+                        "openaiAuthCommand",
+                        "openai_auth_command",
+                    ],
+                    1_024,
+                )
+            })
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string(
+                    obj,
+                    &[
+                        "chatgptAuthCommand",
+                        "chatgpt_auth_command",
+                        "openaiAuthCommand",
+                        "openai_auth_command",
+                    ],
+                    1_024,
+                )
+            })
+        });
+    let chatgpt_auth_args = chatgpt_browser
+        .and_then(|obj| read_config_string_list(obj, &["args", "authArgs", "auth_args"], 64, 512))
+        .or_else(|| {
+            auth_oauth.and_then(|obj| {
+                read_config_string_list(
+                    obj,
+                    &[
+                        "chatgptAuthArgs",
+                        "chatgpt_auth_args",
+                        "openaiAuthArgs",
+                        "openai_auth_args",
+                    ],
+                    64,
+                    512,
+                )
+            })
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string_list(
+                    obj,
+                    &[
+                        "chatgptAuthArgs",
+                        "chatgpt_auth_args",
+                        "openaiAuthArgs",
+                        "openai_auth_args",
+                    ],
+                    64,
+                    512,
+                )
+            })
+        })
+        .unwrap_or_default();
+    let chatgpt_profile_dir = chatgpt_browser
+        .and_then(|obj| {
+            read_config_string(
+                obj,
+                &[
+                    "profileDir",
+                    "profile_dir",
+                    "userDataDir",
+                    "user_data_dir",
+                    "browserProfileDir",
+                    "browser_profile_dir",
+                ],
+                2_048,
+            )
+        })
+        .or_else(|| {
+            auth_oauth.and_then(|obj| {
+                read_config_string(
+                    obj,
+                    &[
+                        "chatgptProfileDir",
+                        "chatgpt_profile_dir",
+                        "openaiProfileDir",
+                        "openai_profile_dir",
+                    ],
+                    2_048,
+                )
+            })
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string(
+                    obj,
+                    &[
+                        "chatgptProfileDir",
+                        "chatgpt_profile_dir",
+                        "openaiProfileDir",
+                        "openai_profile_dir",
+                    ],
+                    2_048,
+                )
+            })
+        });
+
+    OAuthRuntimeConfig {
+        store_path,
+        chatgpt_auth_command,
+        chatgpt_auth_args,
+        chatgpt_profile_dir,
+    }
 }
 
 fn wizard_runtime_config_from_config(config: &Value) -> WizardRuntimeConfig {
@@ -31688,6 +32192,10 @@ mod tests {
                 && entry.id.eq_ignore_ascii_case("qwen3.5-397b-a17b")
         }));
         assert!(models.iter().any(|entry| {
+            entry.provider.eq_ignore_ascii_case("openai")
+                && entry.id.eq_ignore_ascii_case("gpt-5.2-thinking-extended")
+        }));
+        assert!(models.iter().any(|entry| {
             entry.provider.eq_ignore_ascii_case("inception")
                 && entry.id.eq_ignore_ascii_case("mercury-2")
         }));
@@ -32317,6 +32825,110 @@ mod tests {
             Some("zhipuai".to_owned())
         );
         assert_eq!(super::normalize_oauth_provider_id("unknown-oauth"), None);
+    }
+
+    #[test]
+    fn parse_chatgpt_browser_auth_output_accepts_last_json_line() {
+        let stdout = "debug-line\n{\"ok\":true,\"status\":\"connected\",\"accessToken\":\"token-123\",\"source\":\"chatgpt-browser-playwright\"}";
+        let parsed =
+            super::parse_chatgpt_browser_auth_output(stdout).expect("parsed helper output");
+        assert!(parsed.ok);
+        assert_eq!(parsed.status.as_deref(), Some("connected"));
+        assert_eq!(parsed.access_token.as_deref(), Some("token-123"));
+    }
+
+    #[test]
+    fn oauth_runtime_config_reads_chatgpt_browser_settings() {
+        let config = json!({
+            "auth": {
+                "oauth": {
+                    "storePath": "C:/tmp/oauth-state.json",
+                    "chatgptBrowser": {
+                        "command": "node",
+                        "args": ["scripts/chatgpt-browser-auth.mjs", "--engine", "puppeteer"],
+                        "profileDir": "C:/tmp/chatgpt-profile"
+                    }
+                }
+            }
+        });
+        let runtime = super::oauth_runtime_config_from_config(&config);
+        assert_eq!(runtime.store_path.as_deref(), Some("C:/tmp/oauth-state.json"));
+        assert_eq!(runtime.chatgpt_auth_command.as_deref(), Some("node"));
+        assert_eq!(
+            runtime.chatgpt_auth_args,
+            vec![
+                "scripts/chatgpt-browser-auth.mjs".to_owned(),
+                "--engine".to_owned(),
+                "puppeteer".to_owned()
+            ]
+        );
+        assert_eq!(
+            runtime.chatgpt_profile_dir.as_deref(),
+            Some("C:/tmp/chatgpt-profile")
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_registry_credential_for_provider_prefers_profile_account() {
+        let registry = super::OAuthRegistry::new();
+        let default_session = registry
+            .start(super::OAuthStartInput {
+                provider_id: "openai".to_owned(),
+                account_id: "default".to_owned(),
+                timeout_ms: 120_000,
+                force: true,
+            })
+            .await
+            .expect("default session");
+        registry
+            .complete(super::OAuthCompleteInput {
+                session_id: default_session.session_id.clone(),
+                account_id: Some("default".to_owned()),
+                access_token: Some("token-default".to_owned()),
+                refresh_token: None,
+                token_type: Some("Bearer".to_owned()),
+                expires_at_ms: None,
+                scopes: vec![],
+                source: Some("test".to_owned()),
+            })
+            .await
+            .expect("complete default");
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let backup_session = registry
+            .start(super::OAuthStartInput {
+                provider_id: "openai".to_owned(),
+                account_id: "backup".to_owned(),
+                timeout_ms: 120_000,
+                force: true,
+            })
+            .await
+            .expect("backup session");
+        registry
+            .complete(super::OAuthCompleteInput {
+                session_id: backup_session.session_id.clone(),
+                account_id: Some("backup".to_owned()),
+                access_token: Some("token-backup".to_owned()),
+                refresh_token: None,
+                token_type: Some("Bearer".to_owned()),
+                expires_at_ms: None,
+                scopes: vec![],
+                source: Some("test".to_owned()),
+            })
+            .await
+            .expect("complete backup");
+
+        let selected = registry
+            .credential_for_provider("openai", Some("openai:backup"))
+            .await
+            .expect("selected backup credential");
+        assert_eq!(selected.account_id, "backup");
+        assert_eq!(selected.access_token.as_deref(), Some("token-backup"));
+
+        let fallback = registry
+            .credential_for_provider("openai", Some("openai:missing"))
+            .await
+            .expect("fallback credential");
+        assert_eq!(fallback.account_id, "backup");
     }
 
     #[tokio::test]
