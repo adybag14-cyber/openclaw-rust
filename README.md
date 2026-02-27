@@ -266,6 +266,38 @@ Kimi is supported as:
 
 Guest/no-login website execution is not assumed for Kimi in runtime defaults; configure authenticated bridge/API flows.
 
+### ChatGPT Browser Session Bridge (Playwright + Puppeteer)
+
+For ChatGPT browser-session usage (OAuth login, no OpenAI API key), run the local bridge:
+
+```bash
+node scripts/chatgpt-browser-bridge.mjs
+```
+
+Then complete OAuth in Telegram:
+
+```text
+/auth start chatgpt
+/auth wait chatgpt default
+```
+
+When an OpenAI OAuth browser credential is present, runtime bridge candidates include:
+
+- `http://127.0.0.1:43010/v1`
+- `http://127.0.0.1:43010`
+- `https://chatgpt.com`
+- `https://chat.openai.com`
+
+Browser-session model aliases supported for OpenAI provider selection include:
+
+- `gpt-5.2-pro`
+- `gpt-5.2-thinking`
+- `gpt-5.2-instant`
+- `gpt-5.2-auto`
+- `gpt-5.2`
+- `gpt-5.1`
+- `gpt-5-mini`
+
 Bridge-ready provider aliases are normalized for:
 
 - Local/self-hosted: `ollama`, `vllm`, `litellm`, `lmstudio`, `localai`, `llamacpp`, `tgi`, `gpt4all`, `koboldcpp`, `oobabooga`

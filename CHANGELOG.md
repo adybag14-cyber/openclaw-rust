@@ -5,6 +5,45 @@
 ### Highlights
 - No unreleased changes.
 
+## v1.7.10 - 2026-02-27
+
+### Highlights
+- Added a local ChatGPT browser-session bridge server for OpenAI-compatible inference:
+  - New script: `scripts/chatgpt-browser-bridge.mjs`.
+  - OpenAI-compatible HTTP surface: `/v1/chat/completions` + `/health`.
+  - Playwright-first execution with Puppeteer fallback.
+  - Auto-detects installed browser automation dependencies from common local paths.
+- Added browser-session model alias support for current ChatGPT web slugs:
+  - Added default catalog aliases: `gpt-5.2-pro`, `gpt-5.2-thinking`, `gpt-5.2-instant`, `gpt-5.2-auto`, `gpt-5.2`, `gpt-5.1`, `gpt-5-mini`.
+  - Added ChatGPT bridge model normalization for `gpt-5-2`, `gpt-5-1`, `gpt-5-mini` fallback candidate routing.
+- Updated OAuth OpenAI runtime binding to include local browser-bridge loopback candidates:
+  - `http://127.0.0.1:43010/v1`
+  - `http://127.0.0.1:43010`
+  - `https://chatgpt.com`
+  - `https://chat.openai.com`
+- Updated docs/config examples for browser-session setup:
+  - `README.md`
+  - `openclaw-rs.example.toml`
+- Hardened standalone control HTTP coverage by adding retry handling in the GET test helper used by gateway control-plane integration tests.
+
+### Validation
+- `cargo +1.83.0-x86_64-pc-windows-gnu fmt --all -- --check`
+- `cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings`
+- `cargo +1.83.0-x86_64-pc-windows-gnu test`
+- `cargo +1.83.0-x86_64-pc-windows-gnu build --release`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets --features sqlite-state -- -D warnings"`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu build --release --features sqlite-state"`
+- `./scripts/parity/method-surface-diff.ps1 -Surface both -UpstreamRepoPath ..\openclaw`
+- `./scripts/parity/build-scoreboard.ps1 -IncludeGeneratedAt`
+- `./scripts/parity/run-cp0-gate.ps1 -UpstreamRepoPath ..\openclaw`
+- `./scripts/run-docker-parity-smoke.ps1`
+- `wsl -d Ubuntu-20.04 -- bash -lc 'source $HOME/.cargo/env && cd /mnt/c/Users/Ady/Documents/openclaw-rust && CARGO_TARGET_DIR=target-linux-ubuntu20 cargo +1.83.0 build --release'`
+- `node --check scripts/chatgpt-browser-bridge.mjs`
+- Browser bridge HTTP smoke (`gpt-5.2-pro` / `gpt-5.1`) with ChatGPT authenticated profile:
+  - `POST /v1/chat/completions` => `HTTP 200`
+  - Assistant text returned and verified against exact expected token.
+
 ## v1.7.9 - 2026-02-27
 
 ### Highlights

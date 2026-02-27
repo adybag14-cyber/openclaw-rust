@@ -379,9 +379,7 @@ fn matches_chatgpt_web_bridge(request: &WebsiteBridgeRequest<'_>) -> bool {
     if provider != "openai" && !provider.contains("chatgpt") {
         return false;
     }
-    request
-        .website_url
-        .is_some_and(chatgpt_url_hint_matches)
+    request.website_url.is_some_and(chatgpt_url_hint_matches)
         || request
             .candidate_base_urls
             .iter()
@@ -1640,9 +1638,15 @@ fn build_chatgpt_model_candidates(model: &str) -> Vec<String> {
                 out.push(bare_model);
             }
         }
+        if let Some(normalized_browser_model) = normalize_chatgpt_browser_model_id(&requested) {
+            out.push(normalized_browser_model);
+        }
     }
-    out.push("gpt-5.2-thinking-extended".to_owned());
+    out.push("gpt-5-2".to_owned());
+    out.push("gpt-5-1".to_owned());
     out.push("gpt-5".to_owned());
+    out.push("gpt-5-mini".to_owned());
+    out.push("gpt-5.2-thinking-extended".to_owned());
     out.push("gpt-4o".to_owned());
 
     let mut dedup = Vec::with_capacity(out.len());
@@ -1656,6 +1660,36 @@ fn build_chatgpt_model_candidates(model: &str) -> Vec<String> {
         dedup.push(model_id);
     }
     dedup
+}
+
+fn normalize_chatgpt_browser_model_id(model: &str) -> Option<String> {
+    let requested = normalize_optional_text(model, 256)?;
+    let normalized = requested
+        .split('/')
+        .next_back()
+        .unwrap_or(requested.as_str())
+        .trim()
+        .to_ascii_lowercase()
+        .replace('_', "-");
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.contains("gpt-5.2") || normalized.starts_with("gpt-5-2") {
+        return Some("gpt-5-2".to_owned());
+    }
+    if normalized.contains("gpt-5.1") || normalized.starts_with("gpt-5-1") {
+        return Some("gpt-5-1".to_owned());
+    }
+    if normalized.contains("gpt-5-mini") || normalized.contains("gpt-5mini") {
+        return Some("gpt-5-mini".to_owned());
+    }
+    if normalized.starts_with("gpt-5") {
+        return Some("gpt-5".to_owned());
+    }
+    if normalized.starts_with("gpt-4o") {
+        return Some("gpt-4o".to_owned());
+    }
+    Some(requested)
 }
 
 fn parse_chatgpt_response_to_openai_body(raw: &str) -> Option<String> {
@@ -1682,7 +1716,10 @@ fn parse_chatgpt_response_to_openai_body(raw: &str) -> Option<String> {
 }
 
 fn extract_chatgpt_assistant_content_from_value(parsed: &Value) -> Option<String> {
-    if let Some(parts) = parsed.pointer("/message/content/parts").and_then(Value::as_array) {
+    if let Some(parts) = parsed
+        .pointer("/message/content/parts")
+        .and_then(Value::as_array)
+    {
         let text = parts
             .iter()
             .filter_map(Value::as_str)
@@ -2705,9 +2742,40 @@ data: [DONE]"#;
         );
         assert!(candidates
             .iter()
+            .any(|item| item.eq_ignore_ascii_case("gpt-5-2")));
+        assert!(candidates
+            .iter()
             .any(|item| item.eq_ignore_ascii_case("gpt-5.2-thinking-extended")));
-        assert!(candidates.iter().any(|item| item.eq_ignore_ascii_case("gpt-5")));
-        assert!(candidates.iter().any(|item| item.eq_ignore_ascii_case("gpt-4o")));
+        assert!(candidates
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case("gpt-5-1")));
+        assert!(candidates
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case("gpt-5")));
+        assert!(candidates
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case("gpt-5-mini")));
+        assert!(candidates
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case("gpt-4o")));
+    }
+
+    #[test]
+    fn chatgpt_model_candidates_normalize_browser_mode_aliases() {
+        let candidates = build_chatgpt_model_candidates("openai/gpt-5.2-thinking");
+        assert!(candidates
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case("gpt-5-2")));
+
+        let candidates = build_chatgpt_model_candidates("gpt-5-mini");
+        assert!(candidates
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case("gpt-5-mini")));
+
+        let candidates = build_chatgpt_model_candidates("gpt-5.1-pro");
+        assert!(candidates
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case("gpt-5-1")));
     }
 
     #[tokio::test]

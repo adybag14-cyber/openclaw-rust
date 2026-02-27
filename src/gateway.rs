@@ -5931,10 +5931,8 @@ impl RpcDispatcher {
                         self.system
                             .log_line(format!("chatgpt browser auth attempt failed: {trimmed}"))
                             .await;
-                        result.message = format!(
-                            "{} Browser auth helper error: {}",
-                            result.message, trimmed
-                        );
+                        result.message =
+                            format!("{} Browser auth helper error: {}", result.message, trimmed);
                     }
                 }
             }
@@ -10205,8 +10203,7 @@ impl RpcDispatcher {
         else {
             return;
         };
-        let Some(access_token) =
-            normalize_optional_text(credential.access_token.clone(), 8_192)
+        let Some(access_token) = normalize_optional_text(credential.access_token.clone(), 8_192)
         else {
             return;
         };
@@ -10218,6 +10215,12 @@ impl RpcDispatcher {
         provider_runtime.api_key = Some(access_token);
         provider_runtime.auth_header_name = "Authorization".to_owned();
         provider_runtime.auth_header_prefix = "Bearer ".to_owned();
+        provider_runtime
+            .bridge_candidates
+            .push("http://127.0.0.1:43010/v1".to_owned());
+        provider_runtime
+            .bridge_candidates
+            .push("http://127.0.0.1:43010".to_owned());
         provider_runtime
             .bridge_candidates
             .push("https://chatgpt.com".to_owned());
@@ -11160,6 +11163,62 @@ impl ModelRegistry {
                 provider: "openai".to_owned(),
                 context_window: Some(200_000),
                 reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("openai"),
+            },
+            ModelChoice {
+                id: "gpt-5.2-auto".to_owned(),
+                name: "gpt-5.2-auto".to_owned(),
+                provider: "openai".to_owned(),
+                context_window: Some(200_000),
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("openai"),
+            },
+            ModelChoice {
+                id: "gpt-5.2-instant".to_owned(),
+                name: "gpt-5.2-instant".to_owned(),
+                provider: "openai".to_owned(),
+                context_window: Some(200_000),
+                reasoning: Some(false),
+                fallback_providers: model_provider_failover_chain("openai"),
+            },
+            ModelChoice {
+                id: "gpt-5.2-thinking".to_owned(),
+                name: "gpt-5.2-thinking".to_owned(),
+                provider: "openai".to_owned(),
+                context_window: Some(200_000),
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("openai"),
+            },
+            ModelChoice {
+                id: "gpt-5.2-pro".to_owned(),
+                name: "gpt-5.2-pro".to_owned(),
+                provider: "openai".to_owned(),
+                context_window: Some(200_000),
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("openai"),
+            },
+            ModelChoice {
+                id: "gpt-5.2".to_owned(),
+                name: "gpt-5.2".to_owned(),
+                provider: "openai".to_owned(),
+                context_window: Some(200_000),
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("openai"),
+            },
+            ModelChoice {
+                id: "gpt-5.1".to_owned(),
+                name: "gpt-5.1".to_owned(),
+                provider: "openai".to_owned(),
+                context_window: Some(160_000),
+                reasoning: Some(true),
+                fallback_providers: model_provider_failover_chain("openai"),
+            },
+            ModelChoice {
+                id: "gpt-5-mini".to_owned(),
+                name: "gpt-5-mini".to_owned(),
+                provider: "openai".to_owned(),
+                context_window: Some(128_000),
+                reasoning: Some(false),
                 fallback_providers: model_provider_failover_chain("openai"),
             },
             ModelChoice {
@@ -21683,9 +21742,8 @@ impl OAuthRegistry {
         auth_profile: Option<&str>,
     ) -> Option<OAuthCredential> {
         let provider_id = normalize_oauth_provider_id(provider_id)?;
-        let account_hint = auth_profile.and_then(|profile_id| {
-            oauth_account_id_from_profile(&provider_id, profile_id)
-        });
+        let account_hint = auth_profile
+            .and_then(|profile_id| oauth_account_id_from_profile(&provider_id, profile_id));
         let guard = self.state.lock().await;
         if let Some(account_id) = account_hint {
             let key = oauth_state_key(&provider_id, &account_id);
@@ -22377,11 +22435,15 @@ async fn run_chatgpt_browser_auth_command(
         .env("OPENCLAW_OAUTH_PROVIDER", provider_id)
         .env("OPENCLAW_OAUTH_ACCOUNT_ID", account_id)
         .env("OPENCLAW_OAUTH_SESSION_ID", session_id);
-    let child = process
-        .spawn()
-        .map_err(|err| format!("failed spawning chatgpt browser auth helper {}: {err}", command))?;
+    let child = process.spawn().map_err(|err| {
+        format!(
+            "failed spawning chatgpt browser auth helper {}: {err}",
+            command
+        )
+    })?;
 
-    let timeout = Duration::from_millis(timeout_ms.clamp(5_000, CHATGPT_BROWSER_AUTH_DEFAULT_TIMEOUT_MS));
+    let timeout =
+        Duration::from_millis(timeout_ms.clamp(5_000, CHATGPT_BROWSER_AUTH_DEFAULT_TIMEOUT_MS));
     let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(Ok(output)) => output,
         Ok(Err(err)) => {
@@ -32196,6 +32258,18 @@ mod tests {
                 && entry.id.eq_ignore_ascii_case("gpt-5.2-thinking-extended")
         }));
         assert!(models.iter().any(|entry| {
+            entry.provider.eq_ignore_ascii_case("openai")
+                && entry.id.eq_ignore_ascii_case("gpt-5.2-pro")
+        }));
+        assert!(models.iter().any(|entry| {
+            entry.provider.eq_ignore_ascii_case("openai")
+                && entry.id.eq_ignore_ascii_case("gpt-5.1")
+        }));
+        assert!(models.iter().any(|entry| {
+            entry.provider.eq_ignore_ascii_case("openai")
+                && entry.id.eq_ignore_ascii_case("gpt-5-mini")
+        }));
+        assert!(models.iter().any(|entry| {
             entry.provider.eq_ignore_ascii_case("inception")
                 && entry.id.eq_ignore_ascii_case("mercury-2")
         }));
@@ -32852,7 +32926,10 @@ mod tests {
             }
         });
         let runtime = super::oauth_runtime_config_from_config(&config);
-        assert_eq!(runtime.store_path.as_deref(), Some("C:/tmp/oauth-state.json"));
+        assert_eq!(
+            runtime.store_path.as_deref(),
+            Some("C:/tmp/oauth-state.json")
+        );
         assert_eq!(runtime.chatgpt_auth_command.as_deref(), Some("node"));
         assert_eq!(
             runtime.chatgpt_auth_args,

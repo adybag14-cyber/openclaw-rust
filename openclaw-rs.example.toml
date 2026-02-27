@@ -150,3 +150,49 @@ max_parallel = 4
 # Kimi note:
 #   `kimi-coding` can be configured as an authenticated OpenAI-compatible provider
 #   (and OAuth provider), but guest/no-login website execution is not assumed.
+
+# ChatGPT browser-session bridge (no API key):
+#   1) Start local bridge server:
+#        node scripts/chatgpt-browser-bridge.mjs
+#   2) Complete OAuth handoff in Telegram:
+#        /auth start chatgpt
+#        /auth wait chatgpt default
+#
+# [models.providers.openai]
+# api = "website-openai-bridge"
+# bridgeBaseUrls = [
+#   "http://127.0.0.1:43010/v1",
+#   "http://127.0.0.1:43010",
+#   "https://chatgpt.com",
+#   "https://chat.openai.com"
+# ]
+# allowUnauthenticated = true
+#
+# [[models.providers.openai.models]]
+# id = "gpt-5.2-pro"
+# name = "GPT-5.2 Pro (Browser Session)"
+#
+# [[models.providers.openai.models]]
+# id = "gpt-5.2-thinking"
+# name = "GPT-5.2 Thinking (Browser Session)"
+#
+# [[models.providers.openai.models]]
+# id = "gpt-5.2-instant"
+# name = "GPT-5.2 Instant (Browser Session)"
+#
+# [[models.providers.openai.models]]
+# id = "gpt-5.2-auto"
+# name = "GPT-5.2 Auto (Browser Session)"
+#
+# [[models.providers.openai.models]]
+# id = "gpt-5.1"
+# name = "GPT-5.1 (Browser Session)"
+#
+# [[models.providers.openai.models]]
+# id = "gpt-5-mini"
+# name = "GPT-5-mini (Browser Session)"
+#
+# [auth.oauth.chatgptBrowser]
+# command = "node"
+# args = ["scripts/chatgpt-browser-auth.mjs", "--engine", "playwright"]
+# profileDir = ".openclaw-rs/chatgpt-browser-profile"
