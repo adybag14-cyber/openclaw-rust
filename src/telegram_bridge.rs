@@ -20,6 +20,7 @@ const TELEGRAM_HTTP_TIMEOUT_SECS: u64 = 30;
 const BRIDGE_RETRY_DELAY_SECS: u64 = 2;
 const BRIDGE_IDLE_DELAY_SECS: u64 = 5;
 const BRIDGE_STATUS_REFRESH_SECS: u64 = 60;
+const AGENT_RPC_TIMEOUT_MS: u64 = 180_000;
 const AGENT_WAIT_TIMEOUT_MS: u64 = 70_000;
 const TELEGRAM_REPLY_MAX_CHARS: usize = 3_500;
 const TELEGRAM_MODEL_HELP_MAX_MODELS: usize = 80;
@@ -1702,7 +1703,7 @@ impl TelegramBridge {
             .gateway_rpc_call(
                 "agent",
                 agent_request,
-                Duration::from_secs(30),
+                Duration::from_millis(AGENT_RPC_TIMEOUT_MS),
                 &["operator.admin"],
             )
             .await?;
@@ -1964,7 +1965,7 @@ mod tests {
         allows_group_message, build_session_key, derive_gateway_ws_url, extract_assistant_reply,
         extract_model_candidates, extract_telegram_settings, is_allowed_by_dm_policy,
         normalize_provider_alias, parse_telegram_control_command, resolve_model_selection,
-        CatalogModel, TelegramControlCommand,
+        CatalogModel, TelegramControlCommand, AGENT_RPC_TIMEOUT_MS, AGENT_WAIT_TIMEOUT_MS,
     };
     use crate::config::Config;
     use serde_json::json;
@@ -2183,5 +2184,10 @@ mod tests {
         assert_eq!(provider, "openrouter");
         assert_eq!(model, "qwen/qwen3-coder:free");
         assert!(from_catalog);
+    }
+
+    #[test]
+    fn agent_rpc_timeout_budget_exceeds_agent_wait_timeout() {
+        assert!(AGENT_RPC_TIMEOUT_MS > AGENT_WAIT_TIMEOUT_MS);
     }
 }
