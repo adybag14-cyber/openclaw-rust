@@ -196,3 +196,7 @@ max_parallel = 4
 # command = "node"
 # args = ["scripts/chatgpt-browser-auth.mjs", "--engine", "playwright"]
 # profileDir = ".openclaw-rs/chatgpt-browser-profile"
+# bridgeBaseUrls = [
+#   "http://127.0.0.1:43010/v1",
+#   "http://127.0.0.1:43010"
+# ]

@@ -28,10 +28,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, Result};
 use clap::{Args, Parser, Subcommand};
 use config::{Config, GatewayAuthMode, ToolRuntimeWasmMode};
+use futures_util::{SinkExt, StreamExt};
 use gateway::{RpcDispatchOutcome, RpcDispatcher};
 use protocol::RpcRequestFrame;
 use serde::Serialize;
 use serde_json::{json, Value};
+use tokio::time::Duration;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Clone, Parser)]
@@ -172,6 +175,9 @@ struct GatewayCallArgs {
     /// JSON payload for params.
     #[arg(long, default_value = "{}")]
     params: String,
+    /// Route the call through the configured live gateway websocket service.
+    #[arg(long)]
+    live_service: bool,
     /// Emit output as JSON.
     #[arg(long)]
     json: bool,
@@ -524,14 +530,18 @@ async fn run_gateway_command(cli: Cli, args: GatewayArgs) -> Result<()> {
             Ok(())
         }
         GatewaySubcommand::Call(call) => {
-            let dispatcher = RpcDispatcher::new();
             let method = call.method.trim();
             if method.is_empty() {
                 return Err(anyhow!("gateway call requires --method"));
             }
             let params: Value = serde_json::from_str(&call.params)
                 .map_err(|err| anyhow!("invalid --params JSON: {err}"))?;
-            let payload = dispatch_rpc(&dispatcher, method, params).await?;
+            let payload = if call.live_service {
+                dispatch_gateway_rpc_live(&cli, method, params).await?
+            } else {
+                let dispatcher = RpcDispatcher::new();
+                dispatch_rpc(&dispatcher, method, params).await?
+            };
             if args.json || call.json {
                 print_json_value(&payload);
             } else {
@@ -540,6 +550,188 @@ async fn run_gateway_command(cli: Cli, args: GatewayArgs) -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+type CliGatewayWsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn dispatch_gateway_rpc_live(cli: &Cli, method: &str, params: Value) -> Result<Value> {
+    let mut cfg = Config::load(&cli.config)?;
+    cfg.apply_cli_overrides(
+        cli.gateway_url.as_deref(),
+        cli.gateway_token.as_deref(),
+        cli.audit_only,
+    );
+    let gateway_url = cfg.gateway.url.trim();
+    if gateway_url.is_empty() {
+        return Err(anyhow!("gateway.url is empty"));
+    }
+
+    let (mut ws, _) = connect_async(gateway_url)
+        .await
+        .map_err(|err| anyhow!("gateway websocket connect failed: {err}"))?;
+
+    let handshake_timeout = Duration::from_millis(cfg.gateway.server.handshake_timeout_ms.max(500));
+    let challenge =
+        gateway_ws_read_next_json(&mut ws, handshake_timeout, "connect.challenge").await?;
+    if challenge.get("event").and_then(Value::as_str) != Some("connect.challenge") {
+        return Err(anyhow!(
+            "invalid gateway handshake: expected connect.challenge event"
+        ));
+    }
+
+    let connect_id = next_cli_request_id("connect");
+    let mut connect_request = json!({
+        "type": "req",
+        "id": connect_id,
+        "method": "connect",
+        "params": {
+            "role": "operator",
+            "scopes": ["operator.admin"],
+            "client": {
+                "id": "openclaw-agent-rs.cli",
+                "version": env!("CARGO_PKG_VERSION"),
+                "mode": "cli"
+            }
+        }
+    });
+    if let Some(token) = cfg
+        .gateway
+        .token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        connect_request["params"]["auth"]["token"] = Value::String(token.to_owned());
+    }
+    if let Some(password) = cfg
+        .gateway
+        .password
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        connect_request["params"]["auth"]["password"] = Value::String(password.to_owned());
+    }
+    ws.send(Message::Text(connect_request.to_string()))
+        .await
+        .map_err(|err| anyhow!("gateway connect request send failed: {err}"))?;
+    let connect_response =
+        gateway_ws_wait_for_response(&mut ws, &connect_id, handshake_timeout).await?;
+    if !connect_response
+        .get("ok")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let code = connect_response
+            .pointer("/error/code")
+            .and_then(Value::as_i64)
+            .unwrap_or(-1);
+        let message = connect_response
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or("gateway connect rejected");
+        return Err(anyhow!(
+            "live gateway connect failed: code={code} message={message}"
+        ));
+    }
+
+    let request_id = next_cli_request_id(method);
+    let request = json!({
+        "type": "req",
+        "id": request_id,
+        "method": method,
+        "params": params
+    });
+    ws.send(Message::Text(request.to_string()))
+        .await
+        .map_err(|err| anyhow!("gateway request send failed ({method}): {err}"))?;
+    let response =
+        gateway_ws_wait_for_response(&mut ws, &request_id, Duration::from_secs(30)).await?;
+    if !response.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        let code = response
+            .pointer("/error/code")
+            .and_then(Value::as_i64)
+            .unwrap_or(-1);
+        let message = response
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or("gateway request failed");
+        if let Some(details) = response.pointer("/error/details") {
+            return Err(anyhow!(
+                "live gateway rpc {method} failed: code={code} message={message} details={details}"
+            ));
+        }
+        return Err(anyhow!(
+            "live gateway rpc {method} failed: code={code} message={message}"
+        ));
+    }
+    Ok(response.get("result").cloned().unwrap_or(Value::Null))
+}
+
+async fn gateway_ws_wait_for_response(
+    ws: &mut CliGatewayWsStream,
+    response_id: &str,
+    timeout: Duration,
+) -> Result<Value> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(anyhow!(
+                "gateway request timed out waiting for id {response_id}"
+            ));
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        let frame =
+            gateway_ws_read_next_json(ws, remaining, &format!("response id {response_id}")).await?;
+        if frame.get("id").and_then(Value::as_str) == Some(response_id) {
+            return Ok(frame);
+        }
+    }
+}
+
+async fn gateway_ws_read_next_json(
+    ws: &mut CliGatewayWsStream,
+    timeout: Duration,
+    context: &str,
+) -> Result<Value> {
+    let result = tokio::time::timeout(timeout, async {
+        loop {
+            let Some(message) = ws.next().await else {
+                return Err(anyhow!("gateway socket closed while waiting for {context}"));
+            };
+            let message = message.map_err(|err| anyhow!("gateway websocket read failed: {err}"))?;
+            match message {
+                Message::Text(text) => {
+                    let parsed = serde_json::from_str::<Value>(text.as_ref())
+                        .map_err(|err| anyhow!("gateway frame JSON parse failed: {err}"))?;
+                    return Ok(parsed);
+                }
+                Message::Ping(payload) => {
+                    ws.send(Message::Pong(payload))
+                        .await
+                        .map_err(|err| anyhow!("gateway websocket pong failed: {err}"))?;
+                }
+                Message::Close(frame) => {
+                    let reason = frame
+                        .as_ref()
+                        .map(|value| value.reason.to_string())
+                        .unwrap_or_else(|| "close".to_owned());
+                    return Err(anyhow!("gateway socket closed: {reason}"));
+                }
+                Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {}
+            }
+        }
+    })
+    .await;
+    match result {
+        Ok(value) => value,
+        Err(_) => Err(anyhow!(
+            "gateway timed out waiting for {context} after {}ms",
+            timeout.as_millis()
+        )),
     }
 }
 
@@ -1189,6 +1381,32 @@ mod tests {
                 Some(GatewaySubcommand::Call(call)) => {
                     assert_eq!(call.method, "tools.catalog");
                     assert_eq!(call.params, "{\"includePlugins\":false}");
+                    assert!(!call.live_service);
+                    assert!(call.json);
+                }
+                _ => panic!("expected gateway call command"),
+            },
+            _ => panic!("expected gateway command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_gateway_call_command_with_live_service_flag() {
+        let cli = Cli::parse_from([
+            "openclaw-agent-rs",
+            "gateway",
+            "call",
+            "--method",
+            "auth.oauth.wait",
+            "--live-service",
+            "--json",
+        ]);
+        match cli.command {
+            Some(CliCommand::Gateway(args)) => match args.command {
+                Some(GatewaySubcommand::Call(call)) => {
+                    assert_eq!(call.method, "auth.oauth.wait");
+                    assert_eq!(call.params, "{}");
+                    assert!(call.live_service);
                     assert!(call.json);
                 }
                 _ => panic!("expected gateway call command"),

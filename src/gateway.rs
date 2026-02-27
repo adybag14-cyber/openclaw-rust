@@ -972,7 +972,15 @@ const DEVICE_PAIR_STORE_PATH: &str = "memory://devices/pairs.json";
 const NODE_PAIR_STORE_PATH: &str = "memory://nodes/pairs.json";
 const CONFIG_STORE_PATH: &str = "memory://config.json";
 const WEB_LOGIN_STORE_PATH: &str = "memory://web-login/sessions.json";
-const OAUTH_STORE_PATH: &str = "memory://auth/oauth/sessions.json";
+const OAUTH_STORE_PATH: &str = ".openclaw-rs/oauth/sessions.json";
+const OAUTH_STORE_PATH_ENV: &str = "OPENCLAW_RS_OAUTH_STORE_PATH";
+const OAUTH_CHATGPT_AUTH_COMMAND_ENV: &str = "OPENCLAW_RS_CHATGPT_AUTH_COMMAND";
+const OAUTH_CHATGPT_AUTH_ARGS_ENV: &str = "OPENCLAW_RS_CHATGPT_AUTH_ARGS";
+const OAUTH_CHATGPT_PROFILE_DIR_ENV: &str = "OPENCLAW_RS_CHATGPT_PROFILE_DIR";
+const OAUTH_CHATGPT_BRIDGE_BASE_URLS_ENV: &str = "OPENCLAW_RS_CHATGPT_BRIDGE_BASE_URLS";
+const OAUTH_CHATGPT_BRIDGE_BASE_URLS_ENV_ALT: &str = "OPENCLAW_RS_OAUTH_CHATGPT_BRIDGE_BASE_URLS";
+const OAUTH_CHATGPT_DEFAULT_BRIDGE_CANDIDATES: &[&str] =
+    &["http://127.0.0.1:43010/v1", "http://127.0.0.1:43010"];
 const CHATGPT_BROWSER_AUTH_SCRIPT_PATH: &str = "scripts/chatgpt-browser-auth.mjs";
 const CHATGPT_BROWSER_AUTH_DEFAULT_COMMAND: &str = "node";
 const CHATGPT_BROWSER_AUTH_DEFAULT_TIMEOUT_MS: u64 = 300_000;
@@ -10207,6 +10215,7 @@ impl RpcDispatcher {
         else {
             return;
         };
+        let oauth_runtime = self.config.oauth_runtime_config().await;
 
         provider_runtime.api_mode = "website-bridge".to_owned();
         provider_runtime.base_url = "https://chatgpt.com".to_owned();
@@ -10217,10 +10226,7 @@ impl RpcDispatcher {
         provider_runtime.auth_header_prefix = "Bearer ".to_owned();
         provider_runtime
             .bridge_candidates
-            .push("http://127.0.0.1:43010/v1".to_owned());
-        provider_runtime
-            .bridge_candidates
-            .push("http://127.0.0.1:43010".to_owned());
+            .extend(oauth_runtime.chatgpt_bridge_candidates);
         provider_runtime
             .bridge_candidates
             .push("https://chatgpt.com".to_owned());
@@ -13375,6 +13381,7 @@ struct OAuthRuntimeConfig {
     chatgpt_auth_command: Option<String>,
     chatgpt_auth_args: Vec<String>,
     chatgpt_profile_dir: Option<String>,
+    chatgpt_bridge_candidates: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -22385,6 +22392,95 @@ fn persist_oauth_store_disk_state(path: &str, state: &OAuthState) -> Result<(), 
     })
 }
 
+fn default_chatgpt_browser_auth_command_and_args() -> (String, Vec<String>) {
+    if cfg!(target_os = "linux") {
+        return (
+            "xvfb-run".to_owned(),
+            vec![
+                "-a".to_owned(),
+                CHATGPT_BROWSER_AUTH_DEFAULT_COMMAND.to_owned(),
+                CHATGPT_BROWSER_AUTH_SCRIPT_PATH.to_owned(),
+                "--engine".to_owned(),
+                "puppeteer".to_owned(),
+            ],
+        );
+    }
+    (
+        CHATGPT_BROWSER_AUTH_DEFAULT_COMMAND.to_owned(),
+        vec![CHATGPT_BROWSER_AUTH_SCRIPT_PATH.to_owned()],
+    )
+}
+
+fn resolve_chatgpt_browser_auth_command_and_args(
+    runtime: &OAuthRuntimeConfig,
+) -> (String, Vec<String>) {
+    let command = runtime
+        .chatgpt_auth_command
+        .clone()
+        .and_then(|value| normalize_optional_text(Some(value), 1_024));
+    let args = runtime
+        .chatgpt_auth_args
+        .iter()
+        .filter_map(|value| normalize_optional_text(Some(value.clone()), 512))
+        .collect::<Vec<_>>();
+    match (command, args.is_empty()) {
+        (Some(command), true) => (command, vec![CHATGPT_BROWSER_AUTH_SCRIPT_PATH.to_owned()]),
+        (Some(command), false) => (command, args),
+        (None, _) => default_chatgpt_browser_auth_command_and_args(),
+    }
+}
+
+fn chatgpt_browser_auth_spawn_hint(command: &str) -> Option<String> {
+    let mut hints = vec![format!(
+        "set auth.oauth.chatgptBrowser.command/auth.oauth.chatgptBrowser.args to a valid helper invocation (current command: {command})"
+    )];
+    if cfg!(target_os = "linux") && command.eq_ignore_ascii_case("xvfb-run") {
+        hints.push("install xvfb (`sudo apt-get install -y xvfb`) or override the helper command to a working browser launch wrapper".to_owned());
+    }
+    Some(hints.join("; "))
+}
+
+fn chatgpt_browser_auth_runtime_hint(command: &str, error_text: &str) -> Option<String> {
+    let lower = normalize(error_text);
+    let mut hints = Vec::new();
+
+    if lower.contains("cannot find module") && lower.contains("playwright") {
+        hints.push(
+            "install Playwright in this workspace (`npm i playwright`) or set `--engine puppeteer`"
+                .to_owned(),
+        );
+    }
+    if lower.contains("cannot find module") && lower.contains("puppeteer") {
+        hints.push("install Puppeteer in this workspace (`npm i puppeteer`)".to_owned());
+    }
+    if cfg!(target_os = "linux")
+        && (lower.contains("missing x server")
+            || lower.contains("cannot open display")
+            || lower.contains("failed to launch the browser process")
+            || lower.contains("no usable sandbox"))
+    {
+        hints.push("run the helper via `xvfb-run -a` (default) or provide a valid headless display/runtime command".to_owned());
+    }
+    if lower.contains("session_status_401")
+        || lower.contains("missing_access_token")
+        || lower.contains("login still pending")
+    {
+        hints.push(
+            "complete ChatGPT sign-in in the opened profile, then run `/auth wait openai` again"
+                .to_owned(),
+        );
+    }
+    if hints.is_empty() {
+        if command.eq_ignore_ascii_case("xvfb-run") && cfg!(target_os = "linux") {
+            return Some(
+                "verify `xvfb-run`, `node`, and browser dependencies are installed, or override auth.oauth.chatgptBrowser.command/args".to_owned(),
+            );
+        }
+        return None;
+    }
+    Some(hints.join("; "))
+}
+
 async fn run_chatgpt_browser_auth_command(
     runtime: &OAuthRuntimeConfig,
     provider_id: &str,
@@ -22392,19 +22488,7 @@ async fn run_chatgpt_browser_auth_command(
     session_id: &str,
     timeout_ms: u64,
 ) -> Result<ChatGptBrowserAuthOutput, String> {
-    let command = runtime
-        .chatgpt_auth_command
-        .clone()
-        .and_then(|value| normalize_optional_text(Some(value), 1_024))
-        .unwrap_or_else(|| CHATGPT_BROWSER_AUTH_DEFAULT_COMMAND.to_owned());
-    let mut args = runtime
-        .chatgpt_auth_args
-        .iter()
-        .filter_map(|value| normalize_optional_text(Some(value.clone()), 512))
-        .collect::<Vec<_>>();
-    if args.is_empty() {
-        args.push(CHATGPT_BROWSER_AUTH_SCRIPT_PATH.to_owned());
-    }
+    let (command, mut args) = resolve_chatgpt_browser_auth_command_and_args(runtime);
     let profile_dir = runtime
         .chatgpt_profile_dir
         .clone()
@@ -22436,10 +22520,17 @@ async fn run_chatgpt_browser_auth_command(
         .env("OPENCLAW_OAUTH_ACCOUNT_ID", account_id)
         .env("OPENCLAW_OAUTH_SESSION_ID", session_id);
     let child = process.spawn().map_err(|err| {
-        format!(
+        let mut message = format!(
             "failed spawning chatgpt browser auth helper {}: {err}",
             command
-        )
+        );
+        if err.kind() == std::io::ErrorKind::NotFound {
+            if let Some(hint) = chatgpt_browser_auth_spawn_hint(&command) {
+                message.push_str("; hint: ");
+                message.push_str(&hint);
+            }
+        }
+        message
     })?;
 
     let timeout =
@@ -22452,24 +22543,34 @@ async fn run_chatgpt_browser_auth_command(
             ));
         }
         Err(_) => {
-            return Err(format!(
+            let mut message = format!(
                 "chatgpt browser auth helper timed out after {}ms",
                 timeout.as_millis()
-            ));
+            );
+            message.push_str(
+                "; hint: keep the browser open, complete sign-in, or increase timeout via auth.oauth.wait timeout parameters",
+            );
+            return Err(message);
         }
     };
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if !output.status.success() {
-        return Err(format!(
+        let failure_text = if stderr.is_empty() {
+            truncate_text(&stdout, 320)
+        } else {
+            truncate_text(&stderr, 320)
+        };
+        let mut message = format!(
             "chatgpt browser auth helper exited with code {:?}: {}",
             output.status.code(),
-            if stderr.is_empty() {
-                truncate_text(&stdout, 320)
-            } else {
-                truncate_text(&stderr, 320)
-            }
-        ));
+            failure_text
+        );
+        if let Some(hint) = chatgpt_browser_auth_runtime_hint(&command, &failure_text) {
+            message.push_str("; hint: ");
+            message.push_str(&hint);
+        }
+        return Err(message);
     }
     parse_chatgpt_browser_auth_output(&stdout).map_err(|err| {
         if stderr.is_empty() {
@@ -24611,6 +24712,58 @@ fn web_login_runtime_config_from_config(config: &Value) -> WebLoginRuntimeConfig
     WebLoginRuntimeConfig { store_path }
 }
 
+fn read_env_config_string(keys: &[&str], max_len: usize) -> Option<String> {
+    for key in keys {
+        let value = env::var(key)
+            .ok()
+            .and_then(|raw| normalize_optional_text(Some(raw), max_len));
+        if value.is_some() {
+            return value;
+        }
+    }
+    None
+}
+
+fn parse_env_config_string_list(raw: &str, max_items: usize, max_len: usize) -> Vec<String> {
+    let parsed_json = serde_json::from_str::<Value>(raw).ok().and_then(|value| {
+        value.as_array().map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+    });
+    if parsed_json.is_some() {
+        return normalize_string_list(parsed_json, max_items, max_len);
+    }
+    let values = raw
+        .split([',', ';', '\n', '\r'])
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    normalize_string_list(Some(values), max_items, max_len)
+}
+
+fn read_env_config_string_list(
+    keys: &[&str],
+    max_items: usize,
+    max_len: usize,
+) -> Option<Vec<String>> {
+    for key in keys {
+        let Some(raw) = env::var(key)
+            .ok()
+            .and_then(|value| normalize_optional_text(Some(value), 16_384))
+        else {
+            continue;
+        };
+        let values = parse_env_config_string_list(&raw, max_items, max_len);
+        if !values.is_empty() {
+            return Some(values);
+        }
+    }
+    None
+}
+
 fn oauth_runtime_config_from_config(config: &Value) -> OAuthRuntimeConfig {
     let runtime = config.get("runtime").and_then(Value::as_object);
     let auth_oauth = config
@@ -24655,7 +24808,8 @@ fn oauth_runtime_config_from_config(config: &Value) -> OAuthRuntimeConfig {
             runtime.and_then(|obj| {
                 read_config_string(obj, &["oauthStorePath", "oauth_store_path"], 2048)
             })
-        });
+        })
+        .or_else(|| read_env_config_string(&[OAUTH_STORE_PATH_ENV], 2_048));
     let chatgpt_auth_command = chatgpt_browser
         .and_then(|obj| {
             read_config_string(
@@ -24691,7 +24845,8 @@ fn oauth_runtime_config_from_config(config: &Value) -> OAuthRuntimeConfig {
                     1_024,
                 )
             })
-        });
+        })
+        .or_else(|| read_env_config_string(&[OAUTH_CHATGPT_AUTH_COMMAND_ENV], 1_024));
     let chatgpt_auth_args = chatgpt_browser
         .and_then(|obj| read_config_string_list(obj, &["args", "authArgs", "auth_args"], 64, 512))
         .or_else(|| {
@@ -24724,6 +24879,7 @@ fn oauth_runtime_config_from_config(config: &Value) -> OAuthRuntimeConfig {
                 )
             })
         })
+        .or_else(|| read_env_config_string_list(&[OAUTH_CHATGPT_AUTH_ARGS_ENV], 64, 512))
         .unwrap_or_default();
     let chatgpt_profile_dir = chatgpt_browser
         .and_then(|obj| {
@@ -24767,13 +24923,122 @@ fn oauth_runtime_config_from_config(config: &Value) -> OAuthRuntimeConfig {
                     2_048,
                 )
             })
-        });
+        })
+        .or_else(|| read_env_config_string(&[OAUTH_CHATGPT_PROFILE_DIR_ENV], 2_048));
+    let mut chatgpt_bridge_candidates = chatgpt_browser
+        .and_then(|obj| {
+            read_config_string_list(
+                obj,
+                &[
+                    "bridgeBaseUrls",
+                    "bridge_base_urls",
+                    "bridgeCandidates",
+                    "bridge_candidates",
+                ],
+                16,
+                2_048,
+            )
+        })
+        .or_else(|| {
+            auth_oauth.and_then(|obj| {
+                read_config_string_list(
+                    obj,
+                    &[
+                        "chatgptBridgeBaseUrls",
+                        "chatgpt_bridge_base_urls",
+                        "openaiBridgeBaseUrls",
+                        "openai_bridge_base_urls",
+                    ],
+                    16,
+                    2_048,
+                )
+            })
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string_list(
+                    obj,
+                    &[
+                        "chatgptBridgeBaseUrls",
+                        "chatgpt_bridge_base_urls",
+                        "openaiBridgeBaseUrls",
+                        "openai_bridge_base_urls",
+                    ],
+                    16,
+                    2_048,
+                )
+            })
+        })
+        .unwrap_or_default();
+    if let Some(single_candidate) = chatgpt_browser
+        .and_then(|obj| {
+            read_config_string(
+                obj,
+                &[
+                    "bridgeBaseUrl",
+                    "bridge_base_url",
+                    "bridgeCandidate",
+                    "bridge_candidate",
+                ],
+                2_048,
+            )
+        })
+        .or_else(|| {
+            auth_oauth.and_then(|obj| {
+                read_config_string(
+                    obj,
+                    &[
+                        "chatgptBridgeBaseUrl",
+                        "chatgpt_bridge_base_url",
+                        "openaiBridgeBaseUrl",
+                        "openai_bridge_base_url",
+                    ],
+                    2_048,
+                )
+            })
+        })
+        .or_else(|| {
+            runtime.and_then(|obj| {
+                read_config_string(
+                    obj,
+                    &[
+                        "chatgptBridgeBaseUrl",
+                        "chatgpt_bridge_base_url",
+                        "openaiBridgeBaseUrl",
+                        "openai_bridge_base_url",
+                    ],
+                    2_048,
+                )
+            })
+        })
+    {
+        chatgpt_bridge_candidates.push(single_candidate);
+    }
+    if let Some(env_candidates) = read_env_config_string_list(
+        &[
+            OAUTH_CHATGPT_BRIDGE_BASE_URLS_ENV,
+            OAUTH_CHATGPT_BRIDGE_BASE_URLS_ENV_ALT,
+        ],
+        16,
+        2_048,
+    ) {
+        chatgpt_bridge_candidates = env_candidates;
+    }
+    if chatgpt_bridge_candidates.is_empty() {
+        chatgpt_bridge_candidates.extend(
+            OAUTH_CHATGPT_DEFAULT_BRIDGE_CANDIDATES
+                .iter()
+                .map(|value| (*value).to_owned()),
+        );
+    }
+    sort_and_dedup_strings(&mut chatgpt_bridge_candidates);
 
     OAuthRuntimeConfig {
         store_path,
         chatgpt_auth_command,
         chatgpt_auth_args,
         chatgpt_profile_dir,
+        chatgpt_bridge_candidates,
     }
 }
 
@@ -32920,7 +33185,11 @@ mod tests {
                     "chatgptBrowser": {
                         "command": "node",
                         "args": ["scripts/chatgpt-browser-auth.mjs", "--engine", "puppeteer"],
-                        "profileDir": "C:/tmp/chatgpt-profile"
+                        "profileDir": "C:/tmp/chatgpt-profile",
+                        "bridgeBaseUrls": [
+                            "http://127.0.0.1:43111/v1",
+                            "http://127.0.0.1:43111"
+                        ]
                     }
                 }
             }
@@ -32943,6 +33212,57 @@ mod tests {
             runtime.chatgpt_profile_dir.as_deref(),
             Some("C:/tmp/chatgpt-profile")
         );
+        assert_eq!(
+            runtime.chatgpt_bridge_candidates,
+            vec![
+                "http://127.0.0.1:43111".to_owned(),
+                "http://127.0.0.1:43111/v1".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_chatgpt_browser_auth_command_defaults_to_platform_safe_values() {
+        let runtime = super::OAuthRuntimeConfig::default();
+        let (command, args) = super::resolve_chatgpt_browser_auth_command_and_args(&runtime);
+        if cfg!(target_os = "linux") {
+            assert_eq!(command, "xvfb-run");
+            assert_eq!(
+                args,
+                vec![
+                    "-a".to_owned(),
+                    "node".to_owned(),
+                    "scripts/chatgpt-browser-auth.mjs".to_owned(),
+                    "--engine".to_owned(),
+                    "puppeteer".to_owned()
+                ]
+            );
+        } else {
+            assert_eq!(command, "node");
+            assert_eq!(args, vec!["scripts/chatgpt-browser-auth.mjs".to_owned()]);
+        }
+    }
+
+    #[test]
+    fn resolve_chatgpt_browser_auth_command_keeps_custom_command_with_script_default() {
+        let runtime = super::OAuthRuntimeConfig {
+            chatgpt_auth_command: Some("node".to_owned()),
+            ..Default::default()
+        };
+        let (command, args) = super::resolve_chatgpt_browser_auth_command_and_args(&runtime);
+        assert_eq!(command, "node");
+        assert_eq!(args, vec!["scripts/chatgpt-browser-auth.mjs".to_owned()]);
+    }
+
+    #[test]
+    fn chatgpt_browser_auth_runtime_hint_flags_missing_browser_deps() {
+        let hint = super::chatgpt_browser_auth_runtime_hint(
+            "node",
+            "Error: Cannot find module 'playwright'",
+        )
+        .expect("hint");
+        assert!(hint.contains("install Playwright"));
+        assert!(hint.contains("puppeteer"));
     }
 
     #[tokio::test]
