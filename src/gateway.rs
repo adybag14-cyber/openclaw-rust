@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
@@ -11662,8 +11662,21 @@ struct OpenAiChatCompletionChoice {
 #[derive(Debug, Clone, Deserialize)]
 struct OpenAiChatCompletionMessage {
     content: Option<Value>,
-    #[serde(default, rename = "tool_calls")]
+    #[serde(
+        default,
+        rename = "tool_calls",
+        deserialize_with = "deserialize_nullable_tool_calls"
+    )]
     tool_calls: Vec<OpenAiChatToolCall>,
+}
+
+fn deserialize_nullable_tool_calls<'de, D>(
+    deserializer: D,
+) -> Result<Vec<OpenAiChatToolCall>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<Vec<OpenAiChatToolCall>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -32202,6 +32215,24 @@ mod tests {
             payload.pointer("/tool_choice").and_then(Value::as_str),
             Some("auto")
         );
+    }
+
+    #[test]
+    fn openai_chat_completion_parses_null_tool_calls_as_empty() {
+        let payload = serde_json::json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": "ok",
+                        "tool_calls": null
+                    }
+                }
+            ]
+        });
+        let parsed: super::OpenAiChatCompletionResponse =
+            serde_json::from_value(payload).expect("response should deserialize");
+        assert_eq!(parsed.choices.len(), 1);
+        assert!(parsed.choices[0].message.tool_calls.is_empty());
     }
 
     #[tokio::test]
