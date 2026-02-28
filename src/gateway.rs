@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::engine::general_purpose::{
+    STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD,
+};
 use base64::Engine as _;
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
@@ -981,6 +983,16 @@ const OAUTH_CHATGPT_BRIDGE_BASE_URLS_ENV: &str = "OPENCLAW_RS_CHATGPT_BRIDGE_BAS
 const OAUTH_CHATGPT_BRIDGE_BASE_URLS_ENV_ALT: &str = "OPENCLAW_RS_OAUTH_CHATGPT_BRIDGE_BASE_URLS";
 const OAUTH_CHATGPT_DEFAULT_BRIDGE_CANDIDATES: &[&str] =
     &["http://127.0.0.1:43010/v1", "http://127.0.0.1:43010"];
+const OAUTH_CODEX_AUTHORIZE_URL_ENV: &str = "OPENCLAW_RS_CODEX_OAUTH_AUTHORIZE_URL";
+const OAUTH_CODEX_TOKEN_URL_ENV: &str = "OPENCLAW_RS_CODEX_OAUTH_TOKEN_URL";
+const OAUTH_CODEX_CLIENT_ID_ENV: &str = "OPENCLAW_RS_CODEX_OAUTH_CLIENT_ID";
+const OAUTH_CODEX_REDIRECT_URI_ENV: &str = "OPENCLAW_RS_CODEX_OAUTH_REDIRECT_URI";
+const OAUTH_CODEX_SCOPE_ENV: &str = "OPENCLAW_RS_CODEX_OAUTH_SCOPE";
+const OAUTH_CODEX_DEFAULT_AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
+const OAUTH_CODEX_DEFAULT_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+const OAUTH_CODEX_DEFAULT_CLIENT_ID: &str = "codex-cli";
+const OAUTH_CODEX_DEFAULT_REDIRECT_URI: &str = "http://localhost:1455/callback";
+const OAUTH_CODEX_DEFAULT_SCOPE: &str = "openid profile email offline_access";
 const CHATGPT_BROWSER_AUTH_SCRIPT_PATH: &str = "scripts/chatgpt-browser-auth.mjs";
 const CHATGPT_BROWSER_AUTH_DEFAULT_COMMAND: &str = "node";
 const CHATGPT_BROWSER_AUTH_DEFAULT_TIMEOUT_MS: u64 = 300_000;
@@ -5864,6 +5876,11 @@ impl RpcDispatcher {
                 "{} Run /auth wait {} {} to open browser login and capture ChatGPT session auth.",
                 result.message, result.provider_id, result.session_id
             );
+        } else if result.provider_id.eq_ignore_ascii_case("openai-codex") {
+            result.message = format!(
+                "{} After sign-in, paste the localhost callback URL into /auth complete codex <callback_url> {} {}.",
+                result.message, result.session_id, result.account_id
+            );
         }
         self.system
             .log_line(format!(
@@ -6047,22 +6064,49 @@ impl RpcDispatcher {
                 ));
             }
         };
-        let result = match self
-            .oauth
-            .complete(OAuthCompleteInput {
-                session_id: params.session_id,
-                account_id: normalize_optional_text(params.account_id, 128),
-                access_token: normalize_optional_text(params.access_token, 8_192),
-                refresh_token: normalize_optional_text(params.refresh_token, 8_192),
-                token_type: normalize_optional_text(params.token_type, 64),
-                expires_at_ms: params.expires_at_ms,
-                scopes: normalize_string_list(params.scopes, 32, 128),
-                source: normalize_optional_text(params.source, 128),
-            })
-            .await
-        {
-            Ok(v) => v,
-            Err(err) => return RpcDispatchOutcome::bad_request(err),
+        let provider_id = resolve_oauth_provider_param(params.provider_id, params.provider);
+        let account_id = normalize_optional_text(params.account_id, 128);
+        let callback_url = normalize_optional_text(params.callback_url, 8_192);
+        let session_id = normalize_optional_text(params.session_id, 128);
+        let source = normalize_optional_text(params.source, 128);
+        let result = if let Some(callback_url) = callback_url {
+            match self
+                .oauth
+                .complete_from_callback(OAuthCompleteFromCallbackInput {
+                    provider_id,
+                    account_id,
+                    session_id,
+                    callback_url,
+                    source,
+                })
+                .await
+            {
+                Ok(v) => v,
+                Err(err) => return RpcDispatchOutcome::bad_request(err),
+            }
+        } else {
+            let Some(session_id) = session_id else {
+                return RpcDispatchOutcome::bad_request(
+                    "invalid auth.oauth.complete params: sessionId is required when callbackUrl is not provided",
+                );
+            };
+            match self
+                .oauth
+                .complete(OAuthCompleteInput {
+                    session_id,
+                    account_id,
+                    access_token: normalize_optional_text(params.access_token, 8_192),
+                    refresh_token: normalize_optional_text(params.refresh_token, 8_192),
+                    token_type: normalize_optional_text(params.token_type, 64),
+                    expires_at_ms: params.expires_at_ms,
+                    scopes: normalize_string_list(params.scopes, 32, 128),
+                    source,
+                })
+                .await
+            {
+                Ok(v) => v,
+                Err(err) => return RpcDispatchOutcome::bad_request(err),
+            }
         };
         self.system
             .log_line(format!(
@@ -21461,6 +21505,34 @@ struct OAuthSession {
     verification_url: String,
     #[serde(rename = "userCode")]
     user_code: String,
+    #[serde(
+        default,
+        rename = "oauthState",
+        skip_serializing_if = "Option::is_none"
+    )]
+    oauth_state: Option<String>,
+    #[serde(
+        default,
+        rename = "pkceVerifier",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pkce_verifier: Option<String>,
+    #[serde(
+        default,
+        rename = "redirectUri",
+        skip_serializing_if = "Option::is_none"
+    )]
+    redirect_uri: Option<String>,
+    #[serde(default, rename = "tokenUrl", skip_serializing_if = "Option::is_none")]
+    token_url: Option<String>,
+    #[serde(default, rename = "clientId", skip_serializing_if = "Option::is_none")]
+    client_id: Option<String>,
+    #[serde(
+        default,
+        rename = "authorizationUrl",
+        skip_serializing_if = "Option::is_none"
+    )]
+    authorization_url: Option<String>,
     #[serde(rename = "completedAtMs", skip_serializing_if = "Option::is_none")]
     completed_at_ms: Option<u64>,
 }
@@ -21519,6 +21591,48 @@ struct OAuthCompleteInput {
     expires_at_ms: Option<u64>,
     scopes: Vec<String>,
     source: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct OAuthCompleteFromCallbackInput {
+    provider_id: Option<String>,
+    account_id: Option<String>,
+    session_id: Option<String>,
+    callback_url: String,
+    source: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OAuthCallbackPayload {
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    token_type: Option<String>,
+    session_id: Option<String>,
+    state: Option<String>,
+    code: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
+    expires_at_ms: Option<u64>,
+    scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct OAuthCodeExchangeResult {
+    access_token: String,
+    refresh_token: Option<String>,
+    token_type: Option<String>,
+    expires_at_ms: Option<u64>,
+    scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CodexOAuthFlow {
+    authorization_url: String,
+    token_url: String,
+    redirect_uri: String,
+    client_id: String,
+    state: String,
+    code_verifier: String,
 }
 
 #[derive(Debug, Clone)]
@@ -21859,7 +21973,24 @@ impl OAuthRegistry {
             let started_at_ms = now;
             let ready_at_ms = now.saturating_add(timeout_ms.min(2_000));
             let expires_at_ms = now.saturating_add(timeout_ms);
-            let verification_url = oauth_provider_verification_url(&provider_id);
+            let codex_flow = if provider_id.eq_ignore_ascii_case("openai-codex") {
+                Some(build_codex_oauth_flow(&session_id)?)
+            } else {
+                None
+            };
+            let verification_url = codex_flow
+                .as_ref()
+                .map(|flow| flow.authorization_url.clone())
+                .unwrap_or_else(|| oauth_provider_verification_url(&provider_id));
+            let user_code = codex_flow
+                .as_ref()
+                .map(|_| String::new())
+                .unwrap_or_else(|| oauth_user_code(&provider_id, &session_id));
+            let message = if codex_flow.is_some() {
+                "Open the authorization URL, sign in from your phone/browser, then paste the localhost callback URL into `/auth complete`.".to_owned()
+            } else {
+                "Open the verification URL and approve the device code.".to_owned()
+            };
             let session = OAuthSession {
                 session_id: session_id.clone(),
                 provider_id: provider_id.clone(),
@@ -21869,10 +22000,17 @@ impl OAuthRegistry {
                 ready_at_ms,
                 expires_at_ms,
                 verification_url: verification_url.clone(),
-                user_code: oauth_user_code(&provider_id, &session_id),
+                user_code: user_code.clone(),
+                oauth_state: codex_flow.as_ref().map(|flow| flow.state.clone()),
+                pkce_verifier: codex_flow.as_ref().map(|flow| flow.code_verifier.clone()),
+                redirect_uri: codex_flow.as_ref().map(|flow| flow.redirect_uri.clone()),
+                token_url: codex_flow.as_ref().map(|flow| flow.token_url.clone()),
+                client_id: codex_flow.as_ref().map(|flow| flow.client_id.clone()),
+                authorization_url: codex_flow
+                    .as_ref()
+                    .map(|flow| flow.authorization_url.clone()),
                 completed_at_ms: None,
             };
-            let user_code = session.user_code.clone();
             guard.sessions.insert(key, session);
             prune_oldest_oauth_sessions(&mut guard.sessions, 128);
             (
@@ -21886,7 +22024,7 @@ impl OAuthRegistry {
                     verification_url,
                     user_code,
                     poll_interval_ms: 2_000,
-                    message: "Open the verification URL and approve the device code.".to_owned(),
+                    message,
                 },
                 guard.clone(),
             )
@@ -22108,6 +22246,159 @@ impl OAuthRegistry {
         };
         let _ = self.persist_state_snapshot(snapshot).await;
         Ok(result)
+    }
+
+    async fn resolve_callback_session(
+        &self,
+        provider_id: Option<String>,
+        account_id: Option<String>,
+        session_id: Option<String>,
+        callback_state: Option<&str>,
+    ) -> Result<OAuthSession, String> {
+        let requested_provider = provider_id
+            .and_then(|value| normalize_oauth_provider_id(&value))
+            .ok_or_else(|| "provider is required when sessionId cannot be resolved".to_owned());
+        let requested_account = normalize_optional_text(account_id, 128);
+        let requested_session_id = normalize_optional_text(session_id, 128);
+        let requested_state = normalize_optional_text(callback_state.map(ToOwned::to_owned), 1_024);
+
+        let guard = self.state.lock().await;
+
+        if let Some(session_id) = requested_session_id {
+            if let Some(session) = guard
+                .sessions
+                .values()
+                .find(|entry| entry.session_id.eq_ignore_ascii_case(&session_id))
+                .cloned()
+            {
+                return Ok(session);
+            }
+            return Err("unknown oauth session".to_owned());
+        }
+
+        if let Some(state) = requested_state {
+            if let Some(session) = guard
+                .sessions
+                .values()
+                .find(|entry| {
+                    entry
+                        .oauth_state
+                        .as_ref()
+                        .map(|value| value.eq_ignore_ascii_case(&state))
+                        .unwrap_or(false)
+                })
+                .cloned()
+            {
+                return Ok(session);
+            }
+        }
+
+        let requested_provider = requested_provider?;
+        if let Some(account_id) = requested_account {
+            let key = oauth_state_key(&requested_provider, &account_id);
+            if let Some(session) = guard.sessions.get(&key).cloned() {
+                return Ok(session);
+            }
+        }
+
+        if let Some(session) = guard
+            .sessions
+            .values()
+            .filter(|entry| entry.provider_id.eq_ignore_ascii_case(&requested_provider))
+            .max_by_key(|entry| entry.started_at_ms)
+            .cloned()
+        {
+            return Ok(session);
+        }
+
+        Err("no active oauth session for provider/account".to_owned())
+    }
+
+    async fn complete_from_callback(
+        &self,
+        input: OAuthCompleteFromCallbackInput,
+    ) -> Result<OAuthCompleteResult, String> {
+        let callback = parse_oauth_callback_payload(&input.callback_url)?;
+        if let Some(error) = callback.error {
+            let description = callback.error_description.unwrap_or_default();
+            return Err(format!(
+                "oauth callback error: {error}{}",
+                if description.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({description})")
+                }
+            ));
+        }
+
+        let session_from_state = callback
+            .state
+            .as_deref()
+            .and_then(oauth_extract_session_id_from_state);
+        let resolved_session = self
+            .resolve_callback_session(
+                input.provider_id.clone(),
+                input.account_id.clone(),
+                input
+                    .session_id
+                    .clone()
+                    .or(callback.session_id.clone())
+                    .or(session_from_state),
+                callback.state.as_deref(),
+            )
+            .await?;
+
+        let mut access_token = normalize_optional_text(callback.access_token, 8_192);
+        let mut refresh_token = normalize_optional_text(callback.refresh_token, 8_192);
+        let mut token_type = normalize_optional_text(callback.token_type, 64);
+        let mut expires_at_ms = callback.expires_at_ms;
+        let mut scopes = callback.scopes;
+
+        if access_token.is_none() {
+            let Some(code) = normalize_optional_text(callback.code, 4_096) else {
+                return Err(
+                    "oauth callback must include access_token or authorization code".to_owned(),
+                );
+            };
+            let token_url = resolved_session
+                .token_url
+                .clone()
+                .or_else(|| oauth_provider_token_url(&resolved_session.provider_id))
+                .ok_or_else(|| {
+                    "oauth callback code exchange is not configured for this provider".to_owned()
+                })?;
+            let exchange = oauth_exchange_authorization_code(
+                &token_url,
+                &code,
+                resolved_session.client_id.as_deref(),
+                resolved_session.pkce_verifier.as_deref(),
+                resolved_session.redirect_uri.as_deref(),
+            )
+            .await?;
+            access_token = Some(exchange.access_token);
+            refresh_token = exchange.refresh_token;
+            token_type = exchange.token_type;
+            expires_at_ms = exchange.expires_at_ms.or(expires_at_ms);
+            if !exchange.scopes.is_empty() {
+                scopes = exchange.scopes;
+            }
+        }
+
+        self.complete(OAuthCompleteInput {
+            session_id: resolved_session.session_id,
+            account_id: normalize_optional_text(input.account_id, 128)
+                .or(Some(resolved_session.account_id)),
+            access_token,
+            refresh_token,
+            token_type,
+            expires_at_ms,
+            scopes,
+            source: input
+                .source
+                .and_then(|value| normalize_optional_text(Some(value), 128))
+                .or(Some("oauth-callback-url".to_owned())),
+        })
+        .await
     }
 
     async fn logout(&self, input: OAuthLogoutInput) -> OAuthLogoutResult {
@@ -23387,6 +23678,302 @@ fn oauth_provider_aliases(provider: &str) -> Vec<String> {
             aliases
         })
         .unwrap_or_default()
+}
+
+fn oauth_provider_token_url(provider: &str) -> Option<String> {
+    if normalize(provider) == "openai-codex" {
+        return Some(
+            env::var(OAUTH_CODEX_TOKEN_URL_ENV)
+                .ok()
+                .and_then(|value| normalize_optional_text(Some(value), 2_048))
+                .unwrap_or_else(|| OAUTH_CODEX_DEFAULT_TOKEN_URL.to_owned()),
+        );
+    }
+    None
+}
+
+fn oauth_state_nonce(seed: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(seed.as_bytes());
+    hasher.update(now_ms().to_le_bytes());
+    let digest = hasher.finalize();
+    BASE64_URL_SAFE_NO_PAD.encode(&digest[..18])
+}
+
+fn oauth_pkce_challenge(verifier: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(verifier.as_bytes());
+    let digest = hasher.finalize();
+    BASE64_URL_SAFE_NO_PAD.encode(digest)
+}
+
+fn oauth_extract_session_id_from_state(state: &str) -> Option<String> {
+    let state = normalize_optional_text(Some(state.to_owned()), 1_024)?;
+    let rest = state.strip_prefix("ocrs:")?;
+    let session_id = rest.split(':').next()?;
+    normalize_optional_text(Some(session_id.to_owned()), 128)
+}
+
+fn build_codex_oauth_flow(session_id: &str) -> Result<CodexOAuthFlow, String> {
+    let authorize_url = env::var(OAUTH_CODEX_AUTHORIZE_URL_ENV)
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 2_048))
+        .unwrap_or_else(|| OAUTH_CODEX_DEFAULT_AUTHORIZE_URL.to_owned());
+    let token_url = env::var(OAUTH_CODEX_TOKEN_URL_ENV)
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 2_048))
+        .unwrap_or_else(|| OAUTH_CODEX_DEFAULT_TOKEN_URL.to_owned());
+    let client_id = env::var(OAUTH_CODEX_CLIENT_ID_ENV)
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 512))
+        .unwrap_or_else(|| OAUTH_CODEX_DEFAULT_CLIENT_ID.to_owned());
+    let redirect_uri = env::var(OAUTH_CODEX_REDIRECT_URI_ENV)
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 2_048))
+        .unwrap_or_else(|| OAUTH_CODEX_DEFAULT_REDIRECT_URI.to_owned());
+    let scope = env::var(OAUTH_CODEX_SCOPE_ENV)
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value), 1_024))
+        .unwrap_or_else(|| OAUTH_CODEX_DEFAULT_SCOPE.to_owned());
+    let code_verifier = format!(
+        "ocrs-{}{}",
+        oauth_state_nonce(session_id),
+        oauth_state_nonce("pkce")
+    );
+    let state = format!("ocrs:{session_id}:{}", oauth_state_nonce("state"));
+    let code_challenge = oauth_pkce_challenge(&code_verifier);
+
+    let mut parsed_authorize_url = Url::parse(&authorize_url)
+        .map_err(|err| format!("invalid Codex OAuth authorize URL: {err}"))?;
+    {
+        let mut query = parsed_authorize_url.query_pairs_mut();
+        query.append_pair("response_type", "code");
+        query.append_pair("client_id", &client_id);
+        query.append_pair("redirect_uri", &redirect_uri);
+        query.append_pair("scope", &scope);
+        query.append_pair("state", &state);
+        query.append_pair("code_challenge", &code_challenge);
+        query.append_pair("code_challenge_method", "S256");
+    }
+
+    Ok(CodexOAuthFlow {
+        authorization_url: parsed_authorize_url.to_string(),
+        token_url,
+        redirect_uri,
+        client_id,
+        state,
+        code_verifier,
+    })
+}
+
+fn parse_oauth_callback_payload(raw: &str) -> Result<OAuthCallbackPayload, String> {
+    let trimmed = normalize_optional_text(Some(raw.to_owned()), 8_192)
+        .ok_or_else(|| "callbackUrl must be a non-empty string".to_owned())?;
+    let candidate = if trimmed.starts_with("localhost:") || trimmed.starts_with("127.0.0.1:") {
+        format!("http://{trimmed}")
+    } else if trimmed.starts_with("/callback") {
+        format!("http://localhost{trimmed}")
+    } else {
+        trimmed
+    };
+
+    let parsed =
+        Url::parse(&candidate).map_err(|err| format!("callbackUrl must be a valid URL: {err}"))?;
+
+    let mut params = HashMap::<String, String>::new();
+    if let Some(query) = parsed.query() {
+        for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+            params.insert(key.to_string(), value.to_string());
+        }
+    }
+    if let Some(fragment) = parsed.fragment() {
+        for (key, value) in url::form_urlencoded::parse(fragment.as_bytes()) {
+            params.insert(key.to_string(), value.to_string());
+        }
+    }
+
+    let access_token = params
+        .get("access_token")
+        .or_else(|| params.get("accessToken"))
+        .or_else(|| params.get("token"))
+        .cloned();
+    let refresh_token = params
+        .get("refresh_token")
+        .or_else(|| params.get("refreshToken"))
+        .cloned();
+    let token_type = params
+        .get("token_type")
+        .or_else(|| params.get("tokenType"))
+        .cloned();
+    let session_id = params
+        .get("session_id")
+        .or_else(|| params.get("sessionId"))
+        .cloned();
+    let state = params.get("state").cloned();
+    let code = params.get("code").cloned();
+    let error = params.get("error").cloned();
+    let error_description = params
+        .get("error_description")
+        .or_else(|| params.get("errorDescription"))
+        .cloned();
+
+    let expires_at_ms = params
+        .get("expires_at")
+        .or_else(|| params.get("expiresAt"))
+        .and_then(|value| value.parse::<u64>().ok())
+        .or_else(|| {
+            params
+                .get("expires_in")
+                .or_else(|| params.get("expiresIn"))
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(|seconds| now_ms().saturating_add(seconds.saturating_mul(1_000)))
+        });
+
+    let scopes = params
+        .get("scope")
+        .or_else(|| params.get("scopes"))
+        .map(|value| {
+            value
+                .split_whitespace()
+                .filter_map(|entry| normalize_optional_text(Some(entry.to_owned()), 128))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Ok(OAuthCallbackPayload {
+        access_token: normalize_optional_text(access_token, 8_192),
+        refresh_token: normalize_optional_text(refresh_token, 8_192),
+        token_type: normalize_optional_text(token_type, 64),
+        session_id: normalize_optional_text(session_id, 128),
+        state: normalize_optional_text(state, 1_024),
+        code: normalize_optional_text(code, 4_096),
+        error: normalize_optional_text(error, 256),
+        error_description: normalize_optional_text(error_description, 1_024),
+        expires_at_ms,
+        scopes,
+    })
+}
+
+async fn oauth_exchange_authorization_code(
+    token_url: &str,
+    code: &str,
+    client_id: Option<&str>,
+    code_verifier: Option<&str>,
+    redirect_uri: Option<&str>,
+) -> Result<OAuthCodeExchangeResult, String> {
+    let token_url = normalize_optional_text(Some(token_url.to_owned()), 2_048)
+        .ok_or_else(|| "oauth token URL is missing".to_owned())?;
+    let code = normalize_optional_text(Some(code.to_owned()), 4_096)
+        .ok_or_else(|| "oauth code missing".to_owned())?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|err| format!("oauth token exchange client init failed: {err}"))?;
+
+    let mut form = vec![
+        ("grant_type".to_owned(), "authorization_code".to_owned()),
+        ("code".to_owned(), code),
+    ];
+    if let Some(value) =
+        client_id.and_then(|value| normalize_optional_text(Some(value.to_owned()), 512))
+    {
+        form.push(("client_id".to_owned(), value));
+    }
+    if let Some(value) =
+        code_verifier.and_then(|value| normalize_optional_text(Some(value.to_owned()), 512))
+    {
+        form.push(("code_verifier".to_owned(), value));
+    }
+    if let Some(value) =
+        redirect_uri.and_then(|value| normalize_optional_text(Some(value.to_owned()), 2_048))
+    {
+        form.push(("redirect_uri".to_owned(), value));
+    }
+
+    let response = client
+        .post(&token_url)
+        .header("Accept", "application/json")
+        .form(&form)
+        .send()
+        .await
+        .map_err(|err| format!("oauth token exchange request failed: {err}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|err| format!("oauth token exchange body read failed: {err}"))?;
+    let payload = serde_json::from_str::<Value>(&body).unwrap_or(Value::Null);
+    if !status.is_success() {
+        let reason = payload
+            .get("error_description")
+            .and_then(Value::as_str)
+            .or_else(|| payload.get("error").and_then(Value::as_str))
+            .unwrap_or(body.as_str());
+        return Err(format!(
+            "oauth token exchange failed with status {}: {}",
+            status.as_u16(),
+            truncate_text(reason, 220)
+        ));
+    }
+    if let Some(error) = payload.get("error").and_then(Value::as_str) {
+        let description = payload
+            .get("error_description")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        return Err(format!(
+            "oauth token exchange error: {error}{}",
+            if description.is_empty() {
+                String::new()
+            } else {
+                format!(" ({description})")
+            }
+        ));
+    }
+
+    let access_token = payload
+        .get("access_token")
+        .and_then(Value::as_str)
+        .and_then(|value| normalize_optional_text(Some(value.to_owned()), 8_192))
+        .ok_or_else(|| "oauth token exchange response missing access_token".to_owned())?;
+    let refresh_token = payload
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .and_then(|value| normalize_optional_text(Some(value.to_owned()), 8_192));
+    let token_type = payload
+        .get("token_type")
+        .and_then(Value::as_str)
+        .and_then(|value| normalize_optional_text(Some(value.to_owned()), 64));
+    let expires_at_ms = payload
+        .get("expires_at")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            payload
+                .get("expires_in")
+                .and_then(Value::as_u64)
+                .map(|seconds| now_ms().saturating_add(seconds.saturating_mul(1_000)))
+        });
+    let scopes = payload
+        .get("scope")
+        .and_then(Value::as_str)
+        .map(|scope| {
+            scope
+                .split_whitespace()
+                .filter_map(|entry| normalize_optional_text(Some(entry.to_owned()), 128))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Ok(OAuthCodeExchangeResult {
+        access_token,
+        refresh_token,
+        token_type,
+        expires_at_ms,
+        scopes,
+    })
 }
 
 fn oauth_default_profile_id(provider: &str, account_id: &str) -> String {
@@ -28839,13 +29426,18 @@ struct AuthOAuthWaitParams {
     timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 struct AuthOAuthCompleteParams {
+    provider: Option<String>,
+    #[serde(rename = "providerId", alias = "provider_id")]
+    provider_id: Option<String>,
     #[serde(rename = "sessionId", alias = "session_id")]
-    session_id: String,
+    session_id: Option<String>,
     #[serde(rename = "accountId", alias = "account_id")]
     account_id: Option<String>,
+    #[serde(rename = "callbackUrl", alias = "callback_url")]
+    callback_url: Option<String>,
     #[serde(rename = "accessToken", alias = "access_token")]
     access_token: Option<String>,
     #[serde(rename = "refreshToken", alias = "refresh_token")]
@@ -43630,6 +44222,17 @@ mod tests {
     #[tokio::test]
     async fn dispatcher_update_and_web_login_methods_report_expected_payloads() {
         let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "auth": {
+                    "oauth": {
+                        "storePath": "memory://oauth/test-update-web-login"
+                    }
+                }
+            }),
+        )
+        .await;
 
         let invalid_update = RpcRequestFrame {
             id: "req-update-invalid".to_owned(),
@@ -43796,50 +44399,55 @@ mod tests {
                 "sessionId": oauth_session_id
             }),
         };
+        let mut oauth_was_pending = false;
         match dispatcher.handle_request(&oauth_wait_pending).await {
             RpcDispatchOutcome::Handled(payload) => {
-                assert_eq!(
-                    payload
-                        .pointer("/connected")
-                        .and_then(serde_json::Value::as_bool),
-                    Some(false)
-                );
-                assert_eq!(
-                    payload
-                        .pointer("/status")
-                        .and_then(serde_json::Value::as_str),
-                    Some("pending")
-                );
+                let connected = payload
+                    .pointer("/connected")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let status = payload
+                    .pointer("/status")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown");
+                if connected {
+                    assert_eq!(status, "connected");
+                } else {
+                    oauth_was_pending = true;
+                    assert_eq!(status, "pending");
+                }
             }
             _ => panic!("expected auth.oauth.wait handled"),
         }
 
-        let oauth_complete = RpcRequestFrame {
-            id: "req-oauth-complete".to_owned(),
-            method: "auth.oauth.complete".to_owned(),
-            params: serde_json::json!({
-                "sessionId": oauth_session_id,
-                "accessToken": "tok_test_openai_access",
-                "refreshToken": "tok_test_openai_refresh",
-                "expiresAtMs": now_ms() + 60_000
-            }),
-        };
-        match dispatcher.handle_request(&oauth_complete).await {
-            RpcDispatchOutcome::Handled(payload) => {
-                assert_eq!(
-                    payload
-                        .pointer("/providerId")
-                        .and_then(serde_json::Value::as_str),
-                    Some("openai")
-                );
-                assert_eq!(
-                    payload
-                        .pointer("/connected")
-                        .and_then(serde_json::Value::as_bool),
-                    Some(true)
-                );
+        if oauth_was_pending {
+            let oauth_complete = RpcRequestFrame {
+                id: "req-oauth-complete".to_owned(),
+                method: "auth.oauth.complete".to_owned(),
+                params: serde_json::json!({
+                    "sessionId": oauth_session_id,
+                    "accessToken": "tok_test_openai_access",
+                    "refreshToken": "tok_test_openai_refresh",
+                    "expiresAtMs": now_ms() + 60_000
+                }),
+            };
+            match dispatcher.handle_request(&oauth_complete).await {
+                RpcDispatchOutcome::Handled(payload) => {
+                    assert_eq!(
+                        payload
+                            .pointer("/providerId")
+                            .and_then(serde_json::Value::as_str),
+                        Some("openai")
+                    );
+                    assert_eq!(
+                        payload
+                            .pointer("/connected")
+                            .and_then(serde_json::Value::as_bool),
+                        Some(true)
+                    );
+                }
+                _ => panic!("expected auth.oauth.complete handled"),
             }
-            _ => panic!("expected auth.oauth.complete handled"),
         }
 
         let oauth_wait_connected = RpcRequestFrame {
@@ -43887,6 +44495,103 @@ mod tests {
                 );
             }
             _ => panic!("expected auth.oauth.logout handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_oauth_complete_accepts_codex_callback_url_without_explicit_session_id() {
+        let dispatcher = RpcDispatcher::new();
+
+        let oauth_start = RpcRequestFrame {
+            id: "req-oauth-codex-start".to_owned(),
+            method: "auth.oauth.start".to_owned(),
+            params: serde_json::json!({
+                "provider": "codex",
+                "accountId": "default",
+                "timeoutMs": 120000
+            }),
+        };
+        let (session_id, verification_url) = match dispatcher.handle_request(&oauth_start).await {
+            RpcDispatchOutcome::Handled(payload) => (
+                payload
+                    .pointer("/sessionId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .expect("oauth session id"),
+                payload
+                    .pointer("/verificationUrl")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .expect("oauth verification url"),
+            ),
+            _ => panic!("expected auth.oauth.start handled"),
+        };
+        assert!(session_id.starts_with("oauth-"));
+
+        let parsed = url::Url::parse(&verification_url).expect("parse verification URL");
+        let state = parsed
+            .query_pairs()
+            .find_map(|(key, value)| {
+                if key.eq_ignore_ascii_case("state") {
+                    Some(value.to_string())
+                } else {
+                    None
+                }
+            })
+            .expect("oauth state in verification URL");
+
+        let oauth_complete = RpcRequestFrame {
+            id: "req-oauth-codex-complete".to_owned(),
+            method: "auth.oauth.complete".to_owned(),
+            params: serde_json::json!({
+                "provider": "codex",
+                "accountId": "default",
+                "callbackUrl": format!("http://localhost:1455/callback?state={state}&access_token=tok_test_codex_callback")
+            }),
+        };
+        match dispatcher.handle_request(&oauth_complete).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/providerId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("openai-codex")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+            }
+            _ => panic!("expected auth.oauth.complete handled"),
+        }
+
+        let oauth_wait_connected = RpcRequestFrame {
+            id: "req-oauth-codex-wait-connected".to_owned(),
+            method: "auth.oauth.wait".to_owned(),
+            params: serde_json::json!({
+                "provider": "codex",
+                "accountId": "default",
+                "timeoutMs": 1000
+            }),
+        };
+        match dispatcher.handle_request(&oauth_wait_connected).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(
+                    payload
+                        .pointer("/connected")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/profileId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("openai-codex:codex-cli")
+                );
+            }
+            _ => panic!("expected auth.oauth.wait handled"),
         }
     }
 

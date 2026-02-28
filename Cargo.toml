@@ -1,6 +1,6 @@
 [package]
 name = "openclaw-agent-rs"
-version = "1.7.12"
+version = "1.7.13"
 edition = "2021"
 rust-version = "1.83"
 license = "MIT"

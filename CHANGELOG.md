@@ -5,6 +5,40 @@
 ### Highlights
 - No unreleased changes.
 
+## v1.7.13 - 2026-02-28
+
+### Highlights
+- Added Telegram callback completion flow for phone-origin auth handoff:
+  - Added `/auth complete <provider> <callback_url_or_access_token> [session_id] [account]`.
+  - Added support for `/auth complete <callback_url> [provider] [session_id] [account]`.
+  - Added callback URL detection for localhost-style OAuth redirects pasted from mobile/browser sessions.
+- Extended gateway `auth.oauth.complete` to accept callback URLs directly:
+  - Added `callbackUrl` param support with session/provider/account resolution.
+  - Added callback parsing for query and fragment fields (`access_token`, `code`, `state`, etc.).
+  - Added callback-state based session correlation and provider/account fallback resolution.
+- Added Codex PKCE start flow wiring for session-based callback exchange:
+  - `auth.oauth.start` for `openai-codex` now emits a full authorization URL with `state + code_challenge`.
+  - OAuth sessions now persist callback metadata (`oauthState`, `pkceVerifier`, `redirectUri`, `tokenUrl`, `clientId`, `authorizationUrl`).
+  - Added auth completion support for code-exchange path when callback carries an authorization code.
+- Added regression coverage:
+  - Gateway callback completion path without explicit `sessionId`.
+  - Telegram callback URL detector coverage for localhost-style callback payloads.
+- Bumped package version to `1.7.13`.
+
+### Validation
+- `cargo +1.83.0-x86_64-pc-windows-gnu fmt --all -- --check`
+- `cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings`
+- `cargo +1.83.0-x86_64-pc-windows-gnu test`
+- `cargo +1.83.0-x86_64-pc-windows-gnu build --release`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets --features sqlite-state -- -D warnings"`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu build --release --features sqlite-state"`
+- `./scripts/parity/method-surface-diff.ps1 -Surface both -UpstreamRepoPath ..\openclaw`
+- `./scripts/parity/build-scoreboard.ps1 -IncludeGeneratedAt`
+- `./scripts/parity/run-cp0-gate.ps1 -UpstreamRepoPath ..\openclaw`
+- `./scripts/run-docker-parity-smoke.ps1`
+- `wsl -d Ubuntu-20.04 -- bash -lc 'source $HOME/.cargo/env && cd /mnt/c/Users/Ady/Documents/openclaw-rust && CARGO_TARGET_DIR=target-linux-ubuntu20 cargo +1.83.0 build --release'`
+
 ## v1.7.12 - 2026-02-28
 
 ### Highlights

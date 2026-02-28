@@ -854,6 +854,9 @@ fn format_auth_help() -> String {
     out.push_str("/auth bridge\n");
     out.push_str("/auth start <provider> [account] [--force]\n");
     out.push_str("/auth wait <provider> [session_id] [account] [--timeout <seconds>]\n");
+    out.push_str(
+        "/auth complete <provider> <callback_url_or_access_token> [session_id] [account]\n",
+    );
     out.push_str("/auth wait session <session_id> [account]\n");
     out.push_str("/auth help\n");
     out.push_str("\nExamples:\n");
@@ -861,6 +864,7 @@ fn format_auth_help() -> String {
     out.push_str("/auth status openai\n");
     out.push_str("/auth bridge\n");
     out.push_str("/auth wait kimi --timeout 90\n");
+    out.push_str("/auth complete codex http://localhost:1455/callback?code=...\n");
     out.push_str("/auth wait session <session_id>\n");
     out.trim_end().to_owned()
 }
@@ -994,6 +998,15 @@ fn to_bridge_health_url(raw: &str) -> Option<String> {
         return Some(format!("{}{}", prefix.trim_end_matches('/'), "/health"));
     }
     Some(format!("{}/health", candidate.trim_end_matches('/')))
+}
+
+fn looks_like_oauth_callback_value(raw: &str) -> bool {
+    let candidate = raw.trim().to_ascii_lowercase();
+    candidate.starts_with("http://")
+        || candidate.starts_with("https://")
+        || candidate.starts_with("localhost:")
+        || candidate.starts_with("127.0.0.1:")
+        || candidate.starts_with("/callback")
 }
 
 fn parse_tts_audio_clip(payload: &Value) -> Result<TelegramTtsAudioClip, String> {
@@ -1464,6 +1477,9 @@ impl TelegramBridge {
         if args[0].eq_ignore_ascii_case("wait") {
             return self.handle_auth_wait_command(&args).await;
         }
+        if args[0].eq_ignore_ascii_case("complete") {
+            return self.handle_auth_complete_command(&args).await;
+        }
         Ok(format!(
             "Unknown /auth subcommand `{}`.\n\n{}",
             args[0],
@@ -1744,6 +1760,11 @@ impl TelegramBridge {
                 out,
                 "OpenAI browser auth note: if you do not see a code field, just complete ChatGPT login in the bridge browser session."
             );
+        } else if resolved_provider.eq_ignore_ascii_case("openai-codex") {
+            let _ = writeln!(
+                out,
+                "Codex callback note: after login, copy the localhost callback URL and run `/auth complete codex <callback_url>`."
+            );
         }
         if let Some(session) = session_id {
             let _ = write!(
@@ -1913,6 +1934,125 @@ impl TelegramBridge {
                     "If login is still pending, run `/auth wait {resolved_provider}`."
                 );
             }
+        }
+        Ok(out.trim_end().to_owned())
+    }
+
+    async fn handle_auth_complete_command(&self, args: &[&str]) -> Result<String, String> {
+        if args.len() < 2 {
+            return Ok("Usage: /auth complete <provider> <callback_url_or_access_token> [session_id] [account]\nOr: /auth complete <callback_url> [provider] [session_id] [account]".to_owned());
+        }
+
+        let (provider, callback_or_token, positional_index) =
+            if looks_like_oauth_callback_value(args[1]) {
+                let callback_or_token = normalize_optional_text(args[1]);
+                let mut provider = "openai-codex".to_owned();
+                let mut positional_index = 2usize;
+                if let Some(candidate_provider) = args.get(2) {
+                    let candidate = normalize_provider_alias(candidate_provider);
+                    let is_session_hint = candidate_provider
+                        .to_ascii_lowercase()
+                        .starts_with("oauth-");
+                    if !is_session_hint && !looks_like_oauth_callback_value(candidate_provider) {
+                        if let Some(normalized) = normalize_optional_text(&candidate) {
+                            provider = normalized;
+                            positional_index = 3;
+                        }
+                    }
+                }
+                (provider, callback_or_token, positional_index)
+            } else {
+                (
+                    normalize_provider_alias(args[1]),
+                    args.get(2).and_then(|value| normalize_optional_text(value)),
+                    3usize,
+                )
+            };
+        let mut session_id: Option<String> = None;
+        let mut account_id = TELEGRAM_ACCOUNT_ID.to_owned();
+
+        if callback_or_token.is_none() {
+            return Ok("Usage: /auth complete <provider> <callback_url_or_access_token> [session_id] [account]\nOr: /auth complete <callback_url> [provider] [session_id] [account]".to_owned());
+        }
+
+        let mut collected = Vec::new();
+        for token in args.iter().skip(positional_index) {
+            if let Some(value) = normalize_optional_text(token) {
+                collected.push(value);
+            }
+        }
+        if let Some(value) = collected.first() {
+            session_id = Some(value.clone());
+        }
+        if let Some(value) = collected.get(1) {
+            account_id = value.clone();
+        }
+
+        let value = callback_or_token.unwrap_or_default();
+        let mut params = json!({
+            "provider": provider,
+            "accountId": account_id.clone()
+        });
+        if looks_like_oauth_callback_value(&value) {
+            params["callbackUrl"] = Value::String(value);
+        } else {
+            params["accessToken"] = Value::String(value);
+        }
+        if let Some(session) = session_id.clone() {
+            params["sessionId"] = Value::String(session);
+        }
+
+        let result = self
+            .gateway_rpc_call(
+                "auth.oauth.complete",
+                params,
+                Duration::from_secs(45),
+                &["operator.read", "operator.write"],
+            )
+            .await?;
+
+        let resolved_provider = result
+            .get("providerId")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+            .unwrap_or_else(|| "unknown".to_owned());
+        let resolved_account = result
+            .get("accountId")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+            .unwrap_or(account_id);
+        let connected = result
+            .get("connected")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let mut out =
+            format!(
+            "OAuth completion result for `{resolved_provider}` (account `{resolved_account}`): {}",
+            if connected { "connected" } else { "not connected" }
+        );
+        if let Some(profile) = result
+            .get("profileId")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+        {
+            let _ = writeln!(out, "\nProfile: {profile}");
+        }
+        if let Some(source) = result
+            .get("source")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+        {
+            let _ = writeln!(out, "Source: {source}");
+        }
+        if let Some(preview) = result
+            .get("accessTokenPreview")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+        {
+            let _ = writeln!(out, "Token: {preview}");
+        }
+        if let Some(expires_at) = result.get("expiresAtMs").and_then(Value::as_u64) {
+            let _ = writeln!(out, "ExpiresAtMs: {expires_at}");
         }
         Ok(out.trim_end().to_owned())
     }
@@ -2689,9 +2829,9 @@ mod tests {
     use super::{
         allows_group_message, build_session_key, derive_gateway_ws_url, extract_assistant_reply,
         extract_model_candidates, extract_telegram_settings, is_allowed_by_dm_policy,
-        normalize_provider_alias, parse_auth_wait_timeout_ms, parse_telegram_control_command,
-        resolve_model_selection, to_bridge_health_url, CatalogModel, TelegramControlCommand,
-        AGENT_RPC_TIMEOUT_MS, AGENT_WAIT_TIMEOUT_MS,
+        looks_like_oauth_callback_value, normalize_provider_alias, parse_auth_wait_timeout_ms,
+        parse_telegram_control_command, resolve_model_selection, to_bridge_health_url,
+        CatalogModel, TelegramControlCommand, AGENT_RPC_TIMEOUT_MS, AGENT_WAIT_TIMEOUT_MS,
     };
     use crate::config::Config;
     use serde_json::json;
@@ -2927,6 +3067,20 @@ mod tests {
             to_bridge_health_url("http://127.0.0.1:43110/v1/chat/completions").as_deref(),
             Some("http://127.0.0.1:43110/health")
         );
+    }
+
+    #[test]
+    fn oauth_callback_value_detector_accepts_localhost_urls() {
+        assert!(looks_like_oauth_callback_value(
+            "http://localhost:1455/callback?code=abc"
+        ));
+        assert!(looks_like_oauth_callback_value(
+            "https://example.com/callback#access_token=xyz"
+        ));
+        assert!(looks_like_oauth_callback_value(
+            "localhost:1455/callback?code=abc"
+        ));
+        assert!(!looks_like_oauth_callback_value("tok_test_openai_access"));
     }
 
     #[test]

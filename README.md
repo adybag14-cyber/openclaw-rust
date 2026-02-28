@@ -35,14 +35,14 @@ provider runtime, persistence, performance strategy, and release layout), see:
   - Added live mesh runtime probes to `edge.mesh.status` using `mesh.ping` invoke waits, returning probe success/timeout telemetry and failed-peer summaries.
   - Added table-8 edge capability surfaces (excluding autonomous self-forking): decentralized identity trust (`edge.identity.trust.status`), personality engine (`edge.personality.profile`), cross-device handoff planning (`edge.handoff.plan`), marketplace revenue preview (`edge.marketplace.revenue.preview`), cluster finetune planning (`edge.finetune.cluster.plan`), ethical alignment evaluation (`edge.alignment.evaluate`), quantum-safe status (`edge.quantum.status`), and mixed-initiative collaboration planning (`edge.collaboration.plan`).
 - Latest full validation matrix:
-  - `cargo +1.83.0-x86_64-pc-windows-gnu test` -> `403` passed (`1` ignored)
-  - `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"` -> `407` passed (`1` ignored)
+  - `cargo +1.83.0-x86_64-pc-windows-gnu test` -> `405` passed (`1` ignored)
+  - `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"` -> `409` passed (`1` ignored)
   - `cargo +1.83.0-x86_64-pc-windows-gnu fmt --all -- --check` + `cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings` pass
   - Windows release builds pass: `cargo +1.83.0-x86_64-pc-windows-gnu build --release` and `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu build --release --features sqlite-state"`
   - Ubuntu 20.04 WSL release build passes: `wsl -d Ubuntu-20.04 -- bash -lc 'source $HOME/.cargo/env && cd /mnt/c/Users/Ady/Documents/openclaw-rust && CARGO_TARGET_DIR=target-linux-ubuntu20 cargo +1.83.0 build --release'`
   - Docker parity smoke passes with workstation Docker memory profile updated: `./scripts/run-docker-parity-smoke.ps1`
   - Ubuntu 20.04 runtime RSS probe peak (active RPC traffic): `15.38 MB` (`MAX_RSS_KB=15744`)
-  - Current release tag: `v1.7.12`
+  - Current release tag: `v1.7.13`
 
 ## Implemented runtime coverage
 
@@ -62,7 +62,7 @@ provider runtime, persistence, performance strategy, and release layout), see:
 - Telegram bridge operator commands for live runtime control:
   - `/model list [provider]` and `/model <provider>/<model>` for session model selection.
   - `/set api key <provider> <key>` for provider credential patching into `models.providers.<provider>.apiKey`.
-  - `/auth providers`, `/auth status [provider] [account]`, `/auth bridge`, `/auth start <provider> [account]`, and `/auth wait ... [--timeout <seconds>]` for OAuth login handoff diagnostics and control.
+  - `/auth providers`, `/auth status [provider] [account]`, `/auth bridge`, `/auth start <provider> [account]`, `/auth wait ... [--timeout <seconds>]`, and `/auth complete ...` for OAuth login handoff diagnostics and callback completion.
   - `/tts status|providers|provider|on|off|speak` for Telegram-native TTS runtime control and audio clip delivery.
 - Runtime defender hardening extensions including EDR telemetry ingestion and runtime binary attestation checks.
 
