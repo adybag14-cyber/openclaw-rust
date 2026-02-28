@@ -15,7 +15,7 @@ provider runtime, persistence, performance strategy, and release layout), see:
 
 - End-to-end Rust parity program status: **complete**.
 - Feature audit scoreboard: `22 implemented`, `0 partial`, `0 deferred`.
-- RPC method-surface parity: `132` Rust methods, `100%` coverage vs upstream base + handlers.
+- RPC method-surface parity: `133` Rust methods, `100%` coverage vs upstream base + handlers.
 - Runtime audit: blanket dead-code suppression removed; only targeted transcript-entry allowance remains in `tool_runtime` for parity/test inspection fields.
 - Memory integrations shipped in the `1.6.6` baseline:
   - Added a native Rust `zvec`-style persistent vector memory engine (`src/persistent_memory.rs`) with bounded on-disk storage and cosine top-k recall.
@@ -35,14 +35,14 @@ provider runtime, persistence, performance strategy, and release layout), see:
   - Added live mesh runtime probes to `edge.mesh.status` using `mesh.ping` invoke waits, returning probe success/timeout telemetry and failed-peer summaries.
   - Added table-8 edge capability surfaces (excluding autonomous self-forking): decentralized identity trust (`edge.identity.trust.status`), personality engine (`edge.personality.profile`), cross-device handoff planning (`edge.handoff.plan`), marketplace revenue preview (`edge.marketplace.revenue.preview`), cluster finetune planning (`edge.finetune.cluster.plan`), ethical alignment evaluation (`edge.alignment.evaluate`), quantum-safe status (`edge.quantum.status`), and mixed-initiative collaboration planning (`edge.collaboration.plan`).
 - Latest full validation matrix:
-  - `cargo +1.83.0-x86_64-pc-windows-gnu test` -> `405` passed (`1` ignored)
-  - `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"` -> `409` passed (`1` ignored)
+  - `cargo +1.83.0-x86_64-pc-windows-gnu test` -> `406` passed (`1` ignored)
+  - `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"` -> `410` passed (`1` ignored)
   - `cargo +1.83.0-x86_64-pc-windows-gnu fmt --all -- --check` + `cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings` pass
   - Windows release builds pass: `cargo +1.83.0-x86_64-pc-windows-gnu build --release` and `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu build --release --features sqlite-state"`
   - Ubuntu 20.04 WSL release build passes: `wsl -d Ubuntu-20.04 -- bash -lc 'source $HOME/.cargo/env && cd /mnt/c/Users/Ady/Documents/openclaw-rust && CARGO_TARGET_DIR=target-linux-ubuntu20 cargo +1.83.0 build --release'`
   - Docker parity smoke passes with workstation Docker memory profile updated: `./scripts/run-docker-parity-smoke.ps1`
   - Ubuntu 20.04 runtime RSS probe peak (active RPC traffic): `15.38 MB` (`MAX_RSS_KB=15744`)
-  - Current release tag: `v1.7.13`
+  - Current release tag: `v1.7.14`
 
 ## Implemented runtime coverage
 

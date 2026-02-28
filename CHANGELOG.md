@@ -5,6 +5,31 @@
 ### Highlights
 - No unreleased changes.
 
+## v1.7.14 - 2026-02-28
+
+### Highlights
+- Restored full upstream parity coverage for latest OpenClaw release surfaces by implementing `secrets.reload` end-to-end in Rust gateway:
+  - Added `secrets.reload` to `MethodRegistry`, `SUPPORTED_RPC_METHODS`, and RPC dispatcher routing.
+  - Added `ConfigRegistry::reload_from_store` to rehydrate config snapshots from store-path sources before runtime synchronization.
+  - Added gateway handler `handle_secrets_reload` that applies runtime sync across config/agents/memory/send/sessions/channels/cron/device/node/web-login/oauth/wizard registries and reports aggregate warning count.
+  - Added regression coverage `dispatcher_secrets_reload_returns_ok_and_warning_count`.
+- Refreshed parity artifacts and scoreboard after parity completion.
+- Bumped package version to `1.7.14`.
+
+### Validation
+- `cargo +1.83.0-x86_64-pc-windows-gnu fmt --all -- --check`
+- `cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings`
+- `cargo +1.83.0-x86_64-pc-windows-gnu test`
+- `cargo +1.83.0-x86_64-pc-windows-gnu build --release`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets --features sqlite-state -- -D warnings"`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu build --release --features sqlite-state"`
+- `./scripts/parity/method-surface-diff.ps1 -Surface both -UpstreamRepoPath ..\openclaw`
+- `./scripts/parity/build-scoreboard.ps1 -IncludeGeneratedAt`
+- `./scripts/parity/run-cp0-gate.ps1 -UpstreamRepoPath ..\openclaw`
+- `./scripts/run-docker-parity-smoke.ps1`
+- `wsl -d Ubuntu-20.04 -- bash -lc 'source $HOME/.cargo/env && cd /mnt/c/Users/Ady/Documents/openclaw-rust && CARGO_TARGET_DIR=target-linux-ubuntu20 cargo +1.83.0 build --release'`
+
 ## v1.7.13 - 2026-02-28
 
 ### Highlights
