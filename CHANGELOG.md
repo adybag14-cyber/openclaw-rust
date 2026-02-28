@@ -5,6 +5,38 @@
 ### Highlights
 - No unreleased changes.
 
+## v1.7.12 - 2026-02-28
+
+### Highlights
+- Expanded Telegram auth operator flow for phone-driven browser-session handoff:
+  - Added `/auth status [provider] [account]` for provider/account OAuth state checks.
+  - Added `/auth bridge` diagnostics to probe configured ChatGPT bridge candidates and `/health` endpoints.
+  - Added `/auth wait ... --timeout <seconds>` / `--timeout-ms` to tune long-lived browser auth waits.
+- Added first-class Telegram TTS command surface and runtime delivery:
+  - Added `/tts status|providers|provider|on|off|speak`.
+  - Added multipart Telegram media upload path (`sendVoice`/`sendAudio`) so `tts.convert` output is delivered as playable audio, not text-only placeholders.
+  - Added optional automatic audio reply emission when runtime TTS is enabled.
+- Hardened gateway `tts.convert` behavior for bridge/runtime integration:
+  - Added explicit `outputFormat` support (`mp3`, `opus`, `wav`) and validation.
+  - Added `requireRealAudio` guard for callers that must reject simulated synthesis fallback.
+  - Added deterministic WAV synthesis fallback bytes for simulated mode.
+- Added regression coverage for new Telegram `/tts` parsing, auth wait timeout parsing, bridge URL normalization, and gateway `tts.convert` format validation.
+- Bumped package version to `1.7.12`.
+
+### Validation
+- `cargo +1.83.0-x86_64-pc-windows-gnu fmt --all -- --check`
+- `cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings`
+- `cargo +1.83.0-x86_64-pc-windows-gnu test`
+- `cargo +1.83.0-x86_64-pc-windows-gnu build --release`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu test --features sqlite-state"`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu clippy --all-targets --features sqlite-state -- -D warnings"`
+- `./scripts/with-mingw-env.ps1 "cargo +1.83.0-x86_64-pc-windows-gnu build --release --features sqlite-state"`
+- `./scripts/parity/method-surface-diff.ps1 -Surface both -UpstreamRepoPath ..\openclaw`
+- `./scripts/parity/build-scoreboard.ps1 -IncludeGeneratedAt`
+- `./scripts/parity/run-cp0-gate.ps1 -UpstreamRepoPath ..\openclaw`
+- `./scripts/run-docker-parity-smoke.ps1`
+- `wsl -d Ubuntu-20.04 -- bash -lc 'source $HOME/.cargo/env && cd /mnt/c/Users/Ady/Documents/openclaw-rust && CARGO_TARGET_DIR=target-linux-ubuntu20 cargo +1.83.0 build --release'`
+
 ## v1.7.11 - 2026-02-27
 
 ### Highlights

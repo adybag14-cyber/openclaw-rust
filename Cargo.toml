@@ -1,6 +1,6 @@
 [package]
 name = "openclaw-agent-rs"
-version = "1.7.11"
+version = "1.7.12"
 edition = "2021"
 rust-version = "1.83"
 license = "MIT"
@@ -18,7 +18,7 @@ clap = { version = "4.5.40", features = ["derive", "env"] }
 futures-util = "0.3.31"
 hmac = "0.12.1"
 regex = "1.11.1"
-reqwest = { version = "0.12.15", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12.15", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 rusqlite = { version = "0.32.1", features = ["bundled"], optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"

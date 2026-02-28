@@ -2383,8 +2383,20 @@ impl RpcDispatcher {
         let state = self.tts.snapshot().await;
         let config_snapshot = self.config.get_snapshot().await;
         let runtime_profile = runtime_feature_profile_from_config(&config_snapshot.config);
-        let (output_format, extension, voice_compatible) = if channel.as_deref() == Some("telegram")
-        {
+        let format_override =
+            normalize_optional_text(params.output_format, 16).map(|value| normalize(&value));
+        let (output_format, extension, voice_compatible) = if let Some(explicit) = format_override {
+            match explicit.as_str() {
+                "opus" | "ogg" | "oga" => ("opus", ".opus", true),
+                "wav" | "wave" => ("wav", ".wav", false),
+                "mp3" => ("mp3", ".mp3", false),
+                other => {
+                    return RpcDispatchOutcome::bad_request(format!(
+                        "invalid tts.convert outputFormat `{other}` (use mp3, opus, or wav)"
+                    ));
+                }
+            }
+        } else if channel.as_deref() == Some("telegram") {
             ("opus", ".opus", true)
         } else {
             ("mp3", ".mp3", false)
@@ -2398,6 +2410,11 @@ impl RpcDispatcher {
             runtime_profile,
         )
         .await;
+        if params.require_real_audio.unwrap_or(false) && audio_blob.source == "simulated" {
+            return RpcDispatchOutcome::bad_request(
+                "tts.convert could not synthesize real audio with configured providers",
+            );
+        }
         let audio_bytes = audio_blob.bytes;
         let audio_base64 = BASE64_STANDARD.encode(&audio_bytes);
         let io_state = self
@@ -2426,6 +2443,7 @@ impl RpcDispatcher {
             "runtimeProfile": runtime_profile.as_str(),
             "providerUsed": audio_blob.provider_used,
             "synthSource": audio_blob.source,
+            "realAudio": audio_blob.source != "simulated",
             "outputFormat": output_format,
             "voiceCompatible": voice_compatible,
             "audioBytes": audio_bytes.len(),
@@ -18832,6 +18850,46 @@ fn synthesize_tts_audio_blob_simulated(text: &str, output_format: &str) -> (Vec<
     let sample_rate_hz = 24_000_u32;
     let duration_ms = ((text.chars().count() as u64) * 45).clamp(400, 15_000);
     let frame_count = ((duration_ms * sample_rate_hz as u64) / 1_000).max(128) as usize;
+    if output_format.eq_ignore_ascii_case("wav") || output_format.eq_ignore_ascii_case("wave") {
+        let mut hasher = Sha256::new();
+        hasher.update(text.as_bytes());
+        hasher.update(output_format.as_bytes());
+        let digest = hasher.finalize();
+        let tone_a_hz = 180.0_f32 + (digest[0] as f32 % 120.0_f32);
+        let tone_b_hz = 320.0_f32 + (digest[1] as f32 % 180.0_f32);
+        let mut pcm = Vec::with_capacity(frame_count * 2);
+        for sample_idx in 0..frame_count {
+            let t = sample_idx as f32 / sample_rate_hz as f32;
+            let envelope = if sample_idx < frame_count / 12 {
+                sample_idx as f32 / (frame_count / 12).max(1) as f32
+            } else {
+                1.0
+            };
+            let value = ((2.0 * std::f32::consts::PI * tone_a_hz * t).sin() * 0.55
+                + (2.0 * std::f32::consts::PI * tone_b_hz * t).sin() * 0.35)
+                * envelope;
+            let sample = (value.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+            pcm.extend_from_slice(&sample.to_le_bytes());
+        }
+        let data_len = pcm.len() as u32;
+        let mut wav = Vec::with_capacity(44 + pcm.len());
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36u32.saturating_add(data_len)).to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes()); // PCM fmt chunk size
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+        wav.extend_from_slice(&sample_rate_hz.to_le_bytes());
+        let byte_rate = sample_rate_hz * 2;
+        wav.extend_from_slice(&byte_rate.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes()); // block align
+        wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        wav.extend_from_slice(&pcm);
+        return (wav, duration_ms, sample_rate_hz);
+    }
     let mut bytes = Vec::with_capacity(frame_count.min(4_096) + 16);
     let header = if output_format.eq_ignore_ascii_case("opus") {
         b"OPUSSIM\0"
@@ -27869,6 +27927,10 @@ struct TtsConvertParams {
     channel: Option<String>,
     #[serde(rename = "outputDevice", alias = "output_device")]
     output_device: Option<String>,
+    #[serde(rename = "outputFormat", alias = "output_format")]
+    output_format: Option<String>,
+    #[serde(rename = "requireRealAudio", alias = "require_real_audio")]
+    require_real_audio: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -37613,6 +37675,22 @@ mod tests {
             _ => panic!("expected missing text rejection"),
         }
 
+        let convert_invalid_format = RpcRequestFrame {
+            id: "req-tts-convert-invalid-format".to_owned(),
+            method: "tts.convert".to_owned(),
+            params: serde_json::json!({
+                "text": "hello voice",
+                "outputFormat": "flac"
+            }),
+        };
+        match dispatcher.handle_request(&convert_invalid_format).await {
+            RpcDispatchOutcome::Error { code, message, .. } => {
+                assert_eq!(code, 400);
+                assert!(message.contains("invalid tts.convert outputFormat"));
+            }
+            _ => panic!("expected invalid output format rejection"),
+        }
+
         let convert = RpcRequestFrame {
             id: "req-tts-convert".to_owned(),
             method: "tts.convert".to_owned(),
@@ -37684,6 +37762,37 @@ mod tests {
                 );
             }
             _ => panic!("expected tts.convert handled"),
+        }
+
+        let convert_wav = RpcRequestFrame {
+            id: "req-tts-convert-wav".to_owned(),
+            method: "tts.convert".to_owned(),
+            params: serde_json::json!({
+                "text": "hello wav",
+                "outputFormat": "wav"
+            }),
+        };
+        match dispatcher.handle_request(&convert_wav).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                let audio_path = payload
+                    .pointer("/audioPath")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                assert!(audio_path.ends_with(".wav"));
+                assert_eq!(
+                    payload
+                        .pointer("/outputFormat")
+                        .and_then(serde_json::Value::as_str),
+                    Some("wav")
+                );
+                assert_eq!(
+                    payload
+                        .pointer("/voiceCompatible")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(false)
+                );
+            }
+            _ => panic!("expected wav tts.convert handled"),
         }
 
         let providers = RpcRequestFrame {

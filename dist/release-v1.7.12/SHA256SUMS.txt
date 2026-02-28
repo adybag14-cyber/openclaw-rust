@@ -1,0 +1,5 @@
+22ec177c6d63b1d96ccf1785af4fd382a526435649a90add13ac534bac4e7ed3  openclaw-agent-rs-windows-x86_64.exe
+34c57fe046f7cf05052898a73415688f0e17e6198229ff274ff35b0a03fcab6d  openclaw-agent-rs-linux-ubuntu20.04-x86_64
+e189412cc350e7fdeed8b4be8874b50e21974f3fa2dcc68712f56f26de8a9924  openclaw-agent-rs-v1.7.12-windows-x86_64.zip
+e52837cfc3335b8ac2e86f836584cbb85c05f91bef3c83ca35d9907701299a05  openclaw-agent-rs-v1.7.12-linux-ubuntu20.04-x86_64.tar.gz
+f1d678a484712748c21402f0a2e0da6d6f313c84c59d3e438976d58cafcb4bc9  RELEASE_NOTES.md

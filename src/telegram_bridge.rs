@@ -4,6 +4,8 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::fs;
@@ -26,8 +28,14 @@ const TELEGRAM_REPLY_MAX_CHARS: usize = 3_500;
 const TELEGRAM_MODEL_HELP_MAX_MODELS: usize = 80;
 const TELEGRAM_MODEL_LIST_MAX_MODELS: usize = 120;
 const TELEGRAM_AUTH_LIST_MAX_PROVIDERS: usize = 80;
+const TELEGRAM_AUTH_BRIDGE_MAX_CANDIDATES: usize = 16;
+const TELEGRAM_TTS_TEXT_MAX_CHARS: usize = 2_400;
+const TELEGRAM_TTS_INLINE_SAMPLE_MAX_CHARS: usize = 800;
 const TELEGRAM_OFFSET_FILE_NAME: &str = "update-offset-default.json";
 const TELEGRAM_ACCOUNT_ID: &str = "default";
+const TELEGRAM_AUTH_WAIT_DEFAULT_TIMEOUT_MS: u64 = 30_000;
+const TELEGRAM_AUTH_WAIT_MIN_TIMEOUT_MS: u64 = 5_000;
+const TELEGRAM_AUTH_WAIT_MAX_TIMEOUT_MS: u64 = 300_000;
 
 #[derive(Debug, Clone)]
 struct ModelCandidate {
@@ -47,6 +55,17 @@ enum TelegramControlCommand {
     Model { raw_args: String },
     SetApiKey { raw_args: String },
     Auth { raw_args: String },
+    Tts { raw_args: String },
+}
+
+#[derive(Debug, Clone)]
+struct TelegramTtsAudioClip {
+    bytes: Vec<u8>,
+    output_format: String,
+    duration_ms: Option<u64>,
+    provider_used: Option<String>,
+    source: Option<String>,
+    real_audio: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -295,6 +314,58 @@ impl TelegramBridge {
         Ok(payload.get("result").cloned().unwrap_or(Value::Null))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn telegram_api_multipart(
+        &self,
+        token: &str,
+        method: &str,
+        fields: &[(&str, String)],
+        file_field: &str,
+        file_name: &str,
+        mime: &str,
+        file_bytes: Vec<u8>,
+    ) -> Result<Value, String> {
+        let base = format!("https://api.telegram.org/bot{token}/{method}");
+        let mut form = reqwest::multipart::Form::new();
+        for (key, value) in fields {
+            form = form.text((*key).to_owned(), value.clone());
+        }
+        let part = reqwest::multipart::Part::bytes(file_bytes)
+            .file_name(file_name.to_owned())
+            .mime_str(mime)
+            .map_err(|err| format!("telegram {method} invalid mime `{mime}`: {err}"))?;
+        form = form.part(file_field.to_owned(), part);
+        let response = self
+            .http
+            .post(base)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|err| format!("telegram {method} request failed: {err}"))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|err| format!("telegram {method} body read failed: {err}"))?;
+        if !status.is_success() {
+            return Err(format!(
+                "telegram {method} returned status {}: {}",
+                status.as_u16(),
+                truncate_text(&body, 256)
+            ));
+        }
+        let payload: Value = serde_json::from_str(&body)
+            .map_err(|err| format!("telegram {method} invalid JSON: {err}"))?;
+        if !payload.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            let reason = payload
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("telegram API returned ok=false");
+            return Err(format!("telegram {method} failed: {reason}"));
+        }
+        Ok(payload.get("result").cloned().unwrap_or(Value::Null))
+    }
+
     async fn send_message(
         &self,
         token: &str,
@@ -311,6 +382,64 @@ impl TelegramBridge {
             query.push(("reply_to_message_id", value.to_string()));
         }
         let _ = self.telegram_api(token, "sendMessage", &query).await?;
+        Ok(())
+    }
+
+    async fn send_audio_clip(
+        &self,
+        token: &str,
+        chat_id: i64,
+        caption: Option<&str>,
+        reply_to_message_id: Option<i64>,
+        clip: TelegramTtsAudioClip,
+    ) -> Result<(), String> {
+        let method = if clip.output_format.eq_ignore_ascii_case("opus") {
+            "sendVoice"
+        } else {
+            "sendAudio"
+        };
+        let file_field = if method == "sendVoice" {
+            "voice"
+        } else {
+            "audio"
+        };
+        let format_normalized = clip.output_format.trim().to_ascii_lowercase();
+        let (mime, extension) = match format_normalized.as_str() {
+            "wav" | "wave" => ("audio/wav", "wav"),
+            "opus" | "ogg" | "oga" => ("audio/ogg", "ogg"),
+            _ => ("audio/mpeg", "mp3"),
+        };
+        let mut fields = vec![("chat_id", chat_id.to_string())];
+        if let Some(reply_to) = reply_to_message_id {
+            fields.push(("reply_to_message_id", reply_to.to_string()));
+        }
+        if let Some(caption_text) = caption.and_then(normalize_optional_text) {
+            fields.push(("caption", truncate_text(&caption_text, 1_000)));
+        } else if !clip.real_audio {
+            fields.push((
+                "caption",
+                "OpenClaw TTS fallback audio (simulated voice source)".to_owned(),
+            ));
+        }
+        if let Some(duration_ms) = clip.duration_ms {
+            fields.push(("duration", (duration_ms / 1_000).to_string()));
+        }
+        if method == "sendAudio" {
+            if let Some(provider_used) = clip.provider_used.as_ref() {
+                fields.push((
+                    "title",
+                    truncate_text(&format!("OpenClaw TTS ({provider_used})"), 64),
+                ));
+            } else {
+                fields.push(("title", "OpenClaw TTS".to_owned()));
+            }
+        }
+        let file_name = format!("openclaw-tts-{file_field}.{extension}");
+        let _ = self
+            .telegram_api_multipart(
+                token, method, &fields, file_field, &file_name, mime, clip.bytes,
+            )
+            .await?;
         Ok(())
     }
 }
@@ -571,6 +700,7 @@ fn parse_telegram_control_command(text: &str) -> Option<TelegramControlCommand> 
         "/model" => Some(TelegramControlCommand::Model { raw_args }),
         "/set" => Some(TelegramControlCommand::SetApiKey { raw_args }),
         "/auth" => Some(TelegramControlCommand::Auth { raw_args }),
+        "/tts" => Some(TelegramControlCommand::Tts { raw_args }),
         _ => None,
     }
 }
@@ -638,6 +768,8 @@ fn format_model_help(catalog: &[CatalogModel]) -> String {
     out.push_str("/auth providers\n");
     out.push_str("/auth start <provider> [account]\n");
     out.push_str("/auth wait <provider> [session_id]\n");
+    out.push_str("/tts status\n");
+    out.push_str("/tts speak <text>\n");
     if !by_provider.is_empty() {
         out.push_str("\nProviders in catalog:\n");
         for (index, (provider, count)) in by_provider.iter().enumerate() {
@@ -718,14 +850,34 @@ fn format_auth_help() -> String {
     let mut out = String::new();
     out.push_str("Auth command usage:\n");
     out.push_str("/auth providers\n");
+    out.push_str("/auth status [provider] [account]\n");
+    out.push_str("/auth bridge\n");
     out.push_str("/auth start <provider> [account] [--force]\n");
-    out.push_str("/auth wait <provider> [session_id] [account]\n");
+    out.push_str("/auth wait <provider> [session_id] [account] [--timeout <seconds>]\n");
     out.push_str("/auth wait session <session_id> [account]\n");
     out.push_str("/auth help\n");
     out.push_str("\nExamples:\n");
     out.push_str("/auth start kimi\n");
-    out.push_str("/auth wait kimi\n");
+    out.push_str("/auth status openai\n");
+    out.push_str("/auth bridge\n");
+    out.push_str("/auth wait kimi --timeout 90\n");
     out.push_str("/auth wait session <session_id>\n");
+    out.trim_end().to_owned()
+}
+
+fn format_tts_help() -> String {
+    let mut out = String::new();
+    out.push_str("TTS command usage:\n");
+    out.push_str("/tts status\n");
+    out.push_str("/tts providers\n");
+    out.push_str("/tts provider <openai|elevenlabs|kittentts|edge>\n");
+    out.push_str("/tts on\n");
+    out.push_str("/tts off\n");
+    out.push_str("/tts speak <text>\n");
+    out.push_str("/tts help\n");
+    out.push_str("\nNotes:\n");
+    out.push_str("- `on/off` toggles runtime TTS.\n");
+    out.push_str("- `speak` sends an audio clip directly in Telegram.\n");
     out.trim_end().to_owned()
 }
 
@@ -795,6 +947,93 @@ fn format_auth_provider_list(result: &Value) -> String {
     }
     out.push_str("Use `/auth start <provider>` to begin OAuth login.");
     out.trim_end().to_owned()
+}
+
+fn parse_auth_wait_timeout_ms(args: &[&str]) -> u64 {
+    let mut idx = 0usize;
+    while idx < args.len() {
+        let token = args[idx].trim();
+        let mut parsed: Option<u64> = None;
+        if let Some(value) = token.strip_prefix("--timeout-ms=") {
+            parsed = value.parse::<u64>().ok();
+        } else if token.eq_ignore_ascii_case("--timeout-ms") {
+            parsed = args
+                .get(idx + 1)
+                .and_then(|value| value.parse::<u64>().ok());
+        } else if let Some(value) = token.strip_prefix("--timeout=") {
+            parsed = value
+                .parse::<u64>()
+                .ok()
+                .map(|seconds| seconds.saturating_mul(1_000));
+        } else if token.eq_ignore_ascii_case("--timeout") {
+            parsed = args
+                .get(idx + 1)
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(|seconds| seconds.saturating_mul(1_000));
+        }
+        if let Some(timeout_ms) = parsed {
+            return timeout_ms.clamp(
+                TELEGRAM_AUTH_WAIT_MIN_TIMEOUT_MS,
+                TELEGRAM_AUTH_WAIT_MAX_TIMEOUT_MS,
+            );
+        }
+        idx = idx.saturating_add(1);
+    }
+    TELEGRAM_AUTH_WAIT_DEFAULT_TIMEOUT_MS
+}
+
+fn to_bridge_health_url(raw: &str) -> Option<String> {
+    let candidate = normalize_optional_text(raw)?;
+    if candidate.contains("/health") {
+        return Some(candidate);
+    }
+    if let Some(prefix) = candidate.strip_suffix("/v1/chat/completions") {
+        return Some(format!("{}{}", prefix.trim_end_matches('/'), "/health"));
+    }
+    if let Some(prefix) = candidate.strip_suffix("/v1") {
+        return Some(format!("{}{}", prefix.trim_end_matches('/'), "/health"));
+    }
+    Some(format!("{}/health", candidate.trim_end_matches('/')))
+}
+
+fn parse_tts_audio_clip(payload: &Value) -> Result<TelegramTtsAudioClip, String> {
+    let audio_base64 = payload
+        .get("audioBase64")
+        .and_then(Value::as_str)
+        .and_then(normalize_optional_text)
+        .ok_or_else(|| "tts.convert response missing audioBase64".to_owned())?;
+    let bytes = BASE64_STANDARD
+        .decode(audio_base64.as_bytes())
+        .map_err(|err| format!("tts.convert audio decode failed: {err}"))?;
+    if bytes.is_empty() {
+        return Err("tts.convert returned empty audio bytes".to_owned());
+    }
+    let output_format = payload
+        .get("outputFormat")
+        .and_then(Value::as_str)
+        .and_then(normalize_optional_text)
+        .unwrap_or_else(|| "mp3".to_owned());
+    let duration_ms = payload.get("durationMs").and_then(Value::as_u64);
+    let provider_used = payload
+        .get("providerUsed")
+        .and_then(Value::as_str)
+        .and_then(normalize_optional_text);
+    let source = payload
+        .get("synthSource")
+        .and_then(Value::as_str)
+        .and_then(normalize_optional_text);
+    let real_audio = source
+        .as_deref()
+        .map(|value| !value.eq_ignore_ascii_case("simulated"))
+        .unwrap_or(false);
+    Ok(TelegramTtsAudioClip {
+        bytes,
+        output_format,
+        duration_ms,
+        provider_used,
+        source,
+        real_audio,
+    })
 }
 
 fn extract_message_text(message: &Value) -> Option<String> {
@@ -1126,13 +1365,21 @@ impl TelegramBridge {
         }
         if let Some(command) = parse_telegram_control_command(&text) {
             let response = self
-                .handle_control_command(&session_key, command)
+                .handle_control_command(
+                    &session_key,
+                    command,
+                    &settings.bot_token,
+                    chat_id,
+                    message_id,
+                )
                 .await
                 .unwrap_or_else(|err| {
                     format!("OpenClaw Rust command error: {}", truncate_text(&err, 350))
                 });
-            self.send_message(&settings.bot_token, chat_id, &response, message_id)
-                .await?;
+            if !response.is_empty() {
+                self.send_message(&settings.bot_token, chat_id, &response, message_id)
+                    .await?;
+            }
             if let Err(err) = self.emit_outbound_event(update_id).await {
                 debug!("telegram outbound event skipped: {err}");
             }
@@ -1150,6 +1397,12 @@ impl TelegramBridge {
 
         self.send_message(&settings.bot_token, chat_id, &response, message_id)
             .await?;
+        if let Err(err) = self
+            .maybe_send_tts_reply(&settings.bot_token, chat_id, message_id, &response)
+            .await
+        {
+            debug!("telegram tts reply skipped: {err}");
+        }
         if let Err(err) = self.emit_outbound_event(update_id).await {
             debug!("telegram outbound event skipped: {err}");
         }
@@ -1160,6 +1413,9 @@ impl TelegramBridge {
         &self,
         session_key: &str,
         command: TelegramControlCommand,
+        token: &str,
+        chat_id: i64,
+        reply_to_message_id: Option<i64>,
     ) -> Result<String, String> {
         match command {
             TelegramControlCommand::Model { raw_args } => {
@@ -1169,6 +1425,10 @@ impl TelegramBridge {
                 self.handle_set_api_key_command(&raw_args).await
             }
             TelegramControlCommand::Auth { raw_args } => self.handle_auth_command(&raw_args).await,
+            TelegramControlCommand::Tts { raw_args } => {
+                self.handle_tts_command(&raw_args, token, chat_id, reply_to_message_id)
+                    .await
+            }
         }
     }
 
@@ -1192,6 +1452,12 @@ impl TelegramBridge {
                 .await?;
             return Ok(format_auth_provider_list(&result));
         }
+        if args[0].eq_ignore_ascii_case("status") {
+            return self.handle_auth_status_command(&args).await;
+        }
+        if args[0].eq_ignore_ascii_case("bridge") {
+            return self.handle_auth_bridge_command().await;
+        }
         if args[0].eq_ignore_ascii_case("start") {
             return self.handle_auth_start_command(&args).await;
         }
@@ -1203,6 +1469,189 @@ impl TelegramBridge {
             args[0],
             format_auth_help()
         ))
+    }
+
+    async fn handle_auth_status_command(&self, args: &[&str]) -> Result<String, String> {
+        let requested_provider = args
+            .get(1)
+            .map(|value| normalize_provider_alias(value))
+            .and_then(|value| normalize_optional_text(&value))
+            .unwrap_or_else(|| "openai".to_owned());
+        let requested_account = args
+            .get(2)
+            .and_then(|value| normalize_optional_text(value))
+            .unwrap_or_else(|| TELEGRAM_ACCOUNT_ID.to_owned());
+        let providers = self
+            .gateway_rpc_call(
+                "auth.oauth.providers",
+                json!({}),
+                Duration::from_secs(15),
+                &["operator.read"],
+            )
+            .await?;
+        let entries = providers
+            .get("providers")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "auth.oauth.providers missing providers".to_owned())?;
+        let Some(provider_entry) = entries.iter().find(|entry| {
+            entry
+                .get("providerId")
+                .and_then(Value::as_str)
+                .map(|value| value.eq_ignore_ascii_case(&requested_provider))
+                .unwrap_or(false)
+        }) else {
+            return Ok(format!(
+                "OAuth provider `{requested_provider}` not found. Use `/auth providers`."
+            ));
+        };
+
+        let display_name = provider_entry
+            .get("displayName")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+            .unwrap_or_else(|| requested_provider.clone());
+        let connected_accounts = provider_entry
+            .get("connectedAccounts")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let mut out = format!(
+            "OAuth status for `{requested_provider}` ({display_name})\nConnected accounts: {connected_accounts}"
+        );
+        let accounts = provider_entry
+            .get("accounts")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if accounts.is_empty() {
+            let _ = writeln!(out, "\nNo accounts connected.");
+            if requested_provider.eq_ignore_ascii_case("openai") {
+                let _ = writeln!(out, "Start with: /auth start openai");
+            }
+            return Ok(out.trim_end().to_owned());
+        }
+        for account in accounts.iter().take(8) {
+            let account_id = account
+                .get("accountId")
+                .and_then(Value::as_str)
+                .and_then(normalize_optional_text)
+                .unwrap_or_else(|| "default".to_owned());
+            let connected_marker = if account_id.eq_ignore_ascii_case(&requested_account) {
+                "*"
+            } else {
+                "-"
+            };
+            let profile_id = account
+                .get("profileId")
+                .and_then(Value::as_str)
+                .and_then(normalize_optional_text)
+                .unwrap_or_else(|| "<unknown>".to_owned());
+            let expires_at_ms = account.get("expiresAtMs").and_then(Value::as_u64);
+            let source = account
+                .get("source")
+                .and_then(Value::as_str)
+                .and_then(normalize_optional_text)
+                .unwrap_or_else(|| "unknown".to_owned());
+            let _ = writeln!(
+                out,
+                "\n{connected_marker} account `{account_id}` profile `{profile_id}`"
+            );
+            if let Some(expires) = expires_at_ms {
+                let _ = writeln!(out, "  expiresAtMs: {expires}");
+            }
+            let _ = writeln!(out, "  source: {source}");
+        }
+        if requested_provider.eq_ignore_ascii_case("openai") {
+            let _ = writeln!(
+                out,
+                "\nUse `/auth bridge` to check ChatGPT bridge reachability."
+            );
+        }
+        Ok(out.trim_end().to_owned())
+    }
+
+    async fn handle_auth_bridge_command(&self) -> Result<String, String> {
+        let result = self
+            .gateway_rpc_call(
+                "config.get",
+                json!({}),
+                Duration::from_secs(15),
+                &["operator.read"],
+            )
+            .await?;
+        let config = result
+            .get("config")
+            .cloned()
+            .ok_or_else(|| "config.get missing config object".to_owned())?;
+        if !config.is_object() {
+            return Err("config.get missing config object".to_owned());
+        }
+        let mut candidates = Vec::new();
+        if let Some(values) = config
+            .pointer("/auth/oauth/chatgptBrowser/bridgeBaseUrls")
+            .and_then(Value::as_array)
+        {
+            for value in values {
+                if let Some(raw) = value.as_str().and_then(normalize_optional_text) {
+                    candidates.push(raw);
+                }
+            }
+        }
+        if let Some(raw) = config
+            .pointer("/models/providers/openai/baseUrl")
+            .and_then(Value::as_str)
+            .and_then(normalize_optional_text)
+        {
+            candidates.push(raw);
+        }
+        if let Some(values) = config
+            .pointer("/models/providers/openai/bridgeBaseUrls")
+            .and_then(Value::as_array)
+        {
+            for value in values {
+                if let Some(raw) = value.as_str().and_then(normalize_optional_text) {
+                    candidates.push(raw);
+                }
+            }
+        }
+        candidates.sort();
+        candidates.dedup();
+        if candidates.is_empty() {
+            return Ok(
+                "No ChatGPT bridge candidates configured. Set auth/oauth chatgptBrowser bridgeBaseUrls."
+                    .to_owned(),
+            );
+        }
+        let mut out = String::from("Auth bridge diagnostics:\n");
+        for candidate in candidates.iter().take(TELEGRAM_AUTH_BRIDGE_MAX_CANDIDATES) {
+            let Some(health_url) = to_bridge_health_url(candidate) else {
+                continue;
+            };
+            let check = self
+                .http
+                .get(&health_url)
+                .timeout(Duration::from_secs(7))
+                .send()
+                .await;
+            match check {
+                Ok(response) => {
+                    let status = response.status();
+                    let body = response.text().await.unwrap_or_default();
+                    let body_preview = truncate_text(&body.replace('\n', " "), 120);
+                    let _ = writeln!(
+                        out,
+                        "- {candidate}\n  health: {} {}\n  body: {}",
+                        status.as_u16(),
+                        status.canonical_reason().unwrap_or(""),
+                        body_preview
+                    );
+                }
+                Err(err) => {
+                    let _ = writeln!(out, "- {candidate}\n  health: error ({})", err);
+                }
+            }
+        }
+        out.push_str("If all health checks fail, ensure your local bridge and reverse SSH tunnel are running.");
+        Ok(out.trim_end().to_owned())
     }
 
     async fn handle_auth_start_command(&self, args: &[&str]) -> Result<String, String> {
@@ -1290,6 +1739,12 @@ impl TelegramBridge {
         if let Some(value) = message {
             let _ = writeln!(out, "{value}");
         }
+        if resolved_provider.eq_ignore_ascii_case("openai") {
+            let _ = writeln!(
+                out,
+                "OpenAI browser auth note: if you do not see a code field, just complete ChatGPT login in the bridge browser session."
+            );
+        }
         if let Some(session) = session_id {
             let _ = write!(
                 out,
@@ -1308,6 +1763,7 @@ impl TelegramBridge {
                     .to_owned(),
             );
         }
+        let timeout_ms = parse_auth_wait_timeout_ms(args);
         let mut provider: Option<String> = None;
         let mut session_id: Option<String> = None;
         let mut account_id = TELEGRAM_ACCOUNT_ID.to_owned();
@@ -1317,16 +1773,55 @@ impl TelegramBridge {
                 return Ok("Usage: /auth wait session <session_id> [account]".to_owned());
             }
             session_id = normalize_optional_text(args[2]);
-            if let Some(account) = args.get(3).and_then(|value| normalize_optional_text(value)) {
-                account_id = account;
+            let mut idx = 3usize;
+            while idx < args.len() {
+                let token = args[idx];
+                if token.eq_ignore_ascii_case("--timeout")
+                    || token.eq_ignore_ascii_case("--timeout-ms")
+                {
+                    idx = idx.saturating_add(2);
+                    continue;
+                }
+                if token.starts_with("--timeout=") || token.starts_with("--timeout-ms=") {
+                    idx = idx.saturating_add(1);
+                    continue;
+                }
+                if let Some(account) = normalize_optional_text(token) {
+                    account_id = account;
+                    break;
+                }
+                idx = idx.saturating_add(1);
             }
         } else {
             let normalized_provider = normalize_provider_alias(args[1]);
             provider = normalize_optional_text(&normalized_provider);
-            if let Some(value) = args.get(2).and_then(|value| normalize_optional_text(value)) {
+            let mut positional = Vec::new();
+            let mut idx = 2usize;
+            while idx < args.len() {
+                let token = args[idx];
+                if token.eq_ignore_ascii_case("--timeout")
+                    || token.eq_ignore_ascii_case("--timeout-ms")
+                {
+                    idx = idx.saturating_add(2);
+                    continue;
+                }
+                if token.starts_with("--timeout=") || token.starts_with("--timeout-ms=") {
+                    idx = idx.saturating_add(1);
+                    continue;
+                }
+                positional.push(token);
+                idx = idx.saturating_add(1);
+            }
+            if let Some(value) = positional
+                .first()
+                .and_then(|value| normalize_optional_text(value))
+            {
                 session_id = Some(value);
             }
-            if let Some(value) = args.get(3).and_then(|value| normalize_optional_text(value)) {
+            if let Some(value) = positional
+                .get(1)
+                .and_then(|value| normalize_optional_text(value))
+            {
                 account_id = value;
             }
         }
@@ -1344,9 +1839,9 @@ impl TelegramBridge {
                     "provider": provider.clone(),
                     "sessionId": session_id.clone(),
                     "accountId": account_id.clone(),
-                    "timeoutMs": 30_000
+                    "timeoutMs": timeout_ms
                 }),
-                Duration::from_secs(45),
+                Duration::from_millis(timeout_ms.saturating_add(15_000)),
                 &["operator.read", "operator.write"],
             )
             .await?;
@@ -1389,6 +1884,7 @@ impl TelegramBridge {
         let mut out = format!(
             "OAuth wait result for `{resolved_provider}` (account `{resolved_account}`): {status}"
         );
+        let _ = writeln!(out, "\nTimeoutMs: {timeout_ms}");
         if let Some(session) = &resolved_session {
             let _ = writeln!(out, "\nSession: {session}");
         }
@@ -1419,6 +1915,235 @@ impl TelegramBridge {
             }
         }
         Ok(out.trim_end().to_owned())
+    }
+
+    async fn maybe_send_tts_reply(
+        &self,
+        token: &str,
+        chat_id: i64,
+        reply_to_message_id: Option<i64>,
+        text: &str,
+    ) -> Result<(), String> {
+        let status = self
+            .gateway_rpc_call(
+                "tts.status",
+                json!({}),
+                Duration::from_secs(15),
+                &["operator.read"],
+            )
+            .await?;
+        if !status
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        let Some(sample) = normalize_optional_text(text)
+            .map(|value| truncate_text(&value, TELEGRAM_TTS_TEXT_MAX_CHARS))
+        else {
+            return Ok(());
+        };
+        let convert = self
+            .gateway_rpc_call(
+                "tts.convert",
+                json!({
+                    "text": sample,
+                    "channel": "telegram",
+                    "outputFormat": "wav",
+                    "requireRealAudio": false
+                }),
+                Duration::from_secs(30),
+                &["operator.read"],
+            )
+            .await?;
+        let clip = parse_tts_audio_clip(&convert)?;
+        self.send_audio_clip(token, chat_id, None, reply_to_message_id, clip)
+            .await
+    }
+
+    async fn handle_tts_command(
+        &self,
+        raw_args: &str,
+        token: &str,
+        chat_id: i64,
+        reply_to_message_id: Option<i64>,
+    ) -> Result<String, String> {
+        let args = raw_args
+            .split_whitespace()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if args.is_empty() || args[0].eq_ignore_ascii_case("help") {
+            return Ok(format_tts_help());
+        }
+        if args[0].eq_ignore_ascii_case("status") {
+            let status = self
+                .gateway_rpc_call(
+                    "tts.status",
+                    json!({}),
+                    Duration::from_secs(15),
+                    &["operator.read"],
+                )
+                .await?;
+            let enabled = status
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let provider = status
+                .get("provider")
+                .and_then(Value::as_str)
+                .and_then(normalize_optional_text)
+                .unwrap_or_else(|| "unknown".to_owned());
+            let fallback = status
+                .get("fallbackProvider")
+                .and_then(Value::as_str)
+                .and_then(normalize_optional_text)
+                .unwrap_or_else(|| "none".to_owned());
+            let openai_key = status
+                .get("hasOpenAIKey")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let elevenlabs_key = status
+                .get("hasElevenLabsKey")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let kittentts = status
+                .get("hasKittenTtsBinary")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            return Ok(format!(
+                "TTS status: {}\nProvider: {}\nFallback: {}\nOpenAI key: {}\nElevenLabs key: {}\nKittenTTS binary: {}",
+                if enabled { "enabled" } else { "disabled" },
+                provider,
+                fallback,
+                if openai_key { "yes" } else { "no" },
+                if elevenlabs_key { "yes" } else { "no" },
+                if kittentts { "yes" } else { "no" }
+            ));
+        }
+        if args[0].eq_ignore_ascii_case("providers") {
+            let providers = self
+                .gateway_rpc_call(
+                    "tts.providers",
+                    json!({}),
+                    Duration::from_secs(15),
+                    &["operator.read"],
+                )
+                .await?;
+            let active = providers
+                .get("active")
+                .and_then(Value::as_str)
+                .and_then(normalize_optional_text)
+                .unwrap_or_else(|| "unknown".to_owned());
+            let entries = providers
+                .get("providers")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let mut out = format!("TTS providers (active: {active}):");
+            for entry in entries.iter().take(12) {
+                let id = entry
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .and_then(normalize_optional_text)
+                    .unwrap_or_else(|| "<unknown>".to_owned());
+                let configured = entry
+                    .get("configured")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let _ = writeln!(
+                    out,
+                    "\n- {id} ({})",
+                    if configured {
+                        "configured"
+                    } else {
+                        "not configured"
+                    }
+                );
+            }
+            return Ok(out.trim_end().to_owned());
+        }
+        if args[0].eq_ignore_ascii_case("on") || args[0].eq_ignore_ascii_case("enable") {
+            self.gateway_rpc_call(
+                "tts.enable",
+                json!({}),
+                Duration::from_secs(15),
+                &["operator.write"],
+            )
+            .await?;
+            return Ok(
+                "TTS enabled. New replies will include a Telegram audio clip when synthesis succeeds."
+                    .to_owned(),
+            );
+        }
+        if args[0].eq_ignore_ascii_case("off") || args[0].eq_ignore_ascii_case("disable") {
+            self.gateway_rpc_call(
+                "tts.disable",
+                json!({}),
+                Duration::from_secs(15),
+                &["operator.write"],
+            )
+            .await?;
+            return Ok("TTS disabled.".to_owned());
+        }
+        if args[0].eq_ignore_ascii_case("provider") {
+            let Some(provider) = args.get(1).and_then(|value| normalize_optional_text(value))
+            else {
+                return Ok("Usage: /tts provider <openai|elevenlabs|kittentts|edge>".to_owned());
+            };
+            let result = self
+                .gateway_rpc_call(
+                    "tts.setProvider",
+                    json!({
+                        "provider": provider
+                    }),
+                    Duration::from_secs(15),
+                    &["operator.write"],
+                )
+                .await?;
+            let active = result
+                .get("provider")
+                .and_then(Value::as_str)
+                .and_then(normalize_optional_text)
+                .unwrap_or_else(|| "unknown".to_owned());
+            return Ok(format!("TTS provider set: {active}"));
+        }
+        if args[0].eq_ignore_ascii_case("speak") {
+            let text = args.iter().skip(1).copied().collect::<Vec<_>>().join(" ");
+            let Some(input_text) = normalize_optional_text(&text) else {
+                return Ok("Usage: /tts speak <text>".to_owned());
+            };
+            let payload = self
+                .gateway_rpc_call(
+                    "tts.convert",
+                    json!({
+                        "text": truncate_text(&input_text, TELEGRAM_TTS_INLINE_SAMPLE_MAX_CHARS),
+                        "channel": "telegram",
+                        "outputFormat": "wav",
+                        "requireRealAudio": false
+                    }),
+                    Duration::from_secs(30),
+                    &["operator.read", "operator.write"],
+                )
+                .await?;
+            let clip = parse_tts_audio_clip(&payload)?;
+            let provider_used = clip
+                .provider_used
+                .clone()
+                .unwrap_or_else(|| "unknown".to_owned());
+            let source = clip.source.clone().unwrap_or_else(|| "unknown".to_owned());
+            self.send_audio_clip(token, chat_id, None, reply_to_message_id, clip)
+                .await?;
+            return Ok(format!(
+                "TTS clip sent (providerUsed: {provider_used}, source: {source})."
+            ));
+        }
+        Ok(format!(
+            "Unknown /tts subcommand `{}`.\n\n{}",
+            args[0],
+            format_tts_help()
+        ))
     }
 
     async fn handle_model_command(
@@ -1964,8 +2689,9 @@ mod tests {
     use super::{
         allows_group_message, build_session_key, derive_gateway_ws_url, extract_assistant_reply,
         extract_model_candidates, extract_telegram_settings, is_allowed_by_dm_policy,
-        normalize_provider_alias, parse_telegram_control_command, resolve_model_selection,
-        CatalogModel, TelegramControlCommand, AGENT_RPC_TIMEOUT_MS, AGENT_WAIT_TIMEOUT_MS,
+        normalize_provider_alias, parse_auth_wait_timeout_ms, parse_telegram_control_command,
+        resolve_model_selection, to_bridge_health_url, CatalogModel, TelegramControlCommand,
+        AGENT_RPC_TIMEOUT_MS, AGENT_WAIT_TIMEOUT_MS,
     };
     use crate::config::Config;
     use serde_json::json;
@@ -2130,7 +2856,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_telegram_control_commands_support_model_set_api_key_and_auth() {
+    fn parse_telegram_control_commands_support_model_set_api_key_auth_and_tts() {
         let model =
             parse_telegram_control_command("/model@OpenClawBot list qwen").expect("model command");
         match model {
@@ -2153,6 +2879,12 @@ mod tests {
             TelegramControlCommand::Auth { raw_args } => assert_eq!(raw_args, "start kimi --force"),
             _ => panic!("expected auth command"),
         }
+
+        let tts = parse_telegram_control_command("/tts speak hello world").expect("tts command");
+        match tts {
+            TelegramControlCommand::Tts { raw_args } => assert_eq!(raw_args, "speak hello world"),
+            _ => panic!("expected tts command"),
+        }
     }
 
     #[test]
@@ -2163,6 +2895,38 @@ mod tests {
         assert_eq!(normalize_provider_alias("opencode-go"), "opencode");
         assert_eq!(normalize_provider_alias("kimi-for-coding"), "kimi-coding");
         assert_eq!(normalize_provider_alias("zaiweb"), "zai");
+    }
+
+    #[test]
+    fn auth_wait_timeout_parser_supports_seconds_and_ms_flags() {
+        assert_eq!(
+            parse_auth_wait_timeout_ms(&["wait", "openai", "--timeout", "90"]),
+            90_000
+        );
+        assert_eq!(
+            parse_auth_wait_timeout_ms(&["wait", "openai", "--timeout-ms", "120000"]),
+            120_000
+        );
+        assert_eq!(
+            parse_auth_wait_timeout_ms(&["wait", "openai", "--timeout=45"]),
+            45_000
+        );
+        assert_eq!(
+            parse_auth_wait_timeout_ms(&["wait", "openai", "--timeout-ms=2500"]),
+            5_000
+        );
+    }
+
+    #[test]
+    fn bridge_health_url_normalizes_v1_candidates() {
+        assert_eq!(
+            to_bridge_health_url("http://127.0.0.1:43110/v1").as_deref(),
+            Some("http://127.0.0.1:43110/health")
+        );
+        assert_eq!(
+            to_bridge_health_url("http://127.0.0.1:43110/v1/chat/completions").as_deref(),
+            Some("http://127.0.0.1:43110/health")
+        );
     }
 
     #[test]
@@ -2188,6 +2952,8 @@ mod tests {
 
     #[test]
     fn agent_rpc_timeout_budget_exceeds_agent_wait_timeout() {
-        assert!(AGENT_RPC_TIMEOUT_MS > AGENT_WAIT_TIMEOUT_MS);
+        let rpc_timeout = std::hint::black_box(AGENT_RPC_TIMEOUT_MS);
+        let wait_timeout = std::hint::black_box(AGENT_WAIT_TIMEOUT_MS);
+        assert!(rpc_timeout > wait_timeout);
     }
 }
