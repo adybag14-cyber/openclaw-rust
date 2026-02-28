@@ -404,6 +404,12 @@ impl MethodRegistry {
                     min_role: "client",
                 },
                 MethodSpec {
+                    name: "secrets.reload",
+                    family: MethodFamily::Gateway,
+                    requires_auth: true,
+                    min_role: "client",
+                },
+                MethodSpec {
                     name: "channels.status",
                     family: MethodFamily::Gateway,
                     requires_auth: true,
@@ -1202,6 +1208,7 @@ const SUPPORTED_RPC_METHODS: &[&str] = &[
     "skills.bins",
     "skills.install",
     "skills.update",
+    "secrets.reload",
     "cron.list",
     "cron.status",
     "cron.add",
@@ -1687,6 +1694,7 @@ impl RpcDispatcher {
             "skills.bins" => self.handle_skills_bins(req).await,
             "skills.install" => self.handle_skills_install(req).await,
             "skills.update" => self.handle_skills_update(req).await,
+            "secrets.reload" => self.handle_secrets_reload(req).await,
             "cron.list" => self.handle_cron_list(req).await,
             "cron.status" => self.handle_cron_status(req).await,
             "cron.add" => self.handle_cron_add(req).await,
@@ -9122,6 +9130,105 @@ impl RpcDispatcher {
                 "note": normalize_optional_text(params.note, 512),
                 "restartDelayMs": params.restart_delay_ms.unwrap_or(0)
             }
+        }))
+    }
+
+    async fn handle_secrets_reload(&self, _req: &RpcRequestFrame) -> RpcDispatchOutcome {
+        let mut warning_count = 0u64;
+
+        let reloaded = match self.config.reload_from_store().await {
+            Ok(value) => value,
+            Err(err) => {
+                self.system
+                    .log_line(format!("secrets.reload failed: {err}"))
+                    .await;
+                return RpcDispatchOutcome::internal_error("secrets reload unavailable");
+            }
+        };
+
+        if let Err(err) = self.sync_config_runtime_from_config().await {
+            warning_count = warning_count.saturating_add(1);
+            self.system
+                .log_line(format!("secrets.reload warning config: {err}"))
+                .await;
+        }
+        if let Err(err) = self.sync_agents_runtime_from_config().await {
+            warning_count = warning_count.saturating_add(1);
+            self.system
+                .log_line(format!("secrets.reload warning agents: {err}"))
+                .await;
+        }
+        if let Err(err) = self.sync_memory_runtime_from_config().await {
+            warning_count = warning_count.saturating_add(1);
+            self.system
+                .log_line(format!("secrets.reload warning memory: {err}"))
+                .await;
+        }
+        if let Err(err) = self.sync_send_runtime_from_config().await {
+            warning_count = warning_count.saturating_add(1);
+            self.system
+                .log_line(format!("secrets.reload warning send: {err}"))
+                .await;
+        }
+        if let Err(err) = self.sync_session_runtime_from_config().await {
+            warning_count = warning_count.saturating_add(1);
+            self.system
+                .log_line(format!("secrets.reload warning sessions: {err}"))
+                .await;
+        }
+        if let Err(err) = self.sync_channel_runtime_from_config().await {
+            warning_count = warning_count.saturating_add(1);
+            self.system
+                .log_line(format!("secrets.reload warning channels: {err}"))
+                .await;
+        }
+        if let Err(err) = self.sync_cron_runtime_from_config().await {
+            warning_count = warning_count.saturating_add(1);
+            self.system
+                .log_line(format!("secrets.reload warning cron: {err}"))
+                .await;
+        }
+        if let Err(err) = self.sync_device_pair_runtime_from_config().await {
+            warning_count = warning_count.saturating_add(1);
+            self.system
+                .log_line(format!("secrets.reload warning devices: {err}"))
+                .await;
+        }
+        if let Err(err) = self.sync_node_pair_runtime_from_config().await {
+            warning_count = warning_count.saturating_add(1);
+            self.system
+                .log_line(format!("secrets.reload warning nodes: {err}"))
+                .await;
+        }
+        if let Err(err) = self.sync_web_login_runtime_from_config().await {
+            warning_count = warning_count.saturating_add(1);
+            self.system
+                .log_line(format!("secrets.reload warning web_login: {err}"))
+                .await;
+        }
+        if let Err(err) = self.sync_oauth_runtime_from_config().await {
+            warning_count = warning_count.saturating_add(1);
+            self.system
+                .log_line(format!("secrets.reload warning oauth: {err}"))
+                .await;
+        }
+        if let Err(err) = self.sync_wizard_runtime_from_config().await {
+            warning_count = warning_count.saturating_add(1);
+            self.system
+                .log_line(format!("secrets.reload warning wizard: {err}"))
+                .await;
+        }
+
+        self.system
+            .log_line(format!(
+                "secrets.reload applied path={} warningCount={warning_count}",
+                reloaded.path
+            ))
+            .await;
+
+        RpcDispatchOutcome::Handled(json!({
+            "ok": true,
+            "warningCount": warning_count
         }))
     }
 
@@ -24543,6 +24650,51 @@ impl ConfigRegistry {
             runtime_guard.store_path = store_path;
         }
         let _ = self.persist_state_snapshot(snapshot).await;
+        Ok(result)
+    }
+
+    async fn reload_from_store(&self) -> Result<ConfigUpdateResult, String> {
+        let current_store_path = { self.runtime.lock().await.store_path.clone() };
+        if config_store_path_is_memory(&current_store_path) {
+            let guard = self.state.lock().await;
+            return Ok(ConfigUpdateResult {
+                path: guard.path.clone(),
+                config: guard.config.clone(),
+                hash: guard.hash.clone(),
+            });
+        }
+
+        let loaded = load_config_store_disk_state(&current_store_path)?;
+        let mut next_state = loaded;
+        let next_store_path = config_runtime_config_from_config(&next_state.config)
+            .store_path
+            .and_then(|value| normalize_optional_text(Some(value), 2048))
+            .unwrap_or_else(|| CONFIG_STORE_PATH.to_owned());
+        next_state.path = next_store_path.clone();
+        if !next_store_path.eq_ignore_ascii_case(&current_store_path)
+            && !config_store_path_is_memory(&next_store_path)
+        {
+            if let Ok(reloaded) = load_config_store_disk_state(&next_store_path) {
+                next_state = reloaded;
+            }
+            next_state.path = next_store_path.clone();
+        }
+
+        let result = ConfigUpdateResult {
+            path: next_state.path.clone(),
+            config: next_state.config.clone(),
+            hash: next_state.hash.clone(),
+        };
+
+        {
+            let mut guard = self.state.lock().await;
+            *guard = next_state.clone();
+        }
+        {
+            let mut runtime_guard = self.runtime.lock().await;
+            runtime_guard.store_path = next_store_path;
+        }
+
         Ok(result)
     }
 
@@ -44495,6 +44647,36 @@ mod tests {
                 );
             }
             _ => panic!("expected auth.oauth.logout handled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_secrets_reload_returns_ok_and_warning_count() {
+        let dispatcher = RpcDispatcher::new();
+        patch_config(
+            &dispatcher,
+            json!({
+                "gateway": {
+                    "configStorePath": "memory://config/secrets-reload"
+                }
+            }),
+        )
+        .await;
+
+        let req = RpcRequestFrame {
+            id: "req-secrets-reload".to_owned(),
+            method: "secrets.reload".to_owned(),
+            params: json!({}),
+        };
+        match dispatcher.handle_request(&req).await {
+            RpcDispatchOutcome::Handled(payload) => {
+                assert_eq!(payload.pointer("/ok").and_then(Value::as_bool), Some(true));
+                assert_eq!(
+                    payload.pointer("/warningCount").and_then(Value::as_u64),
+                    Some(0)
+                );
+            }
+            other => panic!("expected handled secrets.reload response, got {other:?}"),
         }
     }
 

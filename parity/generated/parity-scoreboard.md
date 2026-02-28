@@ -10,7 +10,7 @@ Generated (UTC): deterministic
 | Audit Partial | 0 |
 | Audit Deferred | 0 |
 | Audit Not Started | 0 |
-| Rust RPC Methods | 132 |
+| Rust RPC Methods | 133 |
 | Base Coverage (%) | 100 |
 | Base Missing In Rust | 0 |
 | Handlers Coverage (%) | 100 |
@@ -24,7 +24,7 @@ Generated (UTC): deterministic
 | Partial | -9 |
 | Deferred | -3 |
 | Not Started | 0 |
-| Rust RPC Methods | +31 |
+| Rust RPC Methods | +32 |
 | Base Coverage (%) | 0 |
 | Base Missing In Rust | 0 |
 | Handlers Coverage (%) | 0 |

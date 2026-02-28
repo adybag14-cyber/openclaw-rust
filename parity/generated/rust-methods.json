@@ -88,6 +88,7 @@
   "node.rename",
   "poll",
   "push.test",
+  "secrets.reload",
   "send",
   "session.status",
   "sessions.compact",

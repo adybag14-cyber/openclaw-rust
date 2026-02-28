@@ -1,12 +1,12 @@
 {
   "rustGatewayPath": "src/gateway.rs",
-  "upstreamRepoPath": "..\\openclaw",
-  "rustCount": 132,
+  "upstreamRepoPath": "C:\\users\\ady\\documents\\tmp_openclaw_v2026.2.26",
+  "rustCount": 133,
   "surfaces": {
     "base": {
-      "upstreamCount": 91,
-      "rustCount": 132,
-      "intersectionCount": 91,
+      "upstreamCount": 92,
+      "rustCount": 133,
+      "intersectionCount": 92,
       "coveragePercent": 100.0,
       "missingInRust": [],
       "rustOnly": [
@@ -54,9 +54,9 @@
       ]
     },
     "handlers": {
-      "upstreamCount": 101,
-      "rustCount": 132,
-      "intersectionCount": 101,
+      "upstreamCount": 102,
+      "rustCount": 133,
+      "intersectionCount": 102,
       "coveragePercent": 100.0,
       "missingInRust": [],
       "rustOnly": [

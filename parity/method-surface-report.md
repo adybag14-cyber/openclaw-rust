@@ -4,14 +4,14 @@ Generated (UTC): deterministic
 
 ## Summary
 
-- Rust method count: 132
+- Rust method count: 133
 - Surfaces compared: 2
 
 ## Surface: base
 
-- Upstream method count: 91
-- Rust method count: 132
-- Shared methods: 91
+- Upstream method count: 92
+- Rust method count: 133
+- Shared methods: 92
 - Coverage vs upstream: 100%
 
 ### Missing In Rust
@@ -64,9 +64,9 @@ Generated (UTC): deterministic
 
 ## Surface: handlers
 
-- Upstream method count: 101
-- Rust method count: 132
-- Shared methods: 101
+- Upstream method count: 102
+- Rust method count: 133
+- Shared methods: 102
 - Coverage vs upstream: 100%
 
 ### Missing In Rust

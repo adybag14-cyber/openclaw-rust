@@ -2,19 +2,19 @@
   "current": {
     "manifestVersion": "1.0.0",
     "methodSurface": {
-      "rustCount": 132,
+      "rustCount": 133,
       "base": {
-        "upstreamCount": 91,
-        "rustCount": 132,
-        "intersectionCount": 91,
+        "upstreamCount": 92,
+        "rustCount": 133,
+        "intersectionCount": 92,
         "coveragePercent": 100.0,
         "missingInRustCount": 0,
         "rustOnlyCount": 41
       },
       "handlers": {
-        "upstreamCount": 101,
-        "rustCount": 132,
-        "intersectionCount": 101,
+        "upstreamCount": 102,
+        "rustCount": 133,
+        "intersectionCount": 102,
         "coveragePercent": 100.0,
         "missingInRustCount": 0,
         "rustOnlyCount": 31
@@ -64,7 +64,7 @@
       "notStarted": 0
     },
     "methodSurface": {
-      "rustCount": 31,
+      "rustCount": 32,
       "baseCoveragePercent": 0.0,
       "handlersCoveragePercent": 0.0,
       "baseMissingInRustCount": 0,

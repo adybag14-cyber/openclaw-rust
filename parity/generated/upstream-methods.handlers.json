@@ -60,6 +60,7 @@
   "node.rename",
   "poll",
   "push.test",
+  "secrets.reload",
   "send",
   "sessions.compact",
   "sessions.delete",
