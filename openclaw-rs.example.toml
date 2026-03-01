@@ -153,6 +153,8 @@ max_parallel = 4
 
 # ChatGPT browser-session bridge (no API key):
 #   1) Start local bridge server:
+#        export OPENCLAW_CHATGPT_LIGHTPANDA_WS_ENDPOINT="ws://127.0.0.1:9222"   # optional
+#        export OPENCLAW_CHATGPT_BRIDGE_ENGINES="lightpanda-playwright,lightpanda-puppeteer,playwright,puppeteer"
 #        node scripts/chatgpt-browser-bridge.mjs
 #   2) Complete OAuth handoff in Telegram:
 #        /auth start chatgpt
@@ -195,6 +197,7 @@ max_parallel = 4
 # [auth.oauth.chatgptBrowser]
 # command = "node"
 # args = ["scripts/chatgpt-browser-auth.mjs", "--engine", "playwright"]
+# args = ["scripts/chatgpt-browser-auth.mjs", "--engine", "lightpanda", "--lightpanda-endpoint", "ws://127.0.0.1:9222"] # optional
 # profileDir = ".openclaw-rs/chatgpt-browser-profile"
 # bridgeBaseUrls = [
 #   "http://127.0.0.1:43010/v1",

@@ -19,11 +19,24 @@ const COMPLETION_TIMEOUT_MS = Number.parseInt(
   10,
 );
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const LIGHTPANDA_ENDPOINT = normalizeEndpoint(
+  process.env.OPENCLAW_CHATGPT_LIGHTPANDA_WS_ENDPOINT ||
+    process.env.OPENCLAW_LIGHTPANDA_WS_ENDPOINT ||
+    "",
+);
+const ENGINE_ORDER = parseEngineOrder(
+  process.env.OPENCLAW_CHATGPT_BRIDGE_ENGINES,
+  Boolean(LIGHTPANDA_ENDPOINT),
+);
 
 let pwState = null;
 let ppState = null;
 let pwInitError = null;
 let ppInitError = null;
+let lpwState = null;
+let lppState = null;
+let lpwInitError = null;
+let lppInitError = null;
 
 function parseJsonSafe(text) {
   try {
@@ -68,6 +81,98 @@ function trimText(value) {
     return "";
   }
   return value.trim();
+}
+
+function formatError(error) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  if (error && typeof error === "object") {
+    const maybeMessage = error.message || error.error || error.reason;
+    if (typeof maybeMessage === "string" && maybeMessage.trim()) {
+      return maybeMessage;
+    }
+    if (typeof error.toString === "function") {
+      const text = error.toString();
+      if (typeof text === "string" && text.trim() && text !== "[object Object]") {
+        return text;
+      }
+    }
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+function normalizeEndpoint(raw) {
+  const trimmed = trimText(raw);
+  if (!trimmed) {
+    return null;
+  }
+  if (
+    trimmed.startsWith("ws://") ||
+    trimmed.startsWith("wss://") ||
+    trimmed.startsWith("http://") ||
+    trimmed.startsWith("https://")
+  ) {
+    return trimmed;
+  }
+  return `ws://${trimmed}`;
+}
+
+function parseEngineAlias(raw) {
+  const normalized = trimText(raw).toLowerCase().replaceAll("_", "-");
+  if (!normalized) {
+    return null;
+  }
+  if (normalized === "lightpanda") {
+    return "lightpanda-playwright";
+  }
+  if (
+    normalized === "lightpanda-playwright" ||
+    normalized === "lightpanda-puppeteer" ||
+    normalized === "playwright" ||
+    normalized === "puppeteer"
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function parseEngineOrder(raw, hasLightpanda) {
+  const defaults = hasLightpanda
+    ? ["lightpanda-playwright", "lightpanda-puppeteer", "playwright", "puppeteer"]
+    : ["playwright", "puppeteer"];
+  const value = trimText(raw);
+  if (!value) {
+    return defaults;
+  }
+  const parsed = [];
+  for (const token of value.split(",")) {
+    const engine = parseEngineAlias(token);
+    if (engine && !parsed.includes(engine)) {
+      parsed.push(engine);
+    }
+  }
+  const filtered = hasLightpanda
+    ? parsed
+    : parsed.filter((engine) => !engine.startsWith("lightpanda"));
+  if (filtered.length === 0) {
+    return defaults;
+  }
+  return filtered;
+}
+
+function lightpandaConnectOptions(endpoint) {
+  if (endpoint.startsWith("http://") || endpoint.startsWith("https://")) {
+    return { browserURL: endpoint };
+  }
+  return { browserWSEndpoint: endpoint };
 }
 
 function stripProviderPrefix(model) {
@@ -199,7 +304,7 @@ async function readSessionState(page) {
         status: 0,
         hasAccessToken: false,
         email: null,
-        error: error instanceof Error ? error.message : String(error),
+        error: formatError(error),
       };
     }
   });
@@ -415,7 +520,7 @@ async function ensurePlaywright() {
     pwInitError = null;
     return pwState;
   } catch (error) {
-    pwInitError = error instanceof Error ? error.message : String(error);
+    pwInitError = formatError(error);
     if (pwState?.context) {
       try {
         await pwState.context.close();
@@ -444,13 +549,81 @@ async function ensurePuppeteer() {
     ppInitError = null;
     return ppState;
   } catch (error) {
-    ppInitError = error instanceof Error ? error.message : String(error);
+    ppInitError = formatError(error);
     if (ppState?.browser) {
       try {
         await ppState.browser.close();
       } catch {}
     }
     ppState = null;
+    return null;
+  }
+}
+
+async function closeLightpandaPlaywrightState() {
+  if (lpwState?.browser) {
+    try {
+      await lpwState.browser.close();
+    } catch {}
+  }
+  lpwState = null;
+}
+
+async function closeLightpandaPuppeteerState() {
+  if (lppState?.browser) {
+    try {
+      if (typeof lppState.browser.disconnect === "function") {
+        await lppState.browser.disconnect();
+      } else {
+        await lppState.browser.close();
+      }
+    } catch {}
+  }
+  lppState = null;
+}
+
+async function ensureLightpandaPlaywright() {
+  if (!LIGHTPANDA_ENDPOINT) {
+    lpwInitError = "lightpanda endpoint not configured";
+    return null;
+  }
+  if (lpwState) {
+    return lpwState;
+  }
+  try {
+    const playwright = await importModuleWithFallback("playwright");
+    const browser = await playwright.chromium.connectOverCDP(LIGHTPANDA_ENDPOINT);
+    const context = browser.contexts()[0] ?? (await browser.newContext({ viewport: null }));
+    const page = context.pages()[0] ?? (await context.newPage());
+    lpwState = { browser, context, page };
+    lpwInitError = null;
+    return lpwState;
+  } catch (error) {
+    lpwInitError = formatError(error);
+    await closeLightpandaPlaywrightState();
+    return null;
+  }
+}
+
+async function ensureLightpandaPuppeteer() {
+  if (!LIGHTPANDA_ENDPOINT) {
+    lppInitError = "lightpanda endpoint not configured";
+    return null;
+  }
+  if (lppState) {
+    return lppState;
+  }
+  try {
+    const puppeteer = await importModuleWithFallback("puppeteer");
+    const browser = await puppeteer.connect(lightpandaConnectOptions(LIGHTPANDA_ENDPOINT));
+    const pages = await browser.pages();
+    const page = pages[0] ?? (await browser.newPage());
+    lppState = { browser, page };
+    lppInitError = null;
+    return lppState;
+  } catch (error) {
+    lppInitError = formatError(error);
+    await closeLightpandaPuppeteerState();
     return null;
   }
 }
@@ -477,7 +650,7 @@ async function completionViaPlaywright(payload) {
     return {
       ok: false,
       provider: "playwright",
-      error: error instanceof Error ? error.message : String(error),
+      error: formatError(error),
     };
   }
 }
@@ -498,9 +671,73 @@ async function completionViaPuppeteer(payload) {
     return {
       ok: false,
       provider: "puppeteer",
-      error: error instanceof Error ? error.message : String(error),
+      error: formatError(error),
     };
   }
+}
+
+async function completionViaLightpandaPlaywright(payload) {
+  const state = await ensureLightpandaPlaywright();
+  if (!state) {
+    return {
+      ok: false,
+      provider: "lightpanda-playwright",
+      error: lpwInitError || "lightpanda playwright unavailable",
+    };
+  }
+  try {
+    const body = await completeViaPage(state.page, payload);
+    return { ok: true, provider: "lightpanda-playwright", body };
+  } catch (error) {
+    await closeLightpandaPlaywrightState();
+    return {
+      ok: false,
+      provider: "lightpanda-playwright",
+      error: formatError(error),
+    };
+  }
+}
+
+async function completionViaLightpandaPuppeteer(payload) {
+  const state = await ensureLightpandaPuppeteer();
+  if (!state) {
+    return {
+      ok: false,
+      provider: "lightpanda-puppeteer",
+      error: lppInitError || "lightpanda puppeteer unavailable",
+    };
+  }
+  try {
+    const body = await completeViaPage(state.page, payload);
+    return { ok: true, provider: "lightpanda-puppeteer", body };
+  } catch (error) {
+    await closeLightpandaPuppeteerState();
+    return {
+      ok: false,
+      provider: "lightpanda-puppeteer",
+      error: formatError(error),
+    };
+  }
+}
+
+async function completionViaEngine(payload, engine) {
+  if (engine === "lightpanda-playwright") {
+    return completionViaLightpandaPlaywright(payload);
+  }
+  if (engine === "lightpanda-puppeteer") {
+    return completionViaLightpandaPuppeteer(payload);
+  }
+  if (engine === "playwright") {
+    return completionViaPlaywright(payload);
+  }
+  if (engine === "puppeteer") {
+    return completionViaPuppeteer(payload);
+  }
+  return {
+    ok: false,
+    provider: engine,
+    error: `unsupported browser engine '${engine}'`,
+  };
 }
 
 function readBody(req) {
@@ -534,18 +771,13 @@ async function handleChatCompletion(req, res) {
   }
 
   const attempts = [];
-  const playwrightResult = await completionViaPlaywright(payload);
-  attempts.push(playwrightResult);
-  if (playwrightResult.ok) {
-    writeJson(res, 200, playwrightResult.body);
-    return;
-  }
-
-  const puppeteerResult = await completionViaPuppeteer(payload);
-  attempts.push(puppeteerResult);
-  if (puppeteerResult.ok) {
-    writeJson(res, 200, puppeteerResult.body);
-    return;
+  for (const engine of ENGINE_ORDER) {
+    const result = await completionViaEngine(payload, engine);
+    attempts.push(result);
+    if (result.ok) {
+      writeJson(res, 200, result.body);
+      return;
+    }
   }
 
   writeJson(res, 502, {
@@ -564,6 +796,10 @@ const server = http.createServer(async (req, res) => {
       writeJson(res, 200, {
         ok: true,
         bridge: "chatgpt-browser-bridge",
+        engineOrder: ENGINE_ORDER,
+        lightpandaConfigured: Boolean(LIGHTPANDA_ENDPOINT),
+        lightpandaPlaywrightReady: Boolean(lpwState),
+        lightpandaPuppeteerReady: Boolean(lppState),
         playwrightReady: Boolean(pwState),
         puppeteerReady: Boolean(ppState),
       });
@@ -580,7 +816,7 @@ const server = http.createServer(async (req, res) => {
     }
     writeJson(res, 404, { error: "not found" });
   } catch (error) {
-    writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    writeJson(res, 500, { error: formatError(error) });
   }
 });
 
@@ -596,6 +832,8 @@ async function shutdown() {
       await ppState.browser.close();
     } catch {}
   }
+  await closeLightpandaPlaywrightState();
+  await closeLightpandaPuppeteerState();
   process.exit(0);
 }
 
@@ -608,7 +846,7 @@ server.on("error", (error) => {
   // eslint-disable-next-line no-console
   console.error(
     `chatgpt browser bridge failed to bind ${HOST}:${PORT}: ${
-      error instanceof Error ? error.message : String(error)
+      formatError(error)
     }`,
   );
   process.exit(1);

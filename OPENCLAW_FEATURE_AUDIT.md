@@ -19,6 +19,10 @@ Status legend:
 - `Not Started`: No Rust implementation yet.
 - `Deferred`: Intentionally kept in upstream Gateway for now.
 
+Latest increment (2026-03-01):
+
+- Added optional Lightpanda CDP backend support for ChatGPT browser auth/bridge helper scripts (`scripts/chatgpt-browser-auth.mjs`, `scripts/chatgpt-browser-bridge.mjs`) with explicit fallback to Playwright/Puppeteer paths.
+
 ## Feature Matrix
 
 CP1 update (2026-02-19):

@@ -42,7 +42,7 @@ provider runtime, persistence, performance strategy, and release layout), see:
   - Ubuntu 20.04 WSL release build passes: `wsl -d Ubuntu-20.04 -- bash -lc 'source $HOME/.cargo/env && cd /mnt/c/Users/Ady/Documents/openclaw-rust && CARGO_TARGET_DIR=target-linux-ubuntu20 cargo +1.83.0 build --release'`
   - Docker parity smoke passes with workstation Docker memory profile updated: `./scripts/run-docker-parity-smoke.ps1`
   - Ubuntu 20.04 runtime RSS probe peak (active RPC traffic): `15.38 MB` (`MAX_RSS_KB=15744`)
-  - Current release tag: `v1.7.14`
+  - Current release tag: `v1.7.15`
 
 ## Implemented runtime coverage
 
@@ -275,6 +275,19 @@ For ChatGPT browser-session usage (OAuth login, no OpenAI API key), run the loca
 node scripts/chatgpt-browser-bridge.mjs
 ```
 
+Optional Lightpanda backend (CDP endpoint) can be enabled for the same bridge:
+
+```bash
+export OPENCLAW_CHATGPT_LIGHTPANDA_WS_ENDPOINT="ws://127.0.0.1:9222"
+export OPENCLAW_CHATGPT_BRIDGE_ENGINES="lightpanda-playwright,lightpanda-puppeteer,playwright,puppeteer"
+```
+
+Auth helper also supports Lightpanda explicitly:
+
+```bash
+node scripts/chatgpt-browser-auth.mjs --engine lightpanda --lightpanda-endpoint ws://127.0.0.1:9222
+```
+
 Then complete OAuth in Telegram:
 
 ```text
@@ -305,6 +318,8 @@ Bridge-ready provider aliases are normalized for:
 - Cloud OpenAI-compatible: `groq`, `google`, `deepseek`, `deepinfra`, `mistral`, `fireworks`, `together`, `cerebras`, `siliconflow`, `sambanova`, `novita`, `hyperbolic`, `nebius`, `inference-net`
 - Routers/aggregators: `openrouter`, `aimlapi`
 - Enterprise/config-driven aliases (set explicit `baseUrl` in config): `azure-openai`, `vertex-ai`, `bedrock`, `cohere`, `xai`, `github-models`, `vercel-ai-gateway`, `shareai`, `bifrost`
+
+Lightpanda integration is compatibility-mode (CDP) with fallback; Playwright/Puppeteer remain the safety net for surfaces Lightpanda does not yet implement.
 
 ## Signed policy bundles
 
